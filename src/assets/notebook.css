@@ -2528,6 +2528,12 @@ body.presenting { overflow: hidden; }
 .deck-slide .cell.selected, .deck-slide .cell.multisel, .deck-slide .cell.dep-focus { outline: none !important; }
 .deck-slide .srcedit, .deck-slide .cm-editor { display: none; }
 .deck-slide.show-code .srcedit, .deck-slide.show-code .cm-editor { display: block; }
+/* The "⊞ … surfaced in ‘cell’" chip is authoring chrome, as in zen: the live control renders in its
+   host cell. A cell with nothing to show (`.cell-blank`, set by `markBlank` in view.js; e.g. a bind
+   cell whose controls are all surfaced elsewhere) collapses, so it leaves no gap on the slide. It
+   stays while the code is shown, because its code is then its content. */
+.deck-slide .hostedph,
+.deck-slide:not(.show-code) .cell.cell-blank, .deck-slide .cell.cell-blank.codehidden { display: none !important; }
 /* Presented code is read from a distance — bump it above the editor's default size (the slide-level
    scale still shrinks it to fit, so this sets the on-screen size, not the layout size). */
 .deck-slide.show-code .cm-editor, .deck-slide.show-code .cm-editor .cm-content,
@@ -2603,6 +2609,8 @@ body.is-presenter > .hydbanner, body.is-presenter > #selcount { display: none !i
 .pp-cur .cell, .pp-next .cell { border: none !important; background: none !important; margin: 0 0 10px 0 !important; padding: 0 !important; }
 .pp-cur .cellhead, .pp-next .cellhead, .pp-cur .srcedit, .pp-next .srcedit,
 .pp-cur .cm-editor, .pp-next .cm-editor { display: none !important; }
+/* The presenter previews never show code, so the chip and every blank cell go (see `.deck-slide`). */
+.pp-cur .hostedph, .pp-next .hostedph, .pp-cur .cell.cell-blank, .pp-next .cell.cell-blank { display: none !important; }
 
 /* ── Document-metadata role cells (title / abstract / bibliography) ─────────────
    Authored as ordinary cells in natural flow; styled in place so what you see is what
