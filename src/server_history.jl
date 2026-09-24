@@ -699,14 +699,16 @@ function _save_preview!(nb::LiveNotebook; force::Bool = false)
     end
     do_save || return nothing
     try
-        cells = lock(nb.lock) do
-            _has_rich_display(nb) ? _render_cells(nb; live_placeholder = true) : nothing
+        # The asset registry rides along: the restored render imports `/ext-assets/<pkg>/…` urls, and a
+        # reopen serves them from it before the new worker has declared its assets (see `load_notebook`).
+        cells, assets = lock(nb.lock) do
+            (_has_rich_display(nb) ? _render_cells(nb; live_placeholder = true) : nothing), copy(nb.assets)
         end
         cells === nothing && return nothing   # nothing rich to preview — leave any stale sidecar for now
         f = _preview_file(nb)
         mkpath(dirname(f))
         tmp = f * ".tmp"
-        open(tmp, "w") do io; JSON.print(io, cells); end
+        open(tmp, "w") do io; JSON.print(io, Dict("cells" => cells, "assets" => assets)); end
         mv(tmp, f; force = true)
         _prune_preview_blobs!(nb.id, _live_blob_hashes(cells))   # evict superseded figure rasters
     catch e
@@ -718,11 +720,14 @@ end
 # The persisted interim render for `path`, marked up for hydration: each entry gets `preview=true`
 # (a stored-render marker → full-fidelity display + a "stored" badge) and `previewStale=true` when
 # the saved source hash no longer matches the freshly-parsed cell (edited since the snapshot, so the
-# figure may be out of date). Returns nothing when there's no usable sidecar.
+# figure may be out of date). Returns `(; cells, assets)` — `assets` is the package asset registry
+# (`nb.assets`) at snapshot time, minus the dirs that no longer exist — or nothing when there's no
+# usable sidecar.
 function _load_preview_marked(path::AbstractString, report)
     f = _preview_file(doc_key(path, report.meta))
     isfile(f) || return nothing
-    cells = try; JSON.parse(read(f, String)); catch; nothing; end
+    raw = try; JSON.parse(read(f, String)); catch; nothing; end
+    cells = raw isa AbstractDict ? get(raw, "cells", nothing) : raw   # a bare cell array: sidecar without assets
     (cells isa AbstractVector && !isempty(cells)) || return nothing
     live = Dict{String,String}()
     for c in report.cells
@@ -734,7 +739,14 @@ function _load_preview_marked(path::AbstractString, report)
         id = String(get(e, "id", "")); h = String(get(e, "hash", ""))
         e["previewStale"] = !(haskey(live, id) && live[id] == h)
     end
-    return cells
+    a = raw isa AbstractDict ? get(raw, "assets", nothing) : nothing
+    assets = Dict{String,String}()
+    if a isa AbstractDict
+        for (k, d) in a
+            d isa AbstractString && isdir(d) && (assets[String(k)] = String(d))
+        end
+    end
+    return (; cells, assets)
 end
 
 # ── Overflow files (full results for truncated output) ───────────────────────────

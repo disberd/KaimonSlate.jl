@@ -481,12 +481,16 @@ function load_notebook(path::AbstractString; id::AbstractString = "", threads::A
     # instead of showing every cell un-run. Marked entries carry a stored/stale badge; live cells
     # supersede them cell-by-cell (state_json's hydrating branch serves meta["preview"]).
     try; _adopt_doc_stores!(path, r.meta); catch; end   # legacy path key → docid key (see above)
-    let p = _load_preview_marked(path, r)
-        p === nothing || (r.meta["preview"] = p)
-    end
+    p = _load_preview_marked(path, r)
+    p === nothing || (r.meta["preview"] = p.cells)
     nb = LiveNotebook(nbid, String(path), r, PendingKernel(), 0, String[], String[],
                       ReentrantLock(), Channel{String}[], ReentrantLock(), "", false,
                       Dict{String,String}())
+    # The preview's figures import `/ext-assets/<pkg>/…` urls as soon as the page loads, which can be
+    # long before the new worker declares its assets. A 404 then sticks: the browser keeps the failed
+    # module for the life of the page. So serve the snapshot's asset dirs until the worker's manifest
+    # replaces them (`_refresh_extensions!`).
+    p === nothing || merge!(nb.assets, p.assets)
     _wire_callbacks!(nb)
     _load_chat_log!(nb)                  # restore any prior agent transcript (survives server restart)
     if inactive
