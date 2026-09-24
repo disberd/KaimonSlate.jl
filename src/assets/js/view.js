@@ -1535,14 +1535,18 @@ function _swapOutput(out, html, live, after) {
   const commit = () => {
     if (out.__slateSwapSeq !== seq) return;
     const applyUpdates = _carryMounted(out, stage);
+    // A figure that a script draws (Plotly, Bonito) gets its height only when the script has run,
+    // often after an async import. Hold the height until the output DOM is still.
+    const scripted = !!stage.querySelector('script');
     out.style.minHeight = out.offsetHeight + 'px';
     out.replaceChildren(...Array.from(stage.childNodes));
+    const release = () => { if (out.__slateSwapSeq === seq) out.style.minHeight = ''; };   // a newer swap owns the hold
+    if (scripted) _whenStill(out, 150, 2000, release);
     runScripts(out);   // a <script> from parsed HTML is inert — re-create so figures boot
     mountOutputComponents(out);   // mount any `slate_render` component OUTPUTS in the freshly-swapped output
     applyUpdates();
     const mounted = out.querySelectorAll('img');
-    const release = () => { out.style.minHeight = ''; };
-    if (!mounted.length) requestAnimationFrame(release);
+    if (!mounted.length) { if (!scripted) requestAnimationFrame(release); }
     else {
       let n = mounted.length;
       const one = () => { if (--n <= 0) release(); };
@@ -1604,6 +1608,15 @@ function _carryMounted(out, stage) {
   }));
   prev.forEach(els => els.forEach(el => { if (!kept.has(el)) el.dispatchEvent(new Event('slate:discard')); }));
   return () => updates.forEach(f => { try { f(); } catch (e) { console.error(e); } });
+}
+
+// Call `done` when `el` has had no DOM change for `ms`, or after `cap` ms at most.
+function _whenStill(el, ms, cap, done) {
+  let quiet = setTimeout(end, ms);
+  const hard = setTimeout(end, cap);
+  const mo = new MutationObserver(() => { clearTimeout(quiet); quiet = setTimeout(end, ms); });
+  mo.observe(el, { childList: true, subtree: true });
+  function end() { mo.disconnect(); clearTimeout(quiet); clearTimeout(hard); done(); }
 }
 
 // A <script> assigned via innerHTML is parsed but never executed. Rich output
