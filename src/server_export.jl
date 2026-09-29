@@ -3642,13 +3642,13 @@ function _run_app_bind(port::Int)
     # statement of intent, so admit this machine's own names automatically; SLATE_ALLOWED_HOSTS
     # adds any others (a DNS alias, a reverse proxy's name).
     if host != "127.0.0.1" && host != "localhost"
-        names = String[gethostname(), host]
+        allowed_hosts = String[gethostname(), host]
         for ip in try; Sockets.getipaddrs(); catch; []; end
-            push!(names, string(ip))
+            push!(allowed_hosts, string(ip))
         end
         extra = strip(get(ENV, "SLATE_ALLOWED_HOSTS", ""))
-        isempty(extra) || push!(names, String(extra))
-        ENV["KAIMONSLATE_ALLOWED_HOSTS"] = join(unique(filter(!isempty, names)), ",")
+        isempty(extra) || push!(allowed_hosts, String(extra))
+        ENV["KAIMONSLATE_ALLOWED_HOSTS"] = join(unique(filter(!isempty, allowed_hosts)), ",")
     end"""
 end
 
