@@ -32,7 +32,7 @@ Bonito = "5"
 # them. The cost is that the bound no longer implies a Slate new enough to POPULATE them — core
 # supplies them through the execution context — so `bonito_controls` checks for the capability
 # itself and names the version it needs. See `_require_bind_surface` in src/controls.jl.
-SlateExtensionsBase = "0.10.5"
+SlateExtensionsBase = "0.10.5, 0.11"
 julia = "1.10"
 
 [extras]
