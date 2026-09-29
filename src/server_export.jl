@@ -1377,7 +1377,10 @@ Slate.asset=function(path){var a=window.__slateAssets[path];
 if(!a)return Promise.reject(new Error("Slate.asset: unknown asset "+path));
 var get;if(a.data!==undefined){var b=atob(a.data),n=b.length,u=new Uint8Array(n);for(var i=0;i<n;i++)u[i]=b.charCodeAt(i);
 get=a.enc==="gzip"?_slateInflate(u):Promise.resolve(u.buffer);}
-else{get=fetch(a.url).then(function(r){return r.arrayBuffer();});}
+/* Status-checked for the same reason as core.js: a 404 body would otherwise decode as data. */
+else{get=fetch(a.url).then(function(r){
+if(!r.ok)throw new Error("Slate.asset: "+a.url+" — "+r.status+" "+r.statusText);
+return r.arrayBuffer();});}
 return get.then(function(buf){if(a.dtype)return _slateNdarray(a,buf);var m=a.mime||"";
 if(m.indexOf("json")>=0)return JSON.parse(new TextDecoder().decode(buf));
 if(m.indexOf("text/")===0)return new TextDecoder().decode(buf);return buf;});};

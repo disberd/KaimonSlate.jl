@@ -273,7 +273,15 @@ window.Slate.asset = function (path) {
     const b = atob(a.data), n = b.length, u = new Uint8Array(n);
     for (let i = 0; i < n; i++) u[i] = b.charCodeAt(i);
     get = Promise.resolve(u.buffer);
-  } else { get = fetch(a.url).then(r => r.arrayBuffer()); }   // served blob (live / published)
+  } else {                                          // served blob (live / published)
+    // Check the status. A blob the preview sweep has pruned answers 404 with a short text body, and
+    // `arrayBuffer()` hands that body back as data: a `dtype` asset then reinterprets the error text
+    // as a typed array and the caller plots it.
+    get = fetch(a.url).then(r => {
+      if (!r.ok) throw new Error('Slate.asset: ' + a.url + ' — ' + r.status + ' ' + r.statusText);
+      return r.arrayBuffer();
+    });
+  }
   return get.then(buf => {
     if (a.dtype) return _slateNdarray(a, buf);      // packed numeric array → ndarray-lite
     const m = a.mime || '';
