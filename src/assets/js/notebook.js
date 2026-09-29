@@ -595,6 +595,11 @@ function Cell({ cell, selectedId, selSet, live, focusId, editingId, collapsed })
     // A workbook cell is the reader's to write. The class is emitted in every posture so the author
     // can see which cells they've marked; only `body.app` gives it the reading-view treatment.
     + (c.workbook ? ' workbook' : '')
+    // Presentation tags, as classes so the stylesheet can reach them — `notes` is the one that
+    // MATTERS: speaker notes are presenter-only (docs/src/slides.md), and without a class the
+    // reading view had no way to keep them off a reader's screen. `slide` rides along so an
+    // explicit slide break is visible while authoring.
+    + (c.notes ? ' cell-notes' : '') + (c.slide ? ' slide-start' : '')
     + roleCls + selCls + edCls + (focusId === c.id ? ' dep-focus' : '');
   const header = html`<div class="cellhead" dangerouslySetInnerHTML=${raw(window.cellHeaderInner(c))}></div>`;
   const srcedit = html`<div class="srcedit" style="display:none" dangerouslySetInnerHTML=${raw(window.srcEditInner())}></div>`;

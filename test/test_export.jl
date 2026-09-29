@@ -701,6 +701,30 @@ end
     end
 end
 
+@testset "speaker notes never reach a reader" begin
+    # `notes` cells are addressed to the presenter: the deck skips them, the PDF gives them their own
+    # appendix, and docs/src/slides.md promises the presenter window is "the only place notes are
+    # visible". The HTML and markdown exports are separate renderers with their own skip chains, and
+    # neither knew about the flag — so publishing a deck as a page shipped the notes as ordinary prose.
+    # Omitted, not hidden: a CSS rule would still put the text in the page source.
+    src = "#%% md id=t title\n# Talk\n\n#%% md id=body\nWhat the audience reads.\n\n" *
+          "#%% md id=sp notes\nRemember to mention the unpublished result.\n"
+    rep = _RE.parse_report(src)
+    nb = NS.LiveNotebook("notesnb", "/tmp/notesnb.jl", rep, _RE.InProcessKernel(), 1, String[], String[],
+        ReentrantLock(), Channel{String}[], ReentrantLock(), "", false, Dict{String,String}())
+    @test :notes in rep.cells[end].flags          # the tag parsed — otherwise this proves nothing
+
+    secret, public = "unpublished result", "What the audience reads"
+    html, md = NS.export_html(nb), NS.export_markdown(nb)
+    @test occursin(public, html) && !occursin(secret, html)
+    @test occursin(public, md) && !occursin(secret, md)
+
+    # The presenter still gets them: the flag reaches the page as `notes`, which is what slides.js
+    # routes into the notes column and notebook.js turns into `.cell-notes` for the reading view.
+    cj = NS.cell_json(rep.cells[end])
+    @test get(cj, "notes", false) === true
+end
+
 @testset "_apply_ordering! sets section/order in place, leaves unmatched" begin
     docs = Any[Dict{String,Any}("slug" => "a"), Dict{String,Any}("slug" => "b"),
                Dict{String,Any}("slug" => "keep")]

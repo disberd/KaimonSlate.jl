@@ -327,7 +327,12 @@ body.zen .cellhead, body.zen .coldrop, body.zen .cellprog, body.zen .cell .contr
    They sit BETWEEN cells rather than inside one, so the per-cell rules above never reached them. */
 body.zen .cellgap, body.zen #addcellbtn,
 /* the "⊞ … surfaced in ‘cell’" chip is authoring chrome — the live control renders in its host cell */
-body.zen .hostedph { display:none !important; }
+body.zen .hostedph,
+/* A `notes` cell is written FOR the presenter, and the presenter window is the only place it belongs
+   (docs/src/slides.md). The deck already skips it and the PDF routes it to the notes appendix; this is
+   the reading view honouring the same contract. The presenter reads its text from the cell state, not
+   from this DOM (`_notesHtml`, slides.js), so hiding it here cannot reach that window. */
+body.zen .cell.cell-notes { display:none !important; }
 /* An author in zen can hit Esc and watch the cells run; an app reader cannot, so bring-up progress is
    the ONLY signal they get that the thing is alive. Keep the banner for an app, hide it for zen. */
 body.zen:not(.app) .hydbanner { display:none !important; }
@@ -2620,6 +2625,23 @@ body.is-presenter > .hydbanner, body.is-presenter > #selcount { display: none !i
 .cell.role-bib .md::before { content: 'References'; display: block; font-size: .72rem;
   text-transform: uppercase; letter-spacing: .08em; font-weight: 700; color: var(--dim);
   margin-bottom: 6px; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
+
+/* Speaker-notes cell (`notes`) — visible only while authoring, where you are writing it. Marked
+   rather than merely styled: the reader never sees this text, so the author needs to be able to tell
+   at a glance which cells are theirs alone. Every reading posture hides it (`body.zen` above) and
+   both exports omit it (server_export.jl). */
+.cell.cell-notes .md { margin: 2px 0 2px 14px; padding: 8px 14px; border-left: 3px dashed var(--dim);
+  background: var(--ovl); border-radius: 0 8px 8px 0; font-size: .92em; color: var(--dim); }
+.cell.cell-notes .md::before { content: 'Speaker notes'; display: block; font-size: .68rem;
+  text-transform: uppercase; letter-spacing: .09em; font-weight: 700; color: var(--dim); margin-bottom: 4px; }
+
+/* Explicit slide break (`slide` tag) — the one boundary you cannot read off the document, since the
+   rest of the segmentation follows headings you can already see. A small chip in the margin above the
+   cell, only while authoring: scoped to `#nb` so a presented cell (moved to `#deckstage`) and the
+   presenter previews never draw it, and dropped in the reading view, where there are no slides. */
+body:not(.zen) #nb .cell.slide-start::before { content: 'slide'; position: absolute; top: -8px; left: 12px;
+  padding: 0 6px; font-size: .6rem; text-transform: uppercase; letter-spacing: .1em; font-weight: 700;
+  color: var(--dim); background: var(--bg); border: 1px solid var(--border); border-radius: 999px; }
 
 /* Figure caption cell (role-caption) — a numbered, dimmed caption that sits under its figure. */
 .cell.role-caption .md { font-size: .86em; color: var(--dim); margin: 0 0 4px 18px; line-height: 1.5; }

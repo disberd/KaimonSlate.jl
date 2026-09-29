@@ -2914,7 +2914,8 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
         # Side-by-side rows (`column=N`): wrap a multi-cell run in a flex `.exp-row`. The visibility
         # predicate mirrors the per-cell skips below so the grouping matches what's actually emitted.
         rowopen, rowclose, _ = _column_row_brackets(nb.report.cells,
-            c -> !(:collapsed in c.flags) && !(:docindex in c.flags) && !(c.id in fm.skip) && !(:bibliography in c.flags))
+            c -> !(:collapsed in c.flags) && !(:docindex in c.flags) && !(c.id in fm.skip) &&
+                 !(:bibliography in c.flags) && !(:notes in c.flags))
         for c in nb.report.cells
             # A collapsed (folded ▸) cell is tucked away entirely in the notebook — omit it from
             # the export too (both code and output), for markdown and code alike.
@@ -2927,6 +2928,10 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
             end
             c.id in fm.skip && continue              # hoisted into the title block above
             (:bibliography in c.flags) && continue   # raw BibTeX isn't shown (HTML has no CSL engine yet)
+            # Speaker notes are addressed to the presenter, not the reader. The deck skips them and the
+            # PDF gives them their own appendix; an HTML page had no such split and published them as
+            # ordinary prose. Omitted rather than hidden in CSS — `display:none` still ships the text.
+            (:notes in c.flags) && continue
             haskey(rowopen, c.id) && print(io, "<div class=\"exp-row\">")   # open a side-by-side row
             if c.kind == MARKDOWN
                 # citations/refs + hoisted H1. Dropping the H1 drops whatever interpolations sat in it,
@@ -5400,6 +5405,7 @@ function export_markdown(nb::LiveNotebook; include_source::Bool = true, outputs:
         for c in nb.report.cells
             (:collapsed in c.flags) && continue
             c.id in fm.skip && continue
+            (:notes in c.flags) && continue    # speaker notes — presenter-only, same as the HTML export
             if :bibliography in c.flags        # rendered as the References section below, not raw BibTeX
                 continue
             end
