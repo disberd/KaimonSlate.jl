@@ -38,13 +38,23 @@ if(a<1e-4||a>=1e15)return v.toExponential(3);
 return String(parseFloat(v.toPrecision(6)));}
 /* A datum is a scalar on a value axis, or a tuple: [x,y] for a line, [x,y,v] for a heatmap. */
 function _slateValueFormatter(v){return Array.isArray(v)?v.map(_slateNum).join(', '):_slateNum(v);}
+/* Mirror of core.js `_slateIsDark`: whether a CSS colour is dark, null when unparseable. */
+function _slateIsDark(css){var s=String(css||'').trim(),rgb,m=/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s);
+if(m){var h=m[1].length===3?m[1].replace(/./g,function(c){return c+c;}):m[1];rgb=[0,2,4].map(function(i){return parseInt(h.slice(i,i+2),16);});}
+else if((m=/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(s))){rgb=m.slice(1,4).map(Number);}
+else return null;
+return (0.299*rgb[0]+0.587*rgb[1]+0.114*rgb[2])/255<0.5;}
 function _slateExportTheme(){var cs=getComputedStyle(document.documentElement);
 var V=function(n,d){var v=cs.getPropertyValue(n).trim();return v||d;};
 var text=V('--text','#d4d8e8'),dim=V('--dim','#6a7090'),border=V('--border','#2a2e40'),bg2=V('--bg2','#141828');
 var cycle=[['--accent','#569cd6'],['--green','#56d364'],['--orange','#ce9178'],['--purple','#c586c0'],['--teal','#4ec9b0'],['--gold','#ffd700'],['--red','#e57575']].map(function(p){return V(p[0],p[1]);});
 var vir=['#440154','#472d7b','#3b528b','#2c728e','#21918c','#28ae80','#5ec962','#addc30','#fde725'];
 var ax={axisLine:{lineStyle:{color:border}},axisTick:{lineStyle:{color:border}},axisLabel:{color:dim,fontSize:14},nameTextStyle:{color:text,fontSize:15},splitLine:{lineStyle:{color:border,opacity:0.4}},splitArea:{areaStyle:{color:['transparent','transparent']}}};
-return {color:cycle,backgroundColor:'transparent',textStyle:{color:text,fontFamily:'inherit',fontSize:14},title:{left:'center',textStyle:{color:text,fontSize:19,fontWeight:'bold'},subtextStyle:{color:dim,fontSize:12}},legend:{textStyle:{color:dim,fontSize:14}},categoryAxis:ax,valueAxis:ax,logAxis:ax,timeAxis:ax,line:{symbolSize:5},graph:{color:cycle},tooltip:{backgroundColor:bg2,borderColor:border,textStyle:{color:text},valueFormatter:_slateValueFormatter},visualMap:{textStyle:{color:dim},inRange:{color:vir}},timeline:{lineStyle:{color:dim},label:{color:dim}},calendar:{splitLine:{lineStyle:{color:border}},itemStyle:{borderColor:border}}};}
+var dark=_slateIsDark(V('--bg',''));
+var t={color:cycle,backgroundColor:'transparent',textStyle:{color:text,fontFamily:'inherit',fontSize:14},title:{left:'center',textStyle:{color:text,fontSize:19,fontWeight:'bold'},subtextStyle:{color:dim,fontSize:12}},legend:{textStyle:{color:dim,fontSize:14}},categoryAxis:ax,valueAxis:ax,logAxis:ax,timeAxis:ax,line:{symbolSize:5},graph:{color:cycle},tooltip:{backgroundColor:bg2,borderColor:border,textStyle:{color:text},valueFormatter:_slateValueFormatter},visualMap:{textStyle:{color:dim},inRange:{color:vir}},timeline:{lineStyle:{color:dim},label:{color:dim}},calendar:{splitLine:{lineStyle:{color:border}},itemStyle:{borderColor:border}}};
+/* ECharts picks auto label contrast from `darkMode`, inferred from a 'transparent' background as light. */
+if(dark!==null)t.darkMode=dark;
+return t;}
 """
 
 # ── Page assets in a static export ────────────────────────────────────────────────────────────
