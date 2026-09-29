@@ -1569,17 +1569,35 @@ function _swapOutput(out, html, live, after) {
 //     the place of the new placeholder, and gets the new props once it is back in the document.
 //   • any element marked `data-slate-keep="key"`. The old element with the same key takes the place of
 //     the new one, with its children and its JS state. A script in the new output finds it in the DOM.
-// Both match by position among their peers, so two figures in one output stay apart. A component that
-// is not kept gets its `destroy`; a marked element that is not kept gets a `slate:discard` event.
+// Both match by position among their peers — a component among the mounts of its own KIND, a marked
+// element among those carrying its key — so two figures in one output stay apart. A component that is
+// not kept gets its `destroy`; a marked element that is not kept gets a `slate:discard` event. What a
+// kept element contains is kept with it, and is neither swapped again nor discarded.
 // Returns a function that applies the component updates; call it after the swap.
 function _carryMounted(out, stage) {
   const updates = [], kept = new Set();
-  const olds = out.querySelectorAll('.slatecomponent');
-  stage.querySelectorAll('.slatecomponent').forEach((nu, i) => {
-    const old = olds[i];
-    const reg = old && old._customWired && window.slateWidgets[old.dataset.component];
-    const desc = reg && reg.update && _componentDesc(nu);
-    if (!desc || desc.component !== old.dataset.component) return;
+  const olds = Array.from(out.querySelectorAll('.slatecomponent'));
+  // Pair a new component with a mounted one of the SAME KIND, by position among that kind's peers
+  // rather than among all components. An output that returns a different MIX of kinds than last time
+  // shifts every later position, so a global index offers a figure the props of an unrelated one and
+  // the kind check then keeps nothing at all. Two components of one kind still pair by position,
+  // which is as far as a descriptor carrying no identity of its own can go.
+  const oldByKind = new Map();
+  olds.forEach(el => {
+    const k = el.dataset.component || '';
+    if (!oldByKind.has(k)) oldByKind.set(k, []);
+    oldByKind.get(k).push(el);
+  });
+  const taken = new Map();                       // kind → how many of its mounts are already paired
+  stage.querySelectorAll('.slatecomponent').forEach(nu => {
+    const desc = _componentDesc(nu);
+    const kind = desc && desc.component;
+    if (!kind) return;
+    const n = taken.get(kind) || 0;
+    taken.set(kind, n + 1);                      // consume the slot even if this one cannot be kept
+    const old = (oldByKind.get(kind) || [])[n];
+    const reg = old && old._customWired && window.slateWidgets[kind];
+    if (!reg || !reg.update) return;
     nu.replaceWith(old);
     kept.add(old);
     updates.push(() => reg.update(old, desc.props || {}));
@@ -1599,8 +1617,16 @@ function _carryMounted(out, stage) {
   };
   const prev = byKey(out);
   byKey(stage).forEach((news, k) => news.forEach((nu, i) => {
+    // A key nested inside one that was already carried has left the stage with its ancestor. Swapping
+    // it now would move the old inner element out of the old outer one and into a detached tree,
+    // punching a hole in the element we just kept.
+    if (!stage.contains(nu)) return;
     const old = (prev.get(k) || [])[i];
-    if (old) { nu.replaceWith(old); kept.add(old); }
+    if (!old) return;
+    nu.replaceWith(old);
+    kept.add(old);
+    // What a carried element contains is carried with it, so it is still mounted and not discarded.
+    old.querySelectorAll('[data-slate-keep]').forEach(d => kept.add(d));
   }));
   prev.forEach(els => els.forEach(el => { if (!kept.has(el)) el.dispatchEvent(new Event('slate:discard')); }));
   return () => updates.forEach(f => { try { f(); } catch (e) { console.error(e); } });

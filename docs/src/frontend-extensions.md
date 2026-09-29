@@ -316,7 +316,9 @@ ask Slate to keep its element and update it in place instead. There are three wa
 ```
 
 Keys match by position when an output has more than one element with the same key, so two figures
-in one output stay apart. A script inside a kept element does not run again.
+in one output stay apart. A component matches by position among the mounts of its own kind, so
+returning a different mix of kinds than last time still keeps each one. What a kept element contains
+is kept with it, and gets no `slate:discard`. A script inside a kept element does not run again.
 
 ### Cell toolbar buttons — `slateRegisterCellAction`
 
