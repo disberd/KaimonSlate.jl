@@ -431,6 +431,9 @@ function Cell({ cell, selectedId, selSet, live, focusId, editingId, collapsed })
     if (el) el.querySelectorAll('.ichart').forEach(e => { if (e._inst) { try { e._inst.dispose(); } catch (_) {} } });
     // A player owns a WebGL texture array, so an undisposed one holds GPU memory for the page's life.
     window.disposeAnimations && window.disposeAnimations(c.id);
+    // Same for a PACKAGE output holding a resource. A deleted cell is the removal path no re-run swap
+    // ever sees, so without this a returned figure's `destroy` is never called at all.
+    if (el) window.slateTeardownOutput && window.slateTeardownOutput(el);
     // Cancel any pending debounced snapshot (core.js _snapCell) — its closure holds a reference
     // to the now-disposed chart instances and would otherwise fire against a removed cell.
     if (window._cancelSnap) window._cancelSnap(c.id);

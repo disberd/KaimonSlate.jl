@@ -63,14 +63,34 @@ window.slateRegisterWidget = function (kind, impl) {
 // rebuild). Mirrors the inline-echart dispose before an innerHTML swap — a plugin holding resources
 // (a math field, global listeners, observers) gets a `destroy(el)` call to clean up. No-op for a
 // widget with no destroy impl, or one that never wired.
-window.teardownCustomWidgets = function (root) {
+// Tear down everything under `root` that holds a browser resource, before the DOM carrying it goes.
+// Three owners: a `@bind` control widget, a `slate_render` component OUTPUT, and any element an
+// extension marked `data-slate-keep` (which hears `slate:discard`).
+//
+// The component output was the gap. The widget contract promises `destroy` "before a rebuild orphans
+// the element", but the only caller selected `.customwidget[data-bind]`, so a figure RETURNED from a
+// cell never got it. A figure that makes a WebGL context per run then exhausts the browser's limit —
+// Chrome keeps 16 per page — and the contexts it drops belong to UNRELATED figures, which go blank.
+// Slate has to be the one to say this: an extension watching the DOM cannot tell a move from a
+// removal, and garbage collection is far too late for a limit that low.
+//
+// `keep` is an optional Set of elements being carried into a new output rather than discarded.
+window.slateTeardownOutput = function (root, keep) {
   if (!root) return;
-  root.querySelectorAll('.customwidget[data-bind]').forEach(el => {
-    if (!el._customWired) return;
-    const impl = window.slateWidgets[el.dataset.widget];
+  const skip = el => !!(keep && keep.has(el));
+  root.querySelectorAll('.customwidget[data-bind], .slatecomponent').forEach(el => {
+    if (!el._customWired || skip(el)) return;
+    const kind = el.dataset.widget || el.dataset.component;
+    const impl = kind && window.slateWidgets[kind];
     if (impl && impl.destroy) { try { impl.destroy(el); } catch (e) { console.error(e); } }
   });
+  root.querySelectorAll('[data-slate-keep]').forEach(el => {
+    if (skip(el)) return;
+    try { el.dispatchEvent(new Event('slate:discard')); } catch (e) { console.error(e); }
+  });
 };
+// The control-strip rebuild keeps its own name: it tears down exactly the strip it is about to replace.
+window.teardownCustomWidgets = function (root) { window.slateTeardownOutput(root); };
 
 // Package-declared front-end scripts (`nbState.frontendScripts` = [{id, js, esm, kind}], from the worker's
 // SlateExtensionsBase manifest — `register_component!`/`register_widget!` in a module `__init__`). Inject each
