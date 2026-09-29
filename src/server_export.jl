@@ -3062,7 +3062,7 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
             print(io, "<div id=\"exp-run-bg\"><div class=\"exp-run-modal\">",
                   "<h2>Run this notebook live</h2>",
                   "<p>Get the full interactive notebook (with the AI agent) on your machine. Needs ",
-                  "<a href=\"https://julialang.org/downloads/\" target=\"_blank\" rel=\"noopener\">Julia 1.10+</a>. ",
+                  "<a href=\"https://julialang.org/downloads/\" target=\"_blank\" rel=\"noopener\">Julia $(_min_julia_str())+</a>. ",
                   "The launch script installs Kaimon + KaimonSlate and starts the notebook (its exact environment is reconstructed from the bundle).</p>")
             if embed_bundle
                 print(io, "<p><b>macOS / Linux</b> — download <b>run.jl</b> + the <b>bundle</b> into one folder, then <code>julia run.jl</code>:</p>",
@@ -3308,6 +3308,11 @@ function _dev_checkout_path(srcdir::AbstractString)
     return root
 end
 
+# The oldest Julia an exported notebook or app can run on: KaimonSlate's own `[compat] julia` floor,
+# which the launcher installs. Every launcher, guard and README states this one value.
+const _MIN_JULIA = v"1.12"
+_min_julia_str() = "$(_MIN_JULIA.major).$(_MIN_JULIA.minor)"
+
 # The `run.jl` bootstrap. Installs Kaimon + KaimonSlate into a DEDICATED environment (never the user's
 # default — avoids clobbering their setup), fetches the notebook's reproducible bundle, and serves it —
 # the notebook's exact env reconstructs in a gate worker on open. Kaimon is REQUIRED, not optional: it
@@ -3338,7 +3343,7 @@ function _run_script(bundle_url::AbstractString; agent::Bool = true, bundle_name
     # ── Run this Kaimon Slate notebook live on your machine ──────────────────────────────────────
     # Auto-generated. Installs Kaimon + KaimonSlate into a dedicated environment, gets this notebook's
     # reproducible bundle, and serves it — the notebook's exact environment reconstructs on open.
-    # Re-runnable (idempotent). Prerequisite: Julia 1.10+ (juliaup / https://julialang.org/downloads).
+    # Re-runnable (idempotent). Prerequisite: Julia $(_min_julia_str())+ (juliaup / https://julialang.org/downloads).
     #
     # Steps are separate functions so this is easy to extend or audit.
 
@@ -3367,7 +3372,7 @@ $(app ? _run_app_help(apptitle, port > 0 ? port : _APP_DEFAULT_PORT) : "")
         s = Sockets.listen(Sockets.localhost, 0); p = Int(Sockets.getsockname(s)[2]); close(s); return p
     end
     function ensure_julia()
-        VERSION >= v"1.10" || error("Julia 1.10+ required (found \$VERSION). See https://julialang.org/downloads")
+        VERSION >= v"$(_min_julia_str())" || error("Julia $(_min_julia_str())+ required (found \$VERSION). See https://julialang.org/downloads")
     end
 
     # LibGit2 (Pkg's git transport) warns about credential attributes newer git sends that its parser
@@ -3697,7 +3702,7 @@ function _run_ps1()
     # ── Run this Kaimon Slate notebook live (Windows / PowerShell) ───────────────────────────────
     # Auto-generated. Runs the sibling $(_SITE_RUNJL), which installs Kaimon + KaimonSlate into a
     # dedicated environment, fetches this notebook's reproducible bundle, and serves it — the
-    # notebook's exact environment reconstructs on open. Prerequisite: Julia 1.10+ (juliaup /
+    # notebook's exact environment reconstructs on open. Prerequisite: Julia $(_min_julia_str())+ (juliaup /
     # https://julialang.org/downloads). Double-click $(_SITE_BAT), or right-click this file →
     # "Run with PowerShell".
     \$ErrorActionPreference = "Stop"
@@ -3764,7 +3769,7 @@ function _run_sh(title::AbstractString = "")
     # ── Run this Kaimon Slate app ────────────────────────────────────────────────────────────────
     # Auto-generated. Runs the sibling $(_SITE_RUNJL), which installs Kaimon + KaimonSlate into a
     # dedicated environment, reconstructs this notebook's exact packages, and serves it.
-    # Prerequisite: Julia 1.10+ (https://julialang.org/downloads or juliaup).
+    # Prerequisite: Julia $(_min_julia_str())+ (https://julialang.org/downloads or juliaup).
     #
     #   ./$(_SITE_SH)                              # run it (binds 0.0.0.0 — the whole network)
     #   ./$(_SITE_SH) --port 9000                  # a specific port
@@ -3938,7 +3943,7 @@ end
 Write a self-contained **application** for `nb` into `dir` (created if absent), and return `dir`.
 
 The folder holds the notebook's reproducible bundle plus launchers. Running `julia run.jl` inside
-it — here, or on any machine you copy it to, needing only Julia 1.10+ — installs the environment,
+it — here, or on any machine you copy it to, needing only Julia 1.12+ — installs the environment,
 reconstructs the notebook's exact packages, and serves it as an app: prose, results, figures and
 live controls, with the authoring API refused server-side. Windows users double-click `run.bat`.
 
@@ -4111,7 +4116,7 @@ function _app_readme(nb::LiveNotebook, bundle_name::AbstractString, port::Int)
 
     ## Running it
 
-    Install Julia 1.10 or newer (<https://julialang.org/downloads>), then from this folder:
+    Install Julia $(_min_julia_str()) or newer (<https://julialang.org/downloads>), then from this folder:
 
     | | |
     |---|---|
