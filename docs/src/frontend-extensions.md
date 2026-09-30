@@ -284,6 +284,27 @@ Register the widget at notebook load (in a `WebPage` or an `@asset`ed script). A
 whose `kind` matches picks it up, and reading `answer` in another cell recomputes it when the widget
 pushes a new value.
 
+### When Slate tears an output down
+
+Define `destroy(el)` for anything holding a resource the page does not reclaim on its own: a WebGL
+context, a `requestAnimationFrame` loop, a Web Worker, a global listener, a media element. Slate
+calls it before the element is discarded: when a control strip is rebuilt, and when a cell is deleted
+or the notebook replaced.
+
+This matters most for WebGL. A browser keeps only a small number of live contexts per page (around
+sixteen in Chrome), and when it runs out it drops the **oldest** ones — so a figure that leaks a
+context on every re-run eventually blanks unrelated figures elsewhere in the notebook. Releasing in
+`destroy` is what keeps the live count proportional to what is on screen rather than to how many
+times a slider moved.
+
+The same applies to a **returned** output, not just a `@bind` control: a value whose `slate_render`
+mounts a component gets `destroy` when its cell is deleted or the notebook is replaced.
+
+For an HTML fragment with no widget kind to hang a hook on, `slateOnFragmentDispose(node, fn)` calls
+`fn` once after `node` has been attached and then removed, and returns a cancel function. It polls on
+a timer (1 s by default, rather than `requestAnimationFrame`, which a hidden tab suspends), so it
+fires up to a period late — prefer `destroy` wherever you have a registered kind.
+
 ### Cell toolbar buttons — `slateRegisterCellAction`
 
 ```js
