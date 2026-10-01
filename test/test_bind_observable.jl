@@ -154,6 +154,32 @@ end
     end
 end
 
+@testset "a live re-render carries the assets it saved" begin
+    # A re-render is a real eval, so a live cell calling `save_asset` registers bytes into that run's
+    # sink and the markup it returns references them by path. Returning the rendered chunks without the
+    # assets published markup whose paths nothing had registered — every `Slate.asset` in a reconnected
+    # live output then resolved to a 404, which reads as a broken figure rather than a missing asset.
+    rep = RE.Report("rerender_assets", "")
+    mod = RE.report_module(rep)
+    src = "ref = save_asset(\"blob\", UInt8[1, 2, 3]); HTML(string(\"<div data-a='\", ref, \"'></div>\"))"
+    lock(RE._LIVE_OUTPUTS_LOCK) do
+        RE._LIVE_OUTPUTS["assetcell"] = (source = src, filename = "cell:assetcell")
+    end
+    try
+        out = RE.rerender_live(RE.InProcessKernel(), rep)
+        @test length(out) == 1 && out[1][1] == "assetcell"
+        assets = out[1][2].assets
+        @test length(assets) == 1
+        a = only(assets)
+        @test a.bytes == UInt8[1, 2, 3]
+        # The path in the record is the one the markup points at, or the page asks for an asset that
+        # was registered under a different name.
+        @test occursin(String(a.path), String(out[1][2].mime[end][2]))
+    finally
+        lock(RE._LIVE_OUTPUTS_LOCK) do; delete!(RE._LIVE_OUTPUTS, "assetcell"); end
+    end
+end
+
 @testset "extension-served assets on the in-process kernel" begin
     # The hub answers `/n/<id>/served/<hash>` by asking the kernel. Only GateKernel implemented it,
     # so standalone returned `nothing` and the URL 404'd — and an extension that serves its

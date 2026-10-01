@@ -1039,7 +1039,12 @@ end
 # the way a Bonito server serves a fresh session per page load. First run the extensions' page-reset hooks
 # (SEB `on_live_reset` — e.g. BonitoSlate drops its Bonito page-root so figures re-render as a fresh session
 # tree), then RE-RUN each retained cell's source in `mod` (a clean fresh figure, no accumulated screens) and
-# collect its wire. Returns `[(cid, wire), …]` (empty if nothing is live). Best-effort per cell.
+# collect its wire. Returns `[(cid, chunks, assets), …]` (empty if nothing is live). Best-effort per cell.
+#
+# `assets` rides along because a re-render is a real eval: a cell that calls `save_asset` registers its
+# bytes into this run's sink, and the markup it produces references them by path. Returning the chunks
+# alone published markup whose asset paths nothing had registered, so every `Slate.asset` in a live
+# output resolved to a 404 after a page reconnect.
 function rerender_live_outputs(mod::Module)
     try; Base.invokelatest(SlateExtensionsBase.run_live_resets); catch; end
     # A re-render must carry the SAME Slate execution context a normal cell eval gets. `run_capture` FIRES the
@@ -1052,7 +1057,7 @@ function rerender_live_outputs(mod::Module)
     # `emit`/`on`/`off`/`cleanup` from the namespace, and `__slate_call` passes empty strings for the same
     # reason.
     ctx = _build_slate_ctx(mod, "", "", String[])
-    outs = Tuple{String,Vector{Tuple{String,Vector{UInt8}}}}[]
+    outs = Tuple{String,Vector{Tuple{String,Vector{UInt8}}},Vector{Any}}[]
     for (cid, spec) in lock(() -> collect(_LIVE_OUTPUTS), _LIVE_OUTPUTS_LOCK)
         w = try
             run_capture(mod, spec.source, spec.filename; capture = DemuxCapture(), slate_ctx = ctx)
@@ -1060,7 +1065,7 @@ function rerender_live_outputs(mod::Module)
             nothing
         end
         (w !== nothing && !isempty(w.mime)) || continue
-        push!(outs, (String(cid), collect(Tuple{String,Vector{UInt8}}, w.mime)))
+        push!(outs, (String(cid), collect(Tuple{String,Vector{UInt8}}, w.mime), collect(Any, w.assets)))
     end
     return outs
 end

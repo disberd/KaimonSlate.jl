@@ -1318,6 +1318,8 @@ function rerender_live(k::GateKernel, report::Report)
     for i in eachindex(cids)
         bytes = try; Vector{UInt8}(Base64.base64decode(String(b64s[i]))); catch; continue; end
         # Rebuild the minimal cell wire `_wire_to_output` expects (the fresh live figure's one rich chunk).
+        # `assets` is empty because the flat arrays above carry none — see `__slate_rerender_live`, which
+        # warns when a re-render actually saved one. The in-process branch below does carry them.
         wire = (stdout = "", mime = [(String(mts[i]), bytes)], echarts = Any[], tables = Any[],
                 binds = NamedTuple[], value_repr = "", exception = nothing, backtrace = nothing,
                 duration_ms = 0.0, trace = Any[], stderr = "", overflow = NamedTuple[],
@@ -1340,11 +1342,11 @@ rerender_live(::Kernel, ::Report) = Tuple{String,Any}[]
 function rerender_live(::InProcessKernel, report::Report)
     report.mod === nothing && return Tuple{String,Any}[]
     out = Tuple{String,Any}[]
-    for (cid, chunks) in rerender_live_outputs(report_module(report))
+    for (cid, chunks, assets) in rerender_live_outputs(report_module(report))
         wire = (stdout = "", mime = chunks, echarts = Any[], tables = Any[],
                 binds = NamedTuple[], value_repr = "", exception = nothing, backtrace = nothing,
                 duration_ms = 0.0, trace = Any[], stderr = "", overflow = NamedTuple[],
-                animations = Any[], effects = Any[], assets = Any[], live = true)
+                animations = Any[], effects = Any[], assets = assets, live = true)
         push!(out, (String(cid), wire))
     end
     return out
