@@ -316,6 +316,57 @@ end
 # Interim-render preview travelling with an EXPORT: externalized blob URLs must re-inline to
 # self-contained data URIs (the blob-serving server isn't there when the .jl is reopened elsewhere),
 # subject to the size caps; heavy animation manifests are dropped.
+@testset "the durable blob tier stays inside its disk budget" begin
+    # The tier is content-addressed and write-once, so it only ever grows. `_prune_preview_blobs!`
+    # bounds a notebook that is open and snapshotting; nothing bounded the blobs of every notebook
+    # closed weeks ago, which is the set that actually fills a disk.
+    saved = NS._DBLOB_DIR[]
+    dir = mktempdir()
+    NS._DBLOB_DIR[] = dir
+    try
+        withenv("KAIMONSLATE_BLOB_CACHE_MB" => "0.01") do        # 10,485-byte budget, 8,388 target
+            NS._DBLOB_SWEEP_AT[] = time()                        # no incidental sweep while writing
+            blob = i -> (string("nb/", i), fill(UInt8(i), 4000))
+            for i in 1:3
+                k, b = blob(i)
+                NS._blob_put_durable!(k, "application/octet-stream", b)
+            end
+            total = d -> sum(filesize(joinpath(d, f)) for f in readdir(d) if !endswith(f, ".meta"); init = 0)
+            @test total(dir) == 12_000                            # over budget, nothing swept yet
+            NS._sweep_dblob_dir!(force = true)
+            @test total(dir) <= (10_485 * 8) ÷ 10                 # evicted down to the 80% target
+            @test NS.blob_lookup("nb/1") === nothing              # the least recently used one went
+            @test NS.blob_lookup("nb/3") !== nothing              # the newest stayed
+        end
+    finally
+        NS._DBLOB_DIR[] = saved
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+@testset "a blob that is read survives eviction ahead of an unread newer one" begin
+    # Eviction is oldest-FIRST, which would evict a blob a long-open notebook is still serving purely
+    # for having been written early. `blob_lookup` touches what it reads so "oldest" means least
+    # recently USED; without that, reopening an old notebook would blank its figures.
+    saved = NS._DBLOB_DIR[]
+    dir = mktempdir()
+    NS._DBLOB_DIR[] = dir
+    try
+        withenv("KAIMONSLATE_BLOB_CACHE_MB" => "0.01") do         # 10,485-byte budget, 8,388 target
+            NS._DBLOB_SWEEP_AT[] = time()                         # no incidental sweep while writing
+            NS._blob_put_durable!("nb/old", "application/octet-stream", fill(0x01, 6000))
+            NS._blob_put_durable!("nb/new", "application/octet-stream", fill(0x02, 6000))
+            @test NS.blob_lookup("nb/old") !== nothing            # reading it marks it used
+            NS._sweep_dblob_dir!(force = true)                    # 12,000 > budget → one must go
+            @test NS.blob_lookup("nb/old") !== nothing            # kept: most recently used
+            @test NS.blob_lookup("nb/new") === nothing            # evicted despite being newer
+        end
+    finally
+        NS._DBLOB_DIR[] = saved
+        rm(dir; recursive = true, force = true)
+    end
+end
+
 @testset "preview blob re-inline (export travel)" begin
     nbid = "previewtest_ci"
     png = vcat(UInt8[0x89, 0x50, 0x4e, 0x47], rand(UInt8, 96))     # a small figure blob in the durable store
