@@ -1314,21 +1314,38 @@ function rerender_live(k::GateKernel, report::Report)
     end
     (res !== nothing && hasproperty(res, :cids)) || return Tuple{String,Any}[]
     cids, mts, b64s = res.cids, res.mimetypes, res.b64s
+    by_cell = _regroup_rerender_assets(res)
     out = Tuple{String,Any}[]
     for i in eachindex(cids)
         bytes = try; Vector{UInt8}(Base64.base64decode(String(b64s[i]))); catch; continue; end
         # Rebuild the minimal cell wire `_wire_to_output` expects (the fresh live figure's one rich chunk).
-        # `assets` is empty because the flat arrays above carry none — see `__slate_rerender_live`, which
-        # warns when a re-render actually saved one. The in-process branch below does carry them.
         wire = (stdout = "", mime = [(String(mts[i]), bytes)], echarts = Any[], tables = Any[],
                 binds = NamedTuple[], value_repr = "", exception = nothing, backtrace = nothing,
                 duration_ms = 0.0, trace = Any[], stderr = "", overflow = NamedTuple[],
-                animations = Any[], effects = Any[], assets = Any[], live = true)
+                animations = Any[], effects = Any[],
+                assets = get(by_cell, String(cids[i]), Any[]), live = true)
         push!(out, (String(cids[i]), wire))
     end
     return out
 end
 rerender_live(::Kernel, ::Report) = Tuple{String,Any}[]
+
+# `__slate_rerender_live` sends the re-render's assets as ONE flat vector, each record tagged with the
+# cell it belongs to — a vector of them PER CELL is the nesting the gate's structured return does not
+# survive, which is why the chunks ride as parallel arrays. Regroup by that tag.
+#
+# A worker on older code sends no `assets` field at all, so a hub/worker pair that straddles this change
+# degrades to what it did before rather than erroring on a missing property.
+function _regroup_rerender_assets(res)
+    by_cell = Dict{String,Vector{Any}}()
+    hasproperty(res, :assets) || return by_cell
+    for a in res.assets
+        cid = hasproperty(a, :cell) ? String(getproperty(a, :cell)) : ""
+        isempty(cid) && continue
+        push!(get!(by_cell, cid, Any[]), a)
+    end
+    return by_cell
+end
 
 # The in-process peer of the above. Without it, standalone Slate (`dev/hub.jl`, `run.jl` — anything
 # with no gate) fell through to the generic no-op, so a SESSION-BOUND output was stored as its

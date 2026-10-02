@@ -1702,21 +1702,20 @@ structured-return serialization. The hub rebuilds each cell's wire (see `rerende
 has ONE rich chunk (its `html+html` card), so we take the first chunk per cell."
 function __slate_rerender_live()
     cids = String[]; mimetypes = String[]; b64s = String[]
-    dropped = String[]
-    for (cid, chunks, assets) in rerender_live_outputs(_NS[])
+    # Assets ride as ONE flat vector rather than one per cell: an asset record is already a
+    # NamedTuple with payload-dependent fields, and that exact shape crosses the gate today as
+    # `__slate_eval`'s `wire.assets`. Nesting a vector of them PER CELL is the shape that does not
+    # survive (hence the flat arrays above), so each record carries the cell it belongs to instead and
+    # the hub regroups. Without this a reconnected live output published markup pointing at asset paths
+    # nothing had registered.
+    assets = Any[]
+    for (cid, chunks, cas) in rerender_live_outputs(_NS[])
         isempty(chunks) && continue
         m, b = chunks[1]
         push!(cids, cid); push!(mimetypes, String(m)); push!(b64s, Base64.base64encode(b))
-        # An asset a live cell saved during the re-render has nowhere to ride on these flat arrays, and
-        # an asset record is a NamedTuple whose fields vary by payload (bytes, or a `value` the hub
-        # encodes). Carrying them needs a channel of its own; until then say so, because the symptom
-        # otherwise is a figure that draws empty with a 404 in the console and no hint of the cause.
-        # The in-process kernel has no gate hop and already carries them (`rerender_live`).
-        isempty(assets) || push!(dropped, String(cid))
+        for a in cas; push!(assets, merge((; cell = String(cid)), a)); end
     end
-    isempty(dropped) || @warn "Assets saved while re-rendering a live output cannot cross the gate yet; \
-                               `Slate.asset` will 404 for these cells until they run again" cells = dropped
-    return (; cids = cids, mimetypes = mimetypes, b64s = b64s)
+    return (; cids = cids, mimetypes = mimetypes, b64s = b64s, assets = assets)
 end
 
 "Run extensions' `on_worker_reset` hooks — this worker replaced the one an extension was set up in."

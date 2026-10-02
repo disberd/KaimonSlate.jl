@@ -154,6 +154,25 @@ end
     end
 end
 
+@testset "the gate's flat asset channel regroups by cell" begin
+    # Across the gate the re-render's assets ride as one flat vector tagged with the owning cell, because
+    # a vector-per-cell is the nesting the structured return does not survive (which is why the rendered
+    # chunks go as parallel arrays). The hub has to put them back.
+    res = (; cids = ["a", "b"], mimetypes = ["text/html", "text/html"], b64s = ["", ""],
+           assets = Any[(; cell = "a", name = "x", path = "data/x.bin", mime = "m", bytes = UInt8[1]),
+                        (; cell = "b", name = "y", path = "data/y.bin", mime = "m", bytes = UInt8[2]),
+                        (; cell = "a", name = "z", path = "data/z.bin", mime = "m", bytes = UInt8[3])])
+    g = RE._regroup_rerender_assets(res)
+    @test sort(collect(keys(g))) == ["a", "b"]
+    @test [a.name for a in g["a"]] == ["x", "z"]          # both of a's, in the order sent
+    @test [a.name for a in g["b"]] == ["y"]
+
+    # An untagged record is dropped rather than landing on an arbitrary cell.
+    @test isempty(RE._regroup_rerender_assets((; assets = Any[(; name = "orphan")])))
+    # A worker on older code sends no `assets` at all — that pair must still work, not error.
+    @test isempty(RE._regroup_rerender_assets((; cids = String[], mimetypes = String[], b64s = String[])))
+end
+
 @testset "a live re-render carries the assets it saved" begin
     # A re-render is a real eval, so a live cell calling `save_asset` registers bytes into that run's
     # sink and the markup it returns references them by path. Returning the rendered chunks without the
