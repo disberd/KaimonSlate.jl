@@ -271,6 +271,9 @@ SlateExtensionsBase.to_palette_command(c::TaggedCmd) = auto_palette_command(c)
         @test slate_side() == "" && slate_notebook() == ""
         @test slate_emit("ch", (a = 1,)) === nothing        # no-op, no throw
         @test slate_everywhere(:op) === nothing
+        # `nothing` rather than a path, so a render falls back to inlining instead of emitting markup
+        # that points at an asset the page will never resolve.
+        @test slate_save_asset("blob", UInt8[1, 2]) === nothing
 
         # Seed a fake context (a NamedTuple, exactly as the engine builds it) and read it back.
         emitted = Tuple{Any,Any}[]
@@ -288,6 +291,9 @@ SlateExtensionsBase.to_palette_command(c::TaggedCmd) = auto_palette_command(c)
             @test emitted == [("net", (loss = 0.5,))]
             slate_everywhere(:my_op, :my_rule)
             @test effects == [(:everywhere, [:my_op, :my_rule])]
+            # A context with no `save_asset` field at all — an older Slate — still answers `nothing`
+            # rather than throwing, so an extension can call the accessor unconditionally.
+            @test slate_save_asset("blob", UInt8[1]) === nothing
         finally
             delete!(task_local_storage(), :slate_ctx)
         end

@@ -240,6 +240,32 @@ numeric array comes back as a decoded typed array with its shape, or resolves a 
 `Slate.assetUrl("webassets/foo.js")`. Both work live and in a static export, where the bytes ride
 along inside the page. See [Live Updates](live-updates.md#Writing-files-out).
 
+#### From a package's own render — `slate_save_asset`
+
+`save_asset` is a notebook-namespace helper, so a **package** reaches the same store through
+SlateExtensionsBase:
+
+```julia
+function SlateExtensionsBase.slate_render(p::MyPlot)
+    path = SlateExtensionsBase.slate_save_asset("xy", Float32.(vcat(p.x, p.y)))
+    path === nothing && return my_inline_fallback(p)       # no asset store here — inline instead
+    html_fragment("""
+      <div id="plot"></div>
+      <script type="module">
+        const a = await Slate.asset("$(path)");            // one cached fetch, not JSON in /state
+        drawInto(document.getElementById("plot"), a.data);
+      </script>""")
+end
+```
+
+This is the difference between a figure's coordinates travelling as bytes beside the markup and as a
+literal inside it. The bytes are content-addressed, so re-running with unchanged data refetches
+nothing; they ride the cell's memo, survive a reload, and are inlined into a static export.
+
+It returns `nothing` where Slate keeps no assets for the caller — outside a cell eval, in a
+`slate_on` handler, or in a task your render spawned. Branch on that and inline instead: a path is
+never returned unless it will resolve. Requires SlateExtensionsBase 0.11.1.
+
 ## Extending the UI
 
 ### Custom `@bind` widgets — `slateRegisterWidget`

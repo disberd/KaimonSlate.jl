@@ -808,8 +808,20 @@ function _build_slate_ctx(mod::Module, notebook::AbstractString, region::Abstrac
                         _ns_read(mod, :__slate_on_bind) : (name, f) -> (() -> nothing),
               bind_observable = _ns_defined(mod, :bind_observable) ?
                                 _ns_read(mod, :bind_observable) : (name) -> nothing,
-              bind_names = () -> (reg === nothing ? Symbol[] : sort!(collect(keys(reg)))))
+              bind_names = () -> (reg === nothing ? Symbol[] : sort!(collect(keys(reg)))),
+              # Save bytes as an asset of the cell running now, for a package render that needs to put
+              # bulk data beside its markup. See `_ctx_save_asset` for why it can answer `nothing`.
+              save_asset = _ctx_save_asset)
 end
+
+# The ctx `save_asset` capability: the saved asset's page path, or `nothing` where no asset sink is
+# open. Slate also installs the context on paths that harvest nothing — a `__slate_call` handler, the
+# reactive handler task, the in-process call path — and there `_save_asset` would take the bytes and
+# hand back a path that 404s. Answering `nothing` instead lets a package fall back to inlining, which
+# is the difference between a degraded render and a broken one.
+_ctx_save_asset(name, data; mime = "", dtype = nothing) =
+    haskey(task_local_storage(), :slate_assets) ?
+        string(_save_asset(name, data; mime = mime, dtype = dtype)) : nothing
 
 function run_capture(mod::Module, source::AbstractString, filename::AbstractString = "string";
                      capture::OutputCapture = RedirectCapture(), slate_ctx = nothing)
@@ -892,9 +904,6 @@ function run_capture(mod::Module, source::AbstractString, filename::AbstractStri
     for k in (:slate_effects, :slate_stmt, :slate_stmt_srcs)
         haskey(task_local_storage(), k) && delete!(task_local_storage(), k)
     end
-    # Generated assets the cell registered (empty unless it called `save_asset`). Deduped by content path.
-    assets = _harvest_assets(get(task_local_storage(), :slate_assets, nothing))
-    delete!(task_local_storage(), :slate_assets)
     # Trace rows the cell recorded (empty unless it was `@trace`-wrapped). JSON-safe Dicts, like `tables`.
     trace = (tracesink === nothing || tracesink[] === nothing) ? Any[] : _trace_wire(tracesink[])
     tracesink === nothing || (tracesink[] = nothing)
@@ -920,6 +929,14 @@ function run_capture(mod::Module, source::AbstractString, filename::AbstractStri
     echarts = Any[]
     tables = Any[]
     animations = Any[]
+    # Generated assets the cell registered (empty unless it called `save_asset`), deduped by content
+    # path. Taken AFTER the return-value render rather than before it: a package's `show` /
+    # `slate_render` method runs inside that block, so a render saving an asset used to find the sink
+    # already gone and got back a path the page could not resolve. Both branches below take it, and the
+    # render's own `finally` is what guarantees the take even when the render throws — the sink must not
+    # outlive this eval, because the task is reused and a later handler would harvest into a cell that
+    # has already finished.
+    assets = Any[]
     if err === nothing && value !== nothing && !quiet
         # Re-establish this eval's execution context around the RETURN VALUE's rich render. The value's
         # `show` runs HERE — AFTER the eval's `finally` already cleared `:slate_ctx`/`:slate_cell` — but a
@@ -966,7 +983,12 @@ function run_capture(mod::Module, source::AbstractString, filename::AbstractStri
             end
         finally
             slate_ctx === nothing || (delete!(task_local_storage(), :slate_ctx); delete!(task_local_storage(), :slate_cell))
+            assets = _harvest_assets(get(task_local_storage(), :slate_assets, nothing))
+            delete!(task_local_storage(), :slate_assets)
         end
+    else
+        assets = _harvest_assets(get(task_local_storage(), :slate_assets, nothing))
+        delete!(task_local_storage(), :slate_assets)
     end
 
     # text/plain repr — skipped when richer output exists (the renderer suppresses

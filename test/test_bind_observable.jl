@@ -154,6 +154,53 @@ end
     end
 end
 
+@testset "a render can save an asset" begin
+    # The sink used to be harvested before the RETURN VALUE was rendered, and a package puts its render
+    # in a `show`/`slate_render` method — which runs in that later block. So the one call site that most
+    # wants `save_asset` was the one where it silently did nothing: the bytes were dropped and the path
+    # handed back resolved to a 404.
+    rep = RE.Report("render_asset", "")
+    mod = RE.report_module(rep)
+    src = """
+    struct RenderSaver end
+    function Base.show(io::IO, ::MIME"text/html", ::RenderSaver)
+        p = SlateExtensionsBase.slate_save_asset("fromshow", UInt8[9, 9, 9])
+        print(io, "<div data-a='", p, "'>x</div>")
+    end
+    RenderSaver()
+    """
+    ctx = RE._build_slate_ctx(mod, "nb", "", String[])
+    Core.eval(mod, :(import SlateExtensionsBase))
+    w = RE.run_capture(mod, src, "cell:rs"; capture = RE.DemuxCapture(), slate_ctx = ctx)
+
+    @test length(w.assets) == 1                        # harvested from inside `show`
+    a = only(w.assets)
+    @test a.bytes == UInt8[9, 9, 9]
+    html = String(w.mime[end][2])
+    @test occursin(String(a.path), html)               # the markup names the path that was registered
+    @test !occursin("nothing", html)                   # the accessor answered a path, not its fallback
+
+    # The sink must not outlive the eval — the task is reused, and a later handler would otherwise
+    # harvest into a cell that has finished.
+    @test !haskey(task_local_storage(), :slate_assets)
+end
+
+@testset "the save_asset capability answers nothing where nothing would be harvested" begin
+    # Slate installs the context on paths that harvest no assets (a `slate_on` handler, the reactive
+    # handler task, the in-process call path). Storing bytes there would hand back a path that 404s, so
+    # the capability reports no and the caller falls back to inlining.
+    @test !haskey(task_local_storage(), :slate_assets)       # no sink on this task
+    @test RE._ctx_save_asset("x", UInt8[1]) === nothing
+    # A child task never inherits task-local storage, so a render that spawns one gets the same answer.
+    task_local_storage(:slate_assets, Any[])
+    try
+        @test RE._ctx_save_asset("x", UInt8[1]) isa String   # with a sink, a real path
+        @test fetch(@async RE._ctx_save_asset("y", UInt8[2])) === nothing
+    finally
+        delete!(task_local_storage(), :slate_assets)
+    end
+end
+
 @testset "the gate's flat asset channel regroups by cell" begin
     # Across the gate the re-render's assets ride as one flat vector tagged with the owning cell, because
     # a vector-per-cell is the nesting the structured return does not survive (which is why the rendered
