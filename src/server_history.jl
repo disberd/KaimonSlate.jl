@@ -434,12 +434,27 @@ end
 # builds a `path → asset` registry from these so `Slate.asset(path)` resolves live. Mirrors `_animation_specs`.
 function _asset_specs(c::Cell, nbid::AbstractString = "")
     (c.output === nothing || isempty(c.output.assets) || isempty(nbid)) && return Any[]
+    return Any[_asset_spec!(a, c.id, nbid) for a in c.output.assets]
+end
+
+# One asset record → its wire spec, bytes parked in the content-addressed store. Shared so the cell
+# and interpolation paths below cannot register an asset two different ways.
+function _asset_spec!(a, cellid::AbstractString, nbid::AbstractString)
+    bytes = _asset_bytes(a); d = _asset_common(a, bytes, cellid)
+    _blob_put_durable!(string(nbid, "/", d["sha"]), d["mime"], bytes)
+    d["url"] = string("/api/", nbid, "/blob/", d["sha"])
+    return d
+end
+
+# Assets a markdown cell's `{{ }}` interpolations generated — symmetric with the echarts and tables
+# below. The interpolation wire already carries them (`_wire_to_output`), so without this an asset a
+# `show` method saves while interpolating is harvested and then dropped here, leaving markup that
+# points at a path nothing ever registered.
+function _md_interp_assets(c::Cell, nbid::AbstractString)
+    isempty(nbid) && return Any[]
     specs = Any[]
-    for a in c.output.assets
-        bytes = _asset_bytes(a); d = _asset_common(a, bytes, c.id)
-        _blob_put_durable!(string(nbid, "/", d["sha"]), d["mime"], bytes)
-        d["url"] = string("/api/", nbid, "/blob/", d["sha"])
-        push!(specs, d)
+    for o in c.interp, a in o.assets
+        push!(specs, _asset_spec!(a, c.id, nbid))
     end
     return specs
 end
@@ -974,7 +989,7 @@ function cell_json(c::Cell, bindref::Dict{String,Tuple{Cell,BindSpec}} = Dict{St
         "echarts" => c.kind == MARKDOWN ? _md_interp_echarts(c) : _echarts_specs(c),
         "tables" => c.kind == MARKDOWN ? _md_interp_tables(c) : _table_specs(c),
         "animations" => c.kind == MARKDOWN ? Any[] : _animation_specs(c, nbid),
-        "assets" => c.kind == MARKDOWN ? Any[] : _asset_specs(c, nbid),
+        "assets" => c.kind == MARKDOWN ? _md_interp_assets(c, nbid) : _asset_specs(c, nbid),
         "duration" => c.output === nothing ? nothing : round(c.output.duration_ms; digits = 1),
         "deps"    => collect(c.deps),
         # Top-level names this cell defines — drives ⌘-click go-to-definition in the editor. A name the

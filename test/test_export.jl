@@ -316,6 +316,29 @@ end
 # Interim-render preview travelling with an EXPORT: externalized blob URLs must re-inline to
 # self-contained data URIs (the blob-serving server isn't there when the .jl is reopened elsewhere),
 # subject to the size caps; heavy animation manifests are dropped.
+@testset "an asset saved while interpolating markdown reaches the page" begin
+    # A markdown cell's `{{ }}` interpolations run as real captures, so a `show` method can call
+    # `save_asset` — and the interpolation wire carries the record through `_wire_to_output`. The cell
+    # JSON then hardcoded `Any[]` for a markdown cell, which dropped it at the last step: the rendered
+    # markup referenced an asset path that nothing had registered or stored. Echarts and tables from
+    # interpolations were already surfaced, so this was the one of the three that went missing.
+    RE = ReportEngine
+    rec = (; name = "probe", path = "data/probe-abc.bin",
+           mime = "application/octet-stream", bytes = UInt8[7, 8, 9])
+    io = RE.CellOutput("", RE.MimeChunk[], Any[], Any[], RE.BindSpec[], "", nothing, nothing, 0.0,
+                       Any[], "", Any[], Any[], "", "", Any[], Any[rec])
+    c = RE.parse_report("#%% md id=m\ntext {{ p }}\n").cells[1]
+    c.interp = [io]
+    @test c.kind == RE.MARKDOWN
+
+    spec = only(NS.cell_json(c; nbid = "interpnb")["assets"])
+    @test spec["path"] == "data/probe-abc.bin"
+    @test spec["name"] == "probe"
+    @test startswith(spec["url"], "/api/interpnb/blob/")
+    # Registered AND stored — a spec whose blob was never written would 404 just the same.
+    @test NS.blob_lookup(string("interpnb/", spec["sha"]))[2] == UInt8[7, 8, 9]
+end
+
 @testset "the durable blob tier stays inside its disk budget" begin
     # The tier is content-addressed and write-once, so it only ever grows. `_prune_preview_blobs!`
     # bounds a notebook that is open and snapshotting; nothing bounded the blobs of every notebook
@@ -380,6 +403,28 @@ end
     @test occursin("data:image/png;base64,", cells[1]["output"])  # URL → self-contained data URI
     @test !occursin("/blob/", cells[1]["output"])                 # no server-dependent URL left
     @test cells[1]["animations"] == Any[]                         # heavy frame stacks dropped from the preview
+
+    # A `save_asset` spec carries its own blob URL, which is just as absent on another machine. The
+    # preview used to inline only the output HTML, so a travelling bundle drew its figures and then
+    # resolved nothing for any widget reading `Slate.asset` — which prefers an inline `data` field.
+    blob = rand(UInt8, 64); bh = string(hash(blob); base = 16)
+    NS._blob_put_durable!(string(nbid, "/", bh), "application/octet-stream", blob)
+    acells = [Dict{String,Any}("id" => "w", "output" => "<div></div>",
+                               "assets" => Any[Dict{String,Any}(
+                                   "path" => "data/x-$bh.bin", "sha" => bh, "name" => "x",
+                                   "mime" => "application/octet-stream", "bytes" => length(blob),
+                                   "url" => "/api/$nbid/blob/$bh")])]
+    NS._inline_preview_blobs!(nbid, acells)
+    a = only(acells[1]["assets"])
+    @test Base64.base64decode(a["data"]) == blob                  # the bytes travel with the preview
+    @test !haskey(a, "url")                                       # the URL could not have resolved
+
+    # The cap applies to assets too: with no budget the spec keeps its URL rather than bloating the file.
+    acells0 = [Dict{String,Any}("id" => "w", "assets" => Any[Dict{String,Any}(
+                   "sha" => bh, "path" => "data/x-$bh.bin", "url" => "/api/$nbid/blob/$bh")])]
+    NS._inline_preview_blobs!(nbid, acells0; budget = 0)
+    @test !haskey(only(acells0[1]["assets"]), "data")
+    @test only(acells0[1]["assets"])["url"] == "/api/$nbid/blob/$bh"
 
     # A total budget of 0 embeds nothing — every asset is left as a URL (recomputes on hydrate).
     cells0 = [Dict{String,Any}("id" => "z", "output" => "<img src=\"/api/$nbid/blob/$h\">")]
