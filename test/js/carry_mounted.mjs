@@ -26,11 +26,17 @@ const ok = (cond, m) => { if (!cond) fail(m); };
 const src = readFileSync(VIEW, 'utf8');
 const m = src.match(/\nfunction _carryMounted\(out, stage\) \{[\s\S]*?\n\}/);
 if (!m) { console.error('carry_mounted: _carryMounted is gone from view.js'); process.exit(2); }
-let carry;
+// `_carryMounted` hands everything it did NOT carry to `slateTeardownOutput`, so the real one is
+// extracted too rather than stubbed: the delegation is the part most likely to rot, and a stub would
+// let the two drift apart while this kept passing.
+const td = src.match(/\nwindow\.slateTeardownOutput = function \(root, keep\) \{[\s\S]*?\n\};/);
+if (!td) { console.error('carry_mounted: slateTeardownOutput is gone from view.js'); process.exit(2); }
+let carry, installTeardown;
 try {
   carry = (0, eval)('(function (window, _componentDesc) {' + m[0] + '\nreturn _carryMounted; })');
+  installTeardown = (0, eval)('(function (window) {' + td[0] + ' })');
 } catch (e) {
-  console.error('carry_mounted: could not evaluate _carryMounted — ' + e.message);
+  console.error('carry_mounted: could not evaluate view.js sources — ' + e.message);
   process.exit(2);
 }
 
@@ -57,6 +63,7 @@ const wrap = (...kids) => { const r = new El('div'); kids.forEach(k => r.appendC
     destroy: el => destroyed.push([kind, el.id]),
   });
   const win = { slateWidgets: { plotly: reg('plotly'), cesium: reg('cesium') } };
+  installTeardown(win);
 
   const oldPlotly = comp('plotly'); oldPlotly.id = 'op'; oldPlotly._customWired = true;
   const oldCesium = comp('cesium'); oldCesium.id = 'oc'; oldCesium._customWired = true;
@@ -79,6 +86,7 @@ const wrap = (...kids) => { const r = new El('div'); kids.forEach(k => r.appendC
 // it has just kept, and must not tell it that it is being discarded.
 {
   const win = { slateWidgets: {} };
+  installTeardown(win);
   const oldInner = keep('inner', 'oi');
   const oldOuter = keep('outer', 'oo');
   oldOuter.appendChild(oldInner);
@@ -107,6 +115,7 @@ const wrap = (...kids) => { const r = new El('div'); kids.forEach(k => r.appendC
 // is still removed, and a script holding listeners on it still needs to hear about it.
 {
   const win = { slateWidgets: {} };
+  installTeardown(win);
   const gone = keep('gone', 'g');
   const stays = keep('stays', 's');
   const out = wrap(stays, gone);

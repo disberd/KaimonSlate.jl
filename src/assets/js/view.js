@@ -1622,10 +1622,6 @@ function _carryMounted(out, stage) {
     kept.add(old);
     updates.push(() => reg.update(old, desc.props || {}));
   });
-  olds.forEach(old => {
-    const reg = !kept.has(old) && old._customWired && window.slateWidgets[old.dataset.component];
-    if (reg && reg.destroy) { try { reg.destroy(old); } catch (e) { console.error(e); } }
-  });
   const byKey = root => {
     const m = new Map();
     root.querySelectorAll('[data-slate-keep]').forEach(el => {
@@ -1648,7 +1644,11 @@ function _carryMounted(out, stage) {
     // What a carried element contains is carried with it, so it is still mounted and not discarded.
     old.querySelectorAll('[data-slate-keep]').forEach(d => kept.add(d));
   }));
-  prev.forEach(els => els.forEach(el => { if (!kept.has(el)) el.dispatchEvent(new Event('slate:discard')); }));
+  // One teardown pass for everything the swap did not carry: a wired component's `destroy` and a
+  // `slate:discard` for a marked element, which is exactly what `slateTeardownOutput` does on the
+  // cell-unmount path. Deferred to here, AFTER both pairing passes have recorded what they kept, so
+  // an element carried by one pass is not torn down because the other did not claim it.
+  window.slateTeardownOutput(out, kept);
   return () => updates.forEach(f => { try { f(); } catch (e) { console.error(e); } });
 }
 
