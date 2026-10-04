@@ -264,7 +264,7 @@ nothing; they ride the cell's memo, survive a reload, and are inlined into a sta
 
 It returns `nothing` where Slate keeps no assets for the caller — outside a cell eval, in a
 `slate_on` handler, or in a task your render spawned. Branch on that and inline instead: a path is
-never returned unless it will resolve. Requires SlateExtensionsBase 0.11.1.
+never returned unless it will resolve. Requires SlateExtensionsBase 0.11.
 
 ## Extending the UI
 
