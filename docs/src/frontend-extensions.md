@@ -310,12 +310,48 @@ Register the widget at notebook load (in a `WebPage` or an `@asset`ed script). A
 whose `kind` matches picks it up, and reading `answer` in another cell recomputes it when the widget
 pushes a new value.
 
+### Keep a returned output mounted across runs
+
+When a cell runs again, Slate replaces its output. A figure that a script draws then starts again
+from an empty element, so it blinks and loses its zoom and any state in the page. An output can
+ask Slate to keep its element and update it in place instead. There are three ways to ask:
+
+- **A widget kind from `slateRegisterWidget`.** Add `update(el, props)` to the registration. When a
+  cell returns the same kind at the same position, Slate keeps the mounted element and calls
+  `update` with the new props. Without `update`, Slate mounts a new element and calls `destroy` on
+  the old one.
+- **A Preact component from `registerComponent`.** Add `export const keepMounted = true` to the
+  module. Slate then renders the component again with the new `params`, and Preact keeps its DOM
+  and its state. A component that reads `params` only when it mounts shows old values, so this is
+  an opt-in.
+- **Any element in HTML output.** Mark it `data-slate-keep="key"`. On the next run, the old element
+  with the same key takes the place of the new one, with its children and the properties that
+  scripts set on it. A script in the new output finds it in the DOM and updates it. When a run no
+  longer outputs the key, Slate sends a `slate:discard` event to the old element before it removes
+  it, so a script can remove its listeners.
+
+```html
+<div data-slate-keep="counter"></div>
+<script>
+{ // a block: a top-level `const` in a classic script stays declared after the first run
+  const box = document.currentScript.previousElementSibling;
+  box.runs = (box.runs ?? 0) + 1;          // kept across runs of the cell
+  box.textContent = `run ${box.runs}`;
+}
+</script>
+```
+
+Keys match by position when an output has more than one element with the same key, so two figures
+in one output stay apart. A component matches by position among the mounts of its own kind, so
+returning a different mix of kinds than last time still keeps each one. What a kept element contains
+is kept with it, and gets no `slate:discard`. A script inside a kept element does not run again.
+
 ### When Slate tears an output down
 
 Define `destroy(el)` for anything holding a resource the page does not reclaim on its own: a WebGL
 context, a `requestAnimationFrame` loop, a Web Worker, a global listener, a media element. Slate
-calls it before the element is discarded: when a control strip is rebuilt, and when a cell is deleted
-or the notebook replaced.
+calls it before the element is discarded: when a control strip is rebuilt, when a cell re-runs and
+the swap does not keep the element (above), and when a cell is deleted or the notebook replaced.
 
 This matters most for WebGL. A browser keeps only a small number of live contexts per page (around
 sixteen in Chrome), and when it runs out it drops the **oldest** ones — so a figure that leaks a
@@ -323,8 +359,8 @@ context on every re-run eventually blanks unrelated figures elsewhere in the not
 `destroy` is what keeps the live count proportional to what is on screen rather than to how many
 times a slider moved.
 
-The same applies to a **returned** output, not just a `@bind` control: a value whose `slate_render`
-mounts a component gets `destroy` when its cell is deleted or the notebook is replaced.
+This applies to a **returned** output as much as a `@bind` control: a value whose `slate_render`
+mounts a component gets `destroy` on every one of those paths.
 
 For an HTML fragment with no widget kind to hang a hook on, `slateOnFragmentDispose(node, fn)` calls
 `fn` once after `node` has been attached and then removed, and returns a cancel function. It polls on
