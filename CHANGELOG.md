@@ -3,8 +3,9 @@
 Notable changes to KaimonSlate, newest first. Each entry is the release notes for that version, so
 the wording is the one published at the time rather than a later summary.
 
-`SlateExtensionsBase` lives in `lib/` and versions separately; where a release requires a particular
-version of it, the entry says so.
+`SlateExtensionsBase` lives in `lib/` and versions separately, with its own
+[changelog](lib/SlateExtensionsBase/CHANGELOG.md); where a release requires a particular version of
+it, the entry below says so.
 
 Entries for 1.3.0, 1.3.1, 1.5.2 and 1.10.0 were reconstructed from their commits, because no notes
 were written when they went out. They are marked.
