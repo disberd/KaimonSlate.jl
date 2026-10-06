@@ -27,10 +27,46 @@ function _rec_number(x::Real)
     isfinite(f) || return string(f)
     return string(round(f; sigdigits = 5))
 end
+# A container's `text/plain` form is a HEADER line followed by its elements, so the first-line cut
+# below reduced it to the type and none of the data — a field holding eight rows read as
+# `8-element Vector{@NamedTuple{nfp::Int64, count::Int64}}:`. The two-argument `show` puts the
+# elements inline instead.
+#
+# Taken from the first few elements rather than from the whole container, because the cap at the end
+# of `_rec_text` cannot undo the cost of building the string: a million-element vector would be
+# rendered in full and then thrown away. A container small enough to show whole is shown whole, which
+# also keeps its own delimiters (`Dict(…)`, `Set(…)`) instead of a Vector's brackets.
+# `_REC_SEQ_MAX` is under `_rec_text`'s own 140-char cap on purpose: the "… N total]" tail is the most
+# useful part of a summary, and letting the cap fall through the middle of it loses the count and
+# leaves a mangled bracket. Fit fewer elements instead.
+const _REC_SEQ_HEAD = 6
+const _REC_SEQ_MAX = 110
+function _rec_seq_text(v)
+    n = length(v)
+    show1(x) = sprint((io, y) -> show(IOContext(io, :compact => true, :limit => true), y), x)
+    if n <= _REC_SEQ_HEAD
+        whole = show1(v)
+        length(whole) <= _REC_SEQ_MAX && return whole
+    end
+    k, used = 0, 0
+    for x in Iterators.take(v, _REC_SEQ_HEAD)
+        used += length(show1(x)) + 2                      # ", " between elements
+        used > _REC_SEQ_MAX && break
+        k += 1
+    end
+    head = collect(Iterators.take(v, max(k, 1)))
+    body = chop(show1(head))                              # drop the closing bracket to extend it
+    return length(head) < n ? string(body, ", … ", n, " total]") : string(body, "]")
+end
+
 # The compact one-line text of a value, rounded and capped.
 function _rec_text(v)
     s = try
-        sprint((io, x) -> show(IOContext(io, :compact => true, :limit => true), MIME"text/plain"(), x), v)
+        if v isa Union{AbstractArray,AbstractSet,AbstractDict} && !isempty(v)
+            _rec_seq_text(v)
+        else
+            sprint((io, x) -> show(IOContext(io, :compact => true, :limit => true), MIME"text/plain"(), x), v)
+        end
     catch
         try; repr(v); catch; string(typeof(v)); end
     end

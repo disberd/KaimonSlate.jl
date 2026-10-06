@@ -86,6 +86,38 @@ end
 # The reader can ask for Julia's own text instead of the grid. Both forms ship inside the record
 # chunk, because the text repr beside the cell is dropped wherever richer output exists
 # (`_cell_view`) — a preference built on that one would work live and blank a static export.
+@testset "a collection field shows its contents, not its type" begin
+    # `show(::MIME"text/plain", ::Vector)` is a HEADER line followed by the elements, and the field
+    # summary takes the first line — which reduced a vector of rows to
+    # `8-element Vector{@NamedTuple{nfp::Int64, count::Int64}}:`, the type and none of the data.
+    # Dicts and sets print the same way.
+    val(h, i = 1) = collect(eachmatch(r"<span class=\"srec-v[^\"]*\">([^<]*)", h))[i].captures[1]
+
+    rows = [(nfp = i, count = 3i) for i in 1:8]
+    h = RE.record_html((; by_nfp = rows))
+    @test occursin("nfp = 1", val(h))                 # the data is there …
+    @test !occursin("element Vector", val(h))         # … and the type signature is not
+    @test occursin("8 total", val(h))                 # with the count kept, not cut by the cap
+
+    # Short enough to show whole → shown whole, keeping the container's own delimiters rather than a
+    # Vector's brackets.
+    @test occursin("helicity = 0", val(RE.record_html((; by_helicity = [(helicity = 0, count = 4)]))))
+    @test startswith(val(RE.record_html((; d = Dict(:a => 1)))), "Dict")
+    @test startswith(val(RE.record_html((; s = Set([7]))))  , "Set")
+
+    @testset "and bounded by the head, not by truncating the whole" begin
+        # The cap at the end of the summary cannot undo the cost of building the string, so a long
+        # vector must never be rendered in full first. Timed rather than asserted structurally: a
+        # million elements through `show` takes seconds, six take microseconds.
+        big = collect(1:1_000_000)
+        RE.record_html((; warm = [1, 2, 3]))                      # compile first
+        t = @elapsed hb = RE.record_html((; big = big))
+        @test t < 1.0
+        @test occursin("1000000 total", val(hb))
+        @test length(val(hb)) <= 141
+    end
+end
+
 @testset "a record carries its plain text too" begin
     h = RE.record_html((; f0 = 1006.63, label = "run 7"))
     @test occursin("srec-grid", h)                       # the grid…
