@@ -12,6 +12,12 @@ were written when they went out. They are marked.
 
 ## [Unreleased]
 
+### Fixed
+
+- A cell whose HTML output imports a module from `/ext-assets/` now draws in a static HTML export,
+  opened from disk or from a site below the host root. A standalone page carries each such module
+  once.
+
 ## [1.11.0] - 2026-10-06
 
 ### Added
