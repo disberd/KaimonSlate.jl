@@ -824,12 +824,13 @@ function _make_router(h::Hub)
         m === nothing && return HTTP.Response(404)
         pkg = HTTP.URIs.unescapeuri(String(m.captures[1]))
         sub = HTTP.URIs.unescapeuri(String(m.captures[2]))
-        root = lock(h.lock) do
-            for nb in values(h.notebooks)
-                d = get(nb.assets, pkg, nothing); d === nothing || return d
-            end
-            return nothing
+        # `nb.assets` under `nb.lock`: an `/ext-assets/` route pull can merge into it at any time.
+        root = nothing
+        for nb in lock(() -> collect(values(h.notebooks)), h.lock)
+            root = lock(() -> get(nb.assets, pkg, nothing), nb.lock)
+            root === nothing || break
         end
+        root === nothing && (root = _await_ext_asset_dir(h, req, pkg))
         root === nothing && return HTTP.Response(404, "no such package asset dir (package loaded?)")
         p = _confined_path(root, sub)             # stay inside the vendored dir
         p === nothing && return HTTP.Response(404)
@@ -3006,7 +3007,9 @@ function start_hub(; host = "127.0.0.1", port = 8765, app::Bool = false,
             t0 = time()
             handle(stream)
             dt = time() - t0      # includes the body WRITE — surfaces slow transfers, not just slow compute
-            dt > 1.0 && @warn "Kaimon Slate: slow request" target round_ms = round(Int, dt * 1000)
+            # An `/ext-assets/` miss is held on purpose while the notebook can still declare the package.
+            dt > 1.0 && !startswith(target, "/ext-assets/") &&
+                @warn "Kaimon Slate: slow request" target round_ms = round(Int, dt * 1000)
         end
     end
     h.server = server
@@ -3083,6 +3086,7 @@ function close_notebook!(h::Hub, id::AbstractString)
     try; shutdown!(nb.kernel); catch; end
     _teardown_region!(nb)                  # detach — a remote region idles warm like the main kernel
     lock(_EVAL_MUTEX_LOCK) do; delete!(_EVAL_MUTEX, id); end
+    lock(_PULL_LOCKS_LOCK) do; delete!(_PULL_LOCKS, id); delete!(_ROUTE_PULLED_AT, id); end
     _persist_registry!(h)                  # forget an explicitly-closed nb so a restart won't re-open it
     return true
 end
