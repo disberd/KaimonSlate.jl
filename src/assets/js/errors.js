@@ -122,10 +122,10 @@ function _lastPkgLines(log, n) {
 // install status by tailing the worker log while the (blocking) add runs.
 function hidePkgInstalling() { const bg = document.getElementById('pkginstallbg'); if (bg) bg.classList.remove('show'); }
 window.hidePkgInstalling = hidePkgInstalling;
-// SGR → spans, escaping as it goes. Falls back to plain escaped text so a missing ansi.js degrades to
-// readable output rather than markup.
-const _ansi = s => (window.slateAnsiHtml ? window.slateAnsiHtml(s)
-                                         : String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+// SGR → spans, escaping as it goes. Falls back to escaped text so a missing ansi.js degrades to
+// readable output rather than markup. `slateEscHtml` is core.js's, which ansi.js itself uses: this
+// must not grow its own escaper (see test/js/esc_html.mjs).
+const _ansi = s => (window.slateAnsiHtml ? window.slateAnsiHtml(s) : window.slateEscHtml(String(s == null ? '' : s)));
 // Show a package-install failure IN the blocking modal (leaves it up with a Close button). Pkg's
 // message carries its own colour, and `<`/`>` appear in real ones (a version bound, a type in a
 // stacktrace), so it is escaped rather than having those characters deleted from it.
