@@ -14,10 +14,8 @@ were written when they went out. They are marked.
 
 ### Fixed
 
-- A figure that imports a module from `/ext-assets/` draws when it shows before the notebook
-  declares the package: from a stored preview while the notebook opens, or before the run ends. The
-  route holds the request until a manifest declares the package, so the figure no longer stays
-  blank until a reload. (#XX, @disberd)
+- A figure that imports a module from `/ext-assets/` no longer stays blank when it shows before the
+  notebook declares the package. (#XX, @disberd)
 
 ## [1.11.0] - 2026-10-06
 
