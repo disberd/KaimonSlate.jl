@@ -732,6 +732,14 @@ end
     @test count("import(\"./ext-assets/GlobeSlate/lib.mjs\")", hsite) == 2
     @test count("src=\"./ext-assets/GlobeSlate/earth.png\"", hsite) == 2
     @test !occursin(NS._EXT_ASSET_URL_RE, hsite)
+    # A JS url that the import map does not carry (a cell re-ran after the map was built) stays the
+    # live url: a direct `import("data:…")` of a large module costs gigabytes of renderer memory in
+    # Chrome. A non-JS url still inlines.
+    unmapped = NS._export_ext_asset_html(_html_nb(), "<script>import(\"/ext-assets/GlobeSlate/lib.mjs\")</script><img src=\"/ext-assets/GlobeSlate/earth.png\">";
+                                         inline = true, mapped = Dict{String,String}())
+    @test occursin("import(\"/ext-assets/GlobeSlate/lib.mjs\")", unmapped)
+    @test !occursin("data:application/javascript", unmapped)
+    @test occursin("src=\"data:image/png;base64,", unmapped)
     # A `provide_import!` target on the vendored route: inlined standalone, the sibling on a site.
     inb = _html_nb()
     inb.pkgimports["glib"] = "/ext-assets/GlobeSlate/lib.mjs"

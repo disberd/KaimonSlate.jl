@@ -230,6 +230,9 @@ end
 # from its live url to a `data:` url. The browser resolves a url-like import-map key against the page,
 # so `import("/ext-assets/…")` in every cell lands on that one entry, from `file://` and from any
 # origin. A `data:` url at each call site would carry the module once per cell: 6.4 MB per plotly plot.
+# An import-map entry with a `data:` target is safe for memory. A direct `import("data:…")` of a large
+# module is not: Chrome uses gigabytes of renderer memory for it (about 10 GB for the 5 MB plotly
+# bundle). Thus do not inline a JS module at the call site.
 # Limits: an import map applies to module loads only, so a `.js` that a cell loads with `<script src>`
 # does not resolve; and a relative import inside a `data:` module has no base url to resolve against.
 function _ext_asset_importmap(nb::LiveNotebook, urls)
@@ -242,13 +245,15 @@ function _ext_asset_importmap(nb::LiveNotebook, urls)
 end
 
 # Repoint the `/ext-assets/…` urls in cell HTML. A site points them at the page-local
-# `./ext-assets/…` siblings. A standalone page keeps the urls that its import map carries and inlines
-# all others as `data:` urls.
+# `./ext-assets/…` siblings. A standalone page keeps the urls that its import map carries and the JS
+# urls that it does not carry (see `_ext_asset_importmap`), and inlines all others as `data:` urls.
 function _export_ext_asset_html(nb::LiveNotebook, html::AbstractString; inline::Bool, mapped)
     s = String(html)
     occursin("/ext-assets/", s) || return s
-    return replace(s, _EXT_ASSET_URL_RE => u -> !inline ? "." * u :
-                                               haskey(mapped, u) ? u : _inline_ext_asset_urls(nb, u))
+    return replace(s, _EXT_ASSET_URL_RE => function (u)
+        inline || return "." * u
+        return haskey(mapped, u) || _is_js(u) ? u : _inline_ext_asset_urls(nb, u)
+    end)
 end
 
 # ── A table a hop or more from its control: the chain sweep ──────────────────────────────────────────
@@ -2838,8 +2843,8 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
     # a blocking call is the teardown-deadlock hazard the protocol note in server.jl warns about — it
     # would stall the runner, the UI and every other reader of this notebook for the whole download.
     # Reads `report.meta`/`cells` off-lock exactly as `_warm_makie_figs!` does.
-    # A cell that re-runs between this read and the body below can name a module the map lacks; the
-    # body then inlines that url in place, which costs size but still works.
+    # A cell that re-runs between this read and the body below can name a JS module the map lacks.
+    # The body keeps that url as it is, so the import fails in the page; the next export carries it.
     extmap = inline_assets ? _ext_asset_importmap(nb, _html_ext_asset_urls(nb)) : Dict{String,String}()
     importmap_html = _export_importmap_for(nb, offline, _import_mode(offline, inline_assets, imports);
                                            inline = inline_assets, ext = extmap)
