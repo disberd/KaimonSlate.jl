@@ -487,7 +487,7 @@ function cellHeaderInner(c) {
     '</span>' +
     // Run-info cluster, right-aligned and contiguous (buttons sit to its left): run time (reserved
     // width) · cache verdict (fixed slot) · state badge (fixed width) — so nothing floats mid-header.
-    `<span class="cdur">${c.duration != null ? c.duration + ' ms' : ''}</span>` +
+    `<span class="cdur">${c.duration != null ? window.slateDuration(c.duration) : ''}</span>` +
     `<span class="previewslot">${_previewBadge(c)}</span>` +
     `<span class="memoslot">${_memoBadge(c)}</span>` +
     `<span class="badge">${c.state}</span>`;
@@ -1556,12 +1556,15 @@ function _swapOutput(out, html, live, after) {
     if (out.__slateSwapSeq !== seq) return;
     const applyUpdates = _carryMounted(out, stage);
     out.style.minHeight = out.offsetHeight + 'px';
+    out.__slateHoldSeq = seq;   // the hold belongs to the swap that committed last
     out.replaceChildren(...Array.from(stage.childNodes));
     runScripts(out);   // a <script> from parsed HTML is inert — re-create so figures boot
     mountOutputComponents(out);   // mount any `slate_render` component OUTPUTS in the freshly-swapped output
     applyUpdates();
     const mounted = out.querySelectorAll('img');
-    const release = () => { out.style.minHeight = ''; };
+    // The images of an older swap can finish loading after a newer swap has committed. Their release
+    // must not clear the hold of the newer swap.
+    const release = () => { if (out.__slateHoldSeq === seq) out.style.minHeight = ''; };
     if (!mounted.length) requestAnimationFrame(release);
     else {
       let n = mounted.length;

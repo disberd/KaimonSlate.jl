@@ -645,7 +645,8 @@ end
                        "rebaseline_callsites.mjs", "reconcile_verdict.mjs",
                        "keymap_key_owner.mjs", "keep_focus.mjs", "ansi_html.mjs",
                        "settings_section_links.mjs", "echarts_dark_labels.mjs",
-                       "teardown_output.mjs", "carry_mounted.mjs")
+                       "teardown_output.mjs", "carry_mounted.mjs", "duration_fmt.mjs",
+                       "swap_hold.mjs")
             io = IOBuffer()
             ok = success(pipeline(`$node $(joinpath(@__DIR__, "js", script))`; stdout = io, stderr = io))
             ok || print(String(take!(io)))
