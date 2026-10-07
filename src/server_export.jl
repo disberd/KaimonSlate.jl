@@ -179,7 +179,9 @@ end
 # widget holding a dead relative link is a better failure than a page whose script lost its dependency
 # silently. `_site_ctype` carries `; charset=…` for text types, and that space is invalid unencoded in a
 # data url — strip it, so `.js` spells as `text/javascript;charset=utf-8`.
-const _EXT_ASSET_URL_RE = r"/ext-assets/[^\"'`\s\\)]+"
+# The lookbehind skips a url that only CONTAINS the route: a `./ext-assets/…` sibling already rewritten,
+# or `https://host/ext-assets/…` on some other server.
+const _EXT_ASSET_URL_RE = r"(?<![\w.])/ext-assets/[^\"'`\s\\)]+"
 
 _inline_ext_asset_urls(nb::LiveNotebook, js::AbstractString; compress::Bool = false) =
     replace(String(js), _EXT_ASSET_URL_RE => function (u)
@@ -200,6 +202,54 @@ _inline_ext_asset_urls(nb::LiveNotebook, js::AbstractString; compress::Bool = fa
         return string("data:", replace(_site_ctype(f), " " => ""), ";base64,",
                       Base64.base64encode(bytes))
     end)
+
+# The `/ext-assets/…` urls in the HTML a cell shows: a code cell's display (a package's `slate_render`
+# builds them with `ext_asset_url`) and the `{{ }}` values of a markdown cell. Read before the page is
+# written, because the import map that serves the JS ones goes in <head>. Only the HTML chunks: a
+# component descriptor's module loads from inside a `data:` module, where an absolute url has no base
+# to resolve against, so its urls are inlined in place.
+function _html_ext_asset_urls(nb::LiveNotebook)
+    urls = Set{String}()
+    function scan(o)
+        o === nothing && return
+        for ch in o.display
+            ch.mime in ("text/html", "application/vnd.kaimonslate.html+html") || continue
+            for m in eachmatch(_EXT_ASSET_URL_RE, String(copy(ch.data)))
+                push!(urls, m.match)
+            end
+        end
+    end
+    for c in nb.report.cells
+        scan(c.output)
+        foreach(scan, c.interp)
+    end
+    return urls
+end
+
+# A standalone page carries each vendored JS module that cell HTML names ONCE, as an import-map entry
+# from its live url to a `data:` url. The browser resolves a url-like import-map key against the page,
+# so `import("/ext-assets/…")` in every cell lands on that one entry, from `file://` and from any
+# origin. A `data:` url at each call site would carry the module once per cell: 6.4 MB per plotly plot.
+# Limits: an import map applies to module loads only, so a `.js` that a cell loads with `<script src>`
+# does not resolve; and a relative import inside a `data:` module has no base url to resolve against.
+function _ext_asset_importmap(nb::LiveNotebook, urls)
+    out = Dict{String,String}()
+    for u in urls
+        (_is_js(u) && _ext_asset_file(nb, u) !== nothing) || continue
+        out[u] = _inline_ext_asset_urls(nb, u)
+    end
+    return out
+end
+
+# Repoint the `/ext-assets/…` urls in cell HTML. A site points them at the page-local
+# `./ext-assets/…` siblings. A standalone page keeps the urls that its import map carries and inlines
+# all others as `data:` urls.
+function _export_ext_asset_html(nb::LiveNotebook, html::AbstractString; inline::Bool, mapped)
+    s = String(html)
+    occursin("/ext-assets/", s) || return s
+    return replace(s, _EXT_ASSET_URL_RE => u -> !inline ? "." * u :
+                                               haskey(mapped, u) ? u : _inline_ext_asset_urls(nb, u))
+end
 
 # ── A table a hop or more from its control: the chain sweep ──────────────────────────────────────────
 # `@replay` marks ONE EXPRESSION that reads a control, and re-evaluates that closure per position. A
@@ -2662,7 +2712,7 @@ function _localize_imports(imports::AbstractDict, mode::Symbol = :inline,
     for (spec, url) in imports
         s, u = String(spec), String(url)
         if mode === :cdn || !_is_remote_url(u)
-            out[s] = u; continue                      # already a data:/relative/ext-assets target
+            out[s] = u; continue                      # data:/relative target; `/ext-assets/` is repointed in `_export_importmap_for`
         end
         got = _localize_module(u, mode, mods, done, Set{String}())
         got === nothing && error("slate: this export cannot be made self-contained — module `$s` " *
@@ -2703,14 +2753,22 @@ function _import_page_files(nb::LiveNotebook, mode::Symbol)
     return files
 end
 
-function _export_importmap_for(nb::LiveNotebook, offline::Bool = false, mode::Symbol = :auto)
+# `inline` is the standalone flag (`inline_assets`), which the import mode alone does not carry: an
+# online standalone page and an online site both resolve `:cdn`. `ext` is extra entries for vendored
+# modules that cell HTML names (`_ext_asset_importmap`).
+function _export_importmap_for(nb::LiveNotebook, offline::Bool = false, mode::Symbol = :auto;
+                               inline::Bool = true, ext::AbstractDict = Dict{String,String}())
     usemap = _effective_imports(nb)                       # package `provide_import!`s under the notebook's `@use`
     m = mode === :auto ? (offline ? :inline : :cdn) : mode
     m === :cdn || (usemap = _localize_imports(usemap, m))
+    # A `provide_import!` target on the live `/ext-assets/` route has no server behind it in an export.
+    usemap = Dict{String,String}(String(k) => (v = String(u); !startswith(v, "/ext-assets/") ? v :
+                                               inline ? _inline_ext_asset_urls(nb, v) : "." * v)
+                                 for (k, u) in usemap)
     esm = _has_esm_frontend(nb)
     uimap = (esm || any(c -> c.kind == ReportEngine.WEB, nb.report.cells)) ? _slate_ui_imports(offline) : Dict{String,String}()
     sdk = esm ? _slate_widget_sdk_import() : Dict{String,String}()
-    merged = merge(uimap, sdk, usemap)
+    merged = merge(uimap, sdk, ext, usemap)
     return _export_importmap(isempty(merged) ? nothing : merged)
 end
 
@@ -2780,7 +2838,11 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
     # a blocking call is the teardown-deadlock hazard the protocol note in server.jl warns about — it
     # would stall the runner, the UI and every other reader of this notebook for the whole download.
     # Reads `report.meta`/`cells` off-lock exactly as `_warm_makie_figs!` does.
-    importmap_html = _export_importmap_for(nb, offline, _import_mode(offline, inline_assets, imports))
+    # A cell that re-runs between this read and the body below can name a module the map lacks; the
+    # body then inlines that url in place, which costs size but still works.
+    extmap = inline_assets ? _ext_asset_importmap(nb, _html_ext_asset_urls(nb)) : Dict{String,String}()
+    importmap_html = _export_importmap_for(nb, offline, _import_mode(offline, inline_assets, imports);
+                                           inline = inline_assets, ext = extmap)
     lock(nb.lock) do
         fm0 = report_frontmatter(nb.report)
         title = _esc(fm0.title)
@@ -2794,6 +2856,7 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
                                        figrefs = figidx.labels, figemit = _fig_text)
         rwtext(s) = _rewrite_citations(s, citekeys; emit = citectx === nothing ? _cite_literal : citectx.emit,
                                        figrefs = figidx.labels, figemit = _fig_text)
+        xa(h) = _export_ext_asset_html(nb, h; inline = inline_assets, mapped = extmap)   # cell HTML `/ext-assets/` urls
         # `og_image`/`og_url` are absolute URLs (or a path relative to the page) supplied by the site
         # builder; the OG/Twitter tags let a hosted link unfurl into a rich card (see `_og_tags`).
         rawdesc = _first_words(rwtext(isempty(strip(fm0.abstract)) ? fm0.byline : fm0.abstract), 40)
@@ -2956,7 +3019,7 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
                 if haskey(figidx.numbers, c.id)     # caption cell → numbered "Figure N." block
                     print(io, "<figcaption class=\"exp-figcap\" id=\"fig-", _esc(c.id), "\"><b>Figure ",
                           figidx.numbers[c.id], ".</b> ",
-                          _export_embed_html(markdown_html(mdsrc, mdinterp), _proj_root(nb); inline = inline_assets, media = media), "</figcaption>")
+                          xa(_export_embed_html(markdown_html(mdsrc, mdinterp), _proj_root(nb); inline = inline_assets, media = media)), "</figcaption>")
                 else
                     # A prose sweep is scoped to the cell it swept: the mark id goes on the section so
                     # the client writes a position's strings into THIS cell's `.ival` spans and not
@@ -2965,7 +3028,7 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
                     pattr = pm isa AbstractDict ? string(" data-replay=\"", _esc(String(get(pm, "id", ""))), "\"") : ""
                     print(io, "<section class=\"exp-md\"", pattr, ">",
                           _strip_attr_templates(
-                              _export_embed_html(markdown_html(mdsrc, mdinterp), _proj_root(nb); inline = inline_assets, media = media)),
+                              xa(_export_embed_html(markdown_html(mdsrc, mdinterp), _proj_root(nb); inline = inline_assets, media = media))),
                           "</section>")
                 end
             else
@@ -2989,12 +3052,12 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
                         themed === nothing ?
                             # Wrap so an author-embedded `/asset/` <img> in a code/web cell's HTML output
                             # is inlined/rewritten like a markdown image (see `_export_embed_html`).
-                            print(io, "<div class=\"exp-out\">", _export_embed_html(output_html(c), _proj_root(nb); inline = inline_assets, media = media), "</div>") :
+                            print(io, "<div class=\"exp-out\">", xa(_export_embed_html(output_html(c), _proj_root(nb); inline = inline_assets, media = media)), "</div>") :
                             print(io, "<div class=\"exp-out\">", _output_text_only_html(c),
                                   "<div class=\"dispwrap\">", _themed_fig_html(themed[1], themed[2]), "</div></div>")
                     elseif o !== nothing && !isempty(o.display)
                         print(io, "<div class=\"exp-out\"><div class=\"dispwrap\">",
-                              themed === nothing ? _export_embed_html(ReportRender._render_chunks(o.display), _proj_root(nb); inline = inline_assets, media = media) : _themed_fig_html(themed[1], themed[2]),
+                              themed === nothing ? xa(_export_embed_html(ReportRender._render_chunks(o.display), _proj_root(nb); inline = inline_assets, media = media)) : _themed_fig_html(themed[1], themed[2]),
                               "</div></div>")
                     end
                     for (si, spec) in enumerate(_echarts_specs(c))   # embed each chart's spec → client renders it
