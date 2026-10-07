@@ -12,6 +12,11 @@ were written when they went out. They are marked.
 
 ## [Unreleased]
 
+### Fixed
+
+- A figure that imports a module from `/ext-assets/` no longer stays blank when it shows before the
+  notebook declares the package.
+
 ## [1.11.0] - 2026-10-06
 
 ### Added
