@@ -16,6 +16,8 @@ were written when they went out. They are marked.
 
 - A figure that imports a module from `/ext-assets/` no longer stays blank when it shows before the
   notebook declares the package.
+- A cell that runs again with fewer `@replay` marks no longer leaves the old marks registered. The
+  export swept them and shipped their data, although no output on the page read it.
 
 ## [1.11.0] - 2026-10-06
 
