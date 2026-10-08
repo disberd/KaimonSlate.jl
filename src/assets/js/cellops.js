@@ -14,10 +14,23 @@ async function runCell(id, force = false) {
   if (_out) _out.__slateOut = undefined;
   const sent = editors[id] ? edText(id) : (srcMap[id] || '');
   // What a run sends is what the cell now is: the editor's baseline, and the text that identifies the
-  // push answering it as this tab's own change (`reconcileVerdict`).
+  // push answering it as this tab's own change (`reconcileVerdict`). Recorded BEFORE the request,
+  // because the push answering a run can land before the reply to it does.
+  const wasSrc = srcMap[id];
   srcMap[id] = sent;
   (window._sentSrc || (window._sentSrc = {}))[id] = sent;
-  const ack = await api('POST', '/api/cell/' + id, { source: sent, force: !!force });
+  let ack;
+  try {
+    ack = await api('POST', '/api/cell/' + id, { source: sent, force: !!force });
+  } catch (e) {
+    // The run never reached the server, so the server does NOT hold `sent` — `api` throws on a
+    // network error. Leaving the baseline advanced would make the next push read as `forward` and
+    // overwrite the edit this run was trying to commit, which is the one thing the conflict prompt
+    // exists to prevent.
+    srcMap[id] = wasSrc;
+    delete window._sentSrc[id];
+    throw e;
+  }
   // The run answers with a receipt; the RESULT arrives over the live push, which also handles the
   // structural case (a cell gaining or losing `@bind` widgets makes `patchCells` fall back to a full
   // publish).
