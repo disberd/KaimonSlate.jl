@@ -16,6 +16,9 @@ were written when they went out. They are marked.
 
 - A figure that imports a module from `/ext-assets/` no longer stays blank when it shows before the
   notebook declares the package.
+- A cell whose HTML output imports a module from `/ext-assets/` now draws in a static HTML export,
+  opened from disk or from a site below the host root. A standalone page carries each such module
+  once.
 
 ## [1.11.0] - 2026-10-06
 

@@ -701,6 +701,51 @@ end
     cdn = NS._rewrite_ext_asset_urls!(Dict{String,Any}("globe" => Dict{String,Any}("baseTexture" => "https://cdn/x.png")), tnb; inline = false)
     @test cdn["globe"]["baseTexture"] == "https://cdn/x.png"                          # external url untouched
     @test NS._site_ctype("earth.png") == "image/png"                                  # image mime for the live route
+
+    # A cell's HTML output that names vendored assets (a package's `slate_render`, e.g. a plotting
+    # library it `import()`s; `html_fragment` gives the second MIME). A standalone page carries the
+    # module ONCE, as an import-map entry that both cells resolve through, and inlines the image in
+    # place. A site points both urls at the page-local sibling. Either way no live `/ext-assets/`
+    # route survives in the cells.
+    write(joinpath(pkgdir, "lib.mjs"), "export default 42;")
+    _html_nb() = begin
+        html = "<script>import(\"/ext-assets/GlobeSlate/lib.mjs\")</script><img src=\"/ext-assets/GlobeSlate/earth.png\">"
+        rep = _RE.parse_report("#%% md id=t title\n# h\n\n#%% code id=a\n1\n\n#%% code id=b\n2\n")
+        for (c, mime) in zip(rep.cells[2:3], ("text/html", "application/vnd.kaimonslate.html+html"))
+            c.output = _RE.CellOutput("", [_RE.MimeChunk(mime, Vector{UInt8}(html))], Any[], Any[],
+                                      _RE.BindSpec[], "", nothing, nothing, 1.0)
+        end
+        nb = NS.LiveNotebook("h", "/tmp/h.jl", rep, _RE.InProcessKernel(), 1, String[], String[],
+            ReentrantLock(), Channel{String}[], ReentrantLock(), "", false, Dict{String,String}())
+        nb.assets["GlobeSlate"] = pkgdir
+        nb
+    end
+    hstand = NS.export_html(_html_nb(); inline_assets = true)
+    imap = JSON.parse(match(r"<script type=\"importmap\">(.*?)</script>"s, hstand).captures[1])["imports"]
+    libdata = imap["/ext-assets/GlobeSlate/lib.mjs"]
+    @test String(Base64.base64decode(split(libdata, ",")[2])) == "export default 42;"
+    @test count(libdata, hstand) == 1                                     # once for both cells
+    @test count("import(\"/ext-assets/GlobeSlate/lib.mjs\")", hstand) == 2  # the map resolves the call sites
+    @test !occursin("/ext-assets/GlobeSlate/earth.png", hstand)
+    @test count("src=\"data:image/png;base64,", hstand) == 2
+    hsite = NS.export_html(_html_nb(); inline_assets = false)
+    @test count("import(\"./ext-assets/GlobeSlate/lib.mjs\")", hsite) == 2
+    @test count("src=\"./ext-assets/GlobeSlate/earth.png\"", hsite) == 2
+    @test !occursin(NS._EXT_ASSET_URL_RE, hsite)
+    # A JS url that the import map does not carry (a cell re-ran after the map was built) stays the
+    # live url: a direct `import("data:…")` of a large module costs gigabytes of renderer memory in
+    # Chrome. A non-JS url still inlines.
+    unmapped = NS._export_ext_asset_html(_html_nb(), "<script>import(\"/ext-assets/GlobeSlate/lib.mjs\")</script><img src=\"/ext-assets/GlobeSlate/earth.png\">";
+                                         inline = true, mapped = Dict{String,String}())
+    @test occursin("import(\"/ext-assets/GlobeSlate/lib.mjs\")", unmapped)
+    @test !occursin("data:application/javascript", unmapped)
+    @test occursin("src=\"data:image/png;base64,", unmapped)
+    # A `provide_import!` target on the vendored route: inlined standalone, the sibling on a site.
+    inb = _html_nb()
+    inb.pkgimports["glib"] = "/ext-assets/GlobeSlate/lib.mjs"
+    _imap(h) = JSON.parse(match(r"<script type=\"importmap\">(.*?)</script>"s, h).captures[1])["imports"]
+    @test _imap(NS._export_importmap_for(inb; inline = true))["glib"] == libdata
+    @test _imap(NS._export_importmap_for(inb; inline = false))["glib"] == "./ext-assets/GlobeSlate/lib.mjs"
 end
 
 # `save_asset` generated blobs: stored on a cell output, then served live and inlined (standalone) or
