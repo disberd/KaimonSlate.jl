@@ -757,6 +757,25 @@ end
         @test length(bin) < length(js)
     end
 
+    # `nb.assets` is filled at the end of a drain, so an export taken before the first one finishes
+    # saw no vendored directory at all and left every url pointing at a route the page has no server
+    # for. The export pulls the manifest itself now.
+    @testset "an export before the first drain pulls the asset dirs" begin
+        SEB = _RE.SlateExtensionsBase
+        pnb = _html_nb()
+        empty!(pnb.assets)                     # as it stands before the drain-end refresh
+        _RE.report_module(pnb.report)          # an in-process kernel answers once its namespace exists
+        SEB.provide_assets!("GlobeSlate", pkgdir)
+        try
+            h = NS.export_html(pnb; inline_assets = true)
+            # Carried as bytes, resolved from the manifest — not left on a route nothing serves.
+            @test _imap(h)["/ext-assets/GlobeSlate/lib.mjs"] == libdata
+            @test haskey(pnb.assets, "GlobeSlate")         # and the pull populated the notebook
+        finally
+            delete!(SEB._ASSETS, "GlobeSlate")
+        end
+    end
+
     # A `provide_import!` target on the vendored route: inlined standalone, the sibling on a site.
     inb = _html_nb()
     inb.pkgimports["glib"] = "/ext-assets/GlobeSlate/lib.mjs"

@@ -2849,6 +2849,14 @@ function export_html(nb::LiveNotebook; include_source::Bool = true,
     # Reads `report.meta`/`cells` off-lock exactly as `_warm_makie_figs!` does.
     # A cell that re-runs between this read and the body below can name a JS module the map lacks.
     # The body keeps that url as it is, so the import fails in the page; the next export carries it.
+    #
+    # `nb.assets` is filled at the end of a drain, so an export taken before the first one finishes sees
+    # none of the vendored directories, and then NOTHING resolves: the import map is empty, so every JS
+    # url is left live by the rule above and the page imports a route that does not exist. Pull the
+    # manifest first. A kernel round-trip, so it belongs here with the Makie warm rather than under
+    # `nb.lock`; `force` skips the route's throttle, and a kernel that cannot answer leaves the
+    # directories as they are.
+    _pull_ext_assets!(nb; force = true)
     extmap = inline_assets ? _ext_asset_importmap(nb, _html_ext_asset_urls(nb)) : Dict{String,String}()
     importmap_html = _export_importmap_for(nb, offline, _import_mode(offline, inline_assets, imports);
                                            inline = inline_assets, ext = extmap)
