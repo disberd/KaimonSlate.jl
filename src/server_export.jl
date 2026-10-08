@@ -1162,7 +1162,11 @@ function _js_rel_imports(src::AbstractString)
 end
 
 _js_module_path(rel, spec) = replace(normpath(joinpath(dirname(rel), spec)), '\\' => '/')
-_is_js(rel) = (e = lowercase(splitext(rel)[2]); e == ".js" || e == ".mjs")
+# Takes a url as readily as a relative path, so the query and fragment come off first: `lib.mjs?v=2`
+# is a module, and `splitext` alone reads its extension as `.mjs?v=2`. Both decisions about a MODULE
+# run through this — the export's import map, and whether cell HTML may inline a url at the call site
+# — so misreading a cache-busted module url puts a multi-megabyte `import("data:…")` back in the page.
+_is_js(rel) = (e = lowercase(splitext(first(split(String(rel), ('?', '#'))))[2]); e == ".js" || e == ".mjs")
 
 # The `@asset` JS MODULES a web cell imports — `Slate.assetUrl("…")` (preferred) or the legacy
 # `location.pathname + "/asset/…"` — as `relative-path => file bytes`, read from the notebook's asset

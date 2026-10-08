@@ -740,6 +740,11 @@ end
     @test occursin("import(\"/ext-assets/GlobeSlate/lib.mjs\")", unmapped)
     @test !occursin("data:application/javascript", unmapped)
     @test occursin("src=\"data:image/png;base64,", unmapped)
+    # A cache-busted module url is still a module. `splitext` alone reads `lib.mjs?v=2` as `.mjs?v=2`,
+    # which would keep it out of the import map AND let the call site inline it.
+    @test NS._is_js("/ext-assets/P/lib.mjs?v=2") && NS._is_js("/ext-assets/P/lib.js#f")
+    @test NS._is_js("sub/b.js") && !NS._is_js("/ext-assets/P/a.png?v=1")
+
     # A vendored MODULE is never gzipped, however big. `import()`, `<script src>` and the import map
     # all hand the url to the browser's own loader, which has no inflate step: `Slate.asset` is the
     # only consumer that inflates one, and a module never reaches it.
@@ -769,7 +774,8 @@ end
         try
             h = NS.export_html(pnb; inline_assets = true)
             # Carried as bytes, resolved from the manifest — not left on a route nothing serves.
-            @test _imap(h)["/ext-assets/GlobeSlate/lib.mjs"] == libdata
+            maps = JSON.parse(match(r"<script type=\"importmap\">(.*?)</script>"s, h).captures[1])["imports"]
+            @test maps["/ext-assets/GlobeSlate/lib.mjs"] == libdata
             @test haskey(pnb.assets, "GlobeSlate")         # and the pull populated the notebook
         finally
             delete!(SEB._ASSETS, "GlobeSlate")
