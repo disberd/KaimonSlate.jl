@@ -193,7 +193,11 @@ _inline_ext_asset_urls(nb::LiveNotebook, js::AbstractString; compress::Bool = fa
         # than any saving available on the data side. The consumer must know to inflate, so the mime says
         # so; a loader that does not understand `application/gzip` will fail loudly rather than execute
         # compressed bytes as source.
-        if compress && length(bytes) >= _ASSET_GZIP_MIN
+        #
+        # NEVER a module, though. `import()`, `<script src>` and the import map all hand the url to the
+        # browser's own loader, which has no inflate step and no hook to add one — `Slate.asset` is the
+        # only consumer that inflates, and a module never travels that way.
+        if compress && !_is_js(u) && length(bytes) >= _ASSET_GZIP_MIN
             z = try; transcode(CodecZlib.GzipCompressor, bytes); catch; nothing; end
             if z !== nothing && length(z) < length(bytes)
                 return string("data:application/gzip;base64,", Base64.base64encode(z))

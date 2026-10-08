@@ -740,6 +740,23 @@ end
     @test occursin("import(\"/ext-assets/GlobeSlate/lib.mjs\")", unmapped)
     @test !occursin("data:application/javascript", unmapped)
     @test occursin("src=\"data:image/png;base64,", unmapped)
+    # A vendored MODULE is never gzipped, however big. `import()`, `<script src>` and the import map
+    # all hand the url to the browser's own loader, which has no inflate step: `Slate.asset` is the
+    # only consumer that inflates one, and a module never reaches it.
+    @testset "a vendored module is inlined uncompressed" begin
+        big = "export const pad = \"" * repeat("x", 3 * NS._ASSET_GZIP_MIN) * "\";"
+        write(joinpath(pkgdir, "big.mjs"), big)
+        write(joinpath(pkgdir, "big.bin"), repeat("y", 3 * NS._ASSET_GZIP_MIN))
+        gnb = _html_nb()
+        js = NS._inline_ext_asset_urls(gnb, "/ext-assets/GlobeSlate/big.mjs"; compress = true)
+        @test !startswith(js, "data:application/gzip")                  # the loader cannot inflate
+        @test String(Base64.base64decode(split(js, ",")[2])) == big     # and it is the source
+        # Everything else still compresses: the saving is the whole point, and those consumers fetch.
+        bin = NS._inline_ext_asset_urls(gnb, "/ext-assets/GlobeSlate/big.bin"; compress = true)
+        @test startswith(bin, "data:application/gzip")
+        @test length(bin) < length(js)
+    end
+
     # A `provide_import!` target on the vendored route: inlined standalone, the sibling on a site.
     inb = _html_nb()
     inb.pkgimports["glib"] = "/ext-assets/GlobeSlate/lib.mjs"
