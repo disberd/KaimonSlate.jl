@@ -391,6 +391,16 @@ end
 struct _CellLogger <: Logging.AbstractLogger
     parent::Logging.AbstractLogger
     sink                       # (id, frac::Float64, msg::String, done::Bool) -> Any  (cell progress channel)
+    cid::String                # the cell being evaluated — see `_current_cell_id`
+end
+
+# The cell that progress reported from the current task belongs to. The cell's logger carries it, and
+# a task the cell spawns inherits its logger, so a `Threads.@spawn`ed loop calling `slate_progress`
+# is attributed to the cell that started it. "" outside a cell eval.
+function _current_cell_id()
+    l = Logging.current_logger()
+    l isa _CellLogger && return l.cid
+    return String(get(task_local_storage(), :slate_cell, ""))
 end
 Logging.shouldlog(::_CellLogger, _...) = true                          # filter in handle_message
 Logging.min_enabled_level(l::_CellLogger) = min(Logging.LogLevel(-1), Logging.min_enabled_level(l.parent))
@@ -885,7 +895,7 @@ function run_capture(mod::Module, source::AbstractString, filename::AbstractStri
         # ConsoleLogger on the captured stderr (`_logio`), so @warn/@info/@error land in this cell's
         # stream — coloured, since the stream reports `:color => true` and the renderer turns SGR into
         # spans. Wrapped so ProgressLogging `@progress` records drive the cell meter instead of printing.
-        _logger = _CellLogger(Logging.ConsoleLogger(_logio(capture)), _progress_sink(mod))
+        _logger = _CellLogger(Logging.ConsoleLogger(_logio(capture)), _progress_sink(mod), cid)
         Logging.with_logger(_logger) do
             value = _eval_cell_source(mod, source, filename)
         end
