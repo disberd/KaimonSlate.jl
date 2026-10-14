@@ -659,13 +659,15 @@ const _TESTNS = RE.register_refresh_ns!("test-bind", _noop_refresh)
         @test sort(collect(keys(Base.invokelatest(getproperty, r.mod, :__slate_replay_sweeps)))) == ids
     end
 
-    # Each run of a cell lowers it again, so each `@replay` hands `_do_replay` a closure of a NEW type.
-    # A method specialized on that type compiles again on every run (about 120 ms per mark), which
-    # made a slider move cost far more than the cell's work. One specialization must serve them all.
-    @testset "re-running a @replay cell does not specialize _do_replay again" begin
+    # Each run of a cell lowers it again, so each `@replay` makes a closure of a NEW type. Anything that
+    # compiles for that type compiles again on every run, which made a slider move cost far more than
+    # the cell's work: `_do_replay` specialized on it (about 120 ms per mark), and the live call of the
+    # closure compiled its body (about 5 ms per mark). One specialization must serve every run, and the
+    # live run must take the value from the cell without calling the closure.
+    @testset "re-running a @replay cell compiles nothing new" begin
         r = parse_report("""
         #%% code id=ctl
-        @bind k Slider(1:4)
+        @bind k Slider(1:4; default = 3)
         #%% code id=use
         v = @replay(k, [k, 2k])
         """)
@@ -675,6 +677,10 @@ const _TESTNS = RE.register_refresh_ns!("test-bind", _noop_refresh)
             findcell(r, "use").state = STALE; eval_stale!(r)
         end
         @test count(_ -> true, Base.specializations(only(methods(RE._do_replay)))) == 1
+        @test collect(Base.invokelatest(getproperty, r.mod, :v)) == [3, 6]
+        f = Base.invokelatest(getproperty, r.mod, :__slate_replay_sweeps)["use:k"].f
+        @test isempty(Base.specializations(only(methods(f))))
+        @test Base.invokelatest(f, 2) == [2, 4]          # the export still sweeps the closure
     end
 
     # `@replay` sweeps the value a CELL sees, not the wire value the registry holds. For a slider or a
