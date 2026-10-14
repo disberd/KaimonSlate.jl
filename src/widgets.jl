@@ -1321,8 +1321,11 @@ end
 # A value outside the domain is a WARNING, not an error. This runs during live editing — precisely when
 # a slider's range is being changed — and breaking the cell there would be hostile; the live result is
 # still correct, only the shipped coverage is stale.
+#
+# `f` is `@nospecialize`: every run of a cell makes a new closure type for each `@replay`, so a
+# specialized method would compile this whole function again on each run (about 120 ms per mark).
 function _do_replay(reg::Dict{Symbol,Tuple{Widget,Any}}, reglock::ReentrantLock,
-                    sweeps::Dict{String,Any}, name::Symbol, f)
+                    sweeps::Dict{String,Any}, name::Symbol, @nospecialize(f))
     entry = lock(reglock) do; get(reg, name, nothing); end
     entry === nothing && error("@replay: `" * String(name) * "` is not a @bind control in this notebook " *
                                "(declare it with `@bind " * String(name) * " Slider(…)` first)")
@@ -1984,7 +1987,7 @@ function _populate_notebook_ns!(m::Module; echart, EChart, slate_table, SlateTab
     # reads it long after the cells ran; a re-run replaces its own entries in place.
     replay_sweeps = Dict{String,Any}()
     Core.eval(m, :(const __slate_replay_sweeps = $replay_sweeps))
-    Core.eval(m, :(const __slate_replay = $((name, f) -> _do_replay(reg, reglock, replay_sweeps, name, f))))
+    Core.eval(m, :(const __slate_replay = $((name, @nospecialize(f)) -> _do_replay(reg, reglock, replay_sweeps, name, f))))
     # The export's way in for a sweep NO cell declared: a table two hops from its control, whose closure
     # is composed from the graph rather than written by hand (see `_register_chain_replay`). Registering
     # rather than running keeps the one expensive step in one place — the sweep below.

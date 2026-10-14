@@ -659,6 +659,24 @@ const _TESTNS = RE.register_refresh_ns!("test-bind", _noop_refresh)
         @test sort(collect(keys(Base.invokelatest(getproperty, r.mod, :__slate_replay_sweeps)))) == ids
     end
 
+    # Each run of a cell lowers it again, so each `@replay` hands `_do_replay` a closure of a NEW type.
+    # A method specialized on that type compiles again on every run (about 120 ms per mark), which
+    # made a slider move cost far more than the cell's work. One specialization must serve them all.
+    @testset "re-running a @replay cell does not specialize _do_replay again" begin
+        r = parse_report("""
+        #%% code id=ctl
+        @bind k Slider(1:4)
+        #%% code id=use
+        v = @replay(k, [k, 2k])
+        """)
+        build_dependencies!(r)
+        eval_stale!(r)
+        for _ in 1:2
+            findcell(r, "use").state = STALE; eval_stale!(r)
+        end
+        @test count(_ -> true, Base.specializations(only(methods(RE._do_replay)))) == 1
+    end
+
     # `@replay` sweeps the value a CELL sees, not the wire value the registry holds. For a slider or a
     # select those are the same thing; for a TableSelect the wire value is a row index and the cell
     # value is the row, so sweeping unwrapped would hand `sel.b` an integer and fail on field access.
