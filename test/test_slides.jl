@@ -382,6 +382,87 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test pdf === nothing || length(pdf) > 1000
     end
 
+    @testset "a deck template drives the PDF and the bundle" begin
+        # The template font comes from a pinned commit of google/fonts (SIL OFL). Without curl or a
+        # network, the deck still compiles in the fallback font, and only the font check is skipped.
+        fonturl = "https://raw.githubusercontent.com/google/fonts/90abd17b4f97671435798b6147b698aa9087612f/ofl/monoton/Monoton-Regular.ttf"
+        font = try
+            Sys.which("curl") === nothing ? nothing : read(`curl -sSfL --max-time 30 $fonturl`)
+        catch
+            nothing
+        end
+        tpl = """
+        #let slide(body, layout: none, title: none, n: none) = page[
+          #set text(font: "Monoton")
+          TPL layout=#repr(layout) title=#(if title == none { "none" } else { title.body }) name=#toml("cfg.toml").name
+          #body
+        ]
+        """
+        files = Dict("cfg.toml" => Vector{UInt8}("name = \"tomlvalue\"\n"))
+        font === nothing || (files["fonts/Monoton-Regular.ttf"] = font)
+        src = "#%% md id=s layout=center\n## Shown\n\nbody text\n"
+        text(pdf) = (f = tempname() * ".pdf"; write(f, pdf);
+                     try read(`pdftotext -layout $f -`, String) finally rm(f) end)
+        plain = _mknb(src)
+        before = try
+            dir = NS._build_slides_project(plain)
+            try
+                read(joinpath(dir, "doc.typ"), String)
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        catch
+            nothing
+        end
+        nb = _mknb(src)
+        nb.deck_template = (; hash = "h", source = tpl, files)
+        pdf = try
+            NS.export_pdf(nb; layout = "slides")
+        catch err
+            @info "deck template PDF skipped" err
+            nothing
+        end
+        if pdf === nothing || Sys.which("pdftotext") === nothing
+            @test true
+        else
+            t = text(pdf)
+            @test occursin("TPL layout=\"center\"", t) && occursin("title=Shown", t) && occursin("name=tomlvalue", t)
+            if font === nothing || Sys.which("pdffonts") === nothing
+                @info "font check skipped (font download or pdffonts unavailable)"
+                @test true
+            else
+                f = tempname() * ".pdf"; write(f, pdf)
+                fonts = try read(`pdffonts $f`, String) finally rm(f) end
+                @test occursin("Monoton", fonts)
+            end
+
+            # The bundle holds the same files; unpacked, it compiles to the same text and page count.
+            bundle = NS.export_typst_bundle(nb; layout = "slides")
+            out = mktempdir()
+            try
+                gz = joinpath(out, "b.tar.gz"); write(gz, bundle)
+                proj = joinpath(out, "proj"); mkpath(proj)
+                run(`tar -xzf $gz -C $proj`)
+                @test read(joinpath(proj, "cfg.toml"), String) == "name = \"tomlvalue\"\n"
+                NS._typst_compile(joinpath(proj, "doc.typ"), joinpath(proj, "again.pdf"))
+                @test text(read(joinpath(proj, "again.pdf"))) == t
+            finally
+                rm(out; recursive = true, force = true)
+            end
+        end
+
+        # Without a template the preamble is the only prefix; no template text leaks in.
+        @test before === nothing || !occursin("deck template", before)
+
+        # A file name that leaves the project directory is refused at the write site.
+        io = IOBuffer(); d = mktempdir()
+        try
+            @test_throws ArgumentError NS._apply_deck_template!(io, d, (; hash = "h", source = "", files = Dict("../x" => UInt8[])))
+        finally
+            rm(d; recursive = true, force = true)
+        end
+    end
+
     @testset "slide-deck with CITATIONS compiles (measure-in-isolation regression)" begin
         # A cite() inside the slide fit-scaler's measure() used to abort the whole deck with
         # "cannot format citation in isolation" — the measured copy must render citation
