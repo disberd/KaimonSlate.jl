@@ -33,6 +33,10 @@ were written when they went out. They are marked.
   or `none` for each column, and the other arguments are the column bodies. A Typst preamble that is
   added after the default one can redefine `slidecols`. Other fenced divs, such as `::: step`, still
   print only their content.
+- The live deck puts the heading a slide starts with in its own `.slide-title` element, above the
+  slide body. A slide that starts with a heading of any depth has a title. The heading is not
+  repeated in the body. The slide of a `title` cell has `data-role="title"`, so a stylesheet can
+  match it with CSS only. The default look of the deck does not change.
 
 ## [2.2.0] - 2026-11-16
 
