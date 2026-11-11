@@ -592,6 +592,69 @@ package_imports() = lock(_IMPORTS_LOCK) do
     copy(_IMPORTS)
 end
 
+# ── Package-declared deck template ────────────────────────────────────────────
+# A Typst template for the slide deck, held as bytes so the hub never reads a path the worker names.
+# The manifest carries only the hash; the hub pulls the bytes when the hash changes.
+const _DECK_TEMPLATE_LOCK = ReentrantLock()
+const _DECK_TEMPLATE = Ref{Union{Nothing,@NamedTuple{hash::String, source::String,
+                                                      files::Dict{String,Vector{UInt8}}}}}(nothing)
+
+# A file name is a relative POSIX path: no drive, no backslash, no NUL, and no empty, `.` or `..` segment.
+_template_path_ok(name::AbstractString) =
+    !isempty(name) && !startswith(name, '/') && !occursin(r"^[A-Za-z]:|[\\\0]", name) &&
+    all(s -> !isempty(s) && s != "." && s != "..", split(name, '/'))
+
+# SHA-256 over the source and the (name, bytes) pairs in name order. Each part carries its length, so
+# two different splits of the same bytes give two different hashes.
+function _template_hash(source::AbstractString, files::AbstractDict)
+    ctx = SHA.SHA2_256_CTX()
+    part(b) = (SHA.update!(ctx, codeunits("$(length(b)):")); SHA.update!(ctx, b))
+    part(codeunits(source))
+    for name in sort!(collect(keys(files)))
+        part(codeunits(name)); part(files[name])
+    end
+    return bytes2hex(SHA.digest!(ctx))
+end
+
+"""
+    provide_deck_template!(source; files = Dict{String,Vector{UInt8}}()) -> Nothing
+
+Declare a Typst deck template for every notebook that loads this package. `source` is the `.typ` text.
+`files` maps a file name to its bytes: the layout catalogue, art and fonts that `source` uses. Put fonts
+under `fonts/`. Slate accepts bytes only, so give it `read(path)`, never a path.
+
+A file name must be a relative POSIX path, such as `layouts/title.typ`. A name that is absolute or has a
+`..` segment throws an `ArgumentError`. Call this from `__init__`. A later call replaces the template.
+
+The manifest carries a hash of the template ([`extension_manifest`](@ref)). Slate pulls the bytes only
+when the hash changes.
+"""
+function provide_deck_template!(source::AbstractString;
+                                files::AbstractDict = Dict{String,Vector{UInt8}}())
+    copied = Dict{String,Vector{UInt8}}()
+    for (name, bytes) in files
+        _template_path_ok(name) ||
+            throw(ArgumentError("provide_deck_template!: file name `$name` must be a relative POSIX path " *
+                                "without a `..` segment"))
+        copied[String(name)] = Vector{UInt8}(bytes)
+    end
+    src = String(source)
+    t = (; hash = _template_hash(src, copied), source = src, files = copied)
+    lock(_DECK_TEMPLATE_LOCK) do
+        _DECK_TEMPLATE[] = t
+    end
+    return nothing
+end
+
+"""
+    deck_template() -> Union{Nothing,NamedTuple}
+
+The template that [`provide_deck_template!`](@ref) declared, as `(; hash, source, files)`, or `nothing`.
+The hash is a hex SHA-256 string. A later `provide_deck_template!` replaces the template and leaves the
+returned value as it was.
+"""
+deck_template() = lock(() -> _DECK_TEMPLATE[], _DECK_TEMPLATE_LOCK)
+
 """
     frontend_scripts() -> Dict{String,String}
 
@@ -620,15 +683,21 @@ page — Slate pulls it once per run drain and merges it into the notebook. Fiel
   need these to ROUTE a fence — it rewrites every tagged fence and lets the worker answer — but it does
   need them to INVALIDATE: a markdown cell caches its interpolation results, so a block rendered before
   an extension was loaded keeps its plain-code fallback until something restales the cell.
+- `deck_template_hash`: the hash of the deck template from [`provide_deck_template!`](@ref), a string.
+  The field is absent when no package declares a template. It carries no bytes: Slate pulls them in a
+  separate call, and only when the hash changes.
 
 Extensible: a new kind of package registration surfaces as another field here, carried by the same
 query — no new transport per feature.
 """
-extension_manifest() =
-    (; frontend = lock(_FRONTEND_LOCK) do
-           _refresh_frontend_files!()
-           [(; id = k, js = v.js, esm = v.esm, kind = v.kind) for (k, v) in _FRONTEND]
-       end,
-       assets = [(; pkg = k, dir = v) for (k, v) in _ASSETS],
-       imports = [(; spec = k, url = v) for (k, v) in package_imports()],
-       fences = fence_languages())
+function extension_manifest()
+    m = (; frontend = lock(_FRONTEND_LOCK) do
+             _refresh_frontend_files!()
+             [(; id = k, js = v.js, esm = v.esm, kind = v.kind) for (k, v) in _FRONTEND]
+         end,
+         assets = [(; pkg = k, dir = v) for (k, v) in _ASSETS],
+         imports = [(; spec = k, url = v) for (k, v) in package_imports()],
+         fences = fence_languages())
+    t = deck_template()
+    return t === nothing ? m : merge(m, (; deck_template_hash = t.hash))
+end
