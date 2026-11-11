@@ -48,6 +48,37 @@ function inprocess_extension_manifest(ns::Union{Module,Nothing} = nothing)
     return SlateExtensionsBase.extension_manifest()
 end
 
+# `extension_manifest()` as the gate wire carries it. Each field after `frontend` and `assets` is read
+# only if present: a notebook project that pins an older SlateExtensionsBase gives a manifest without it,
+# and a missing field must not drop the fields that are there. The deck template travels as its hash;
+# the bytes come from `deck_template_wire`.
+function extension_manifest_wire(m)
+    out = Dict{String,Any}("frontend" => Dict{String,Any}[], "assets" => Dict{String,Any}[],
+                           "imports" => Dict{String,Any}[], "fences" => String[])
+    out["frontend"] = Dict{String,Any}[Dict{String,Any}(
+        "id" => String(e.id), "js" => String(e.js), "esm" => e.esm, "kind" => String(e.kind))
+        for e in m.frontend]
+    out["assets"] = Dict{String,Any}[Dict{String,Any}(
+        "pkg" => String(e.pkg), "dir" => String(e.dir)) for e in m.assets]
+    if hasproperty(m, :imports)
+        out["imports"] = Dict{String,Any}[Dict{String,Any}(
+            "spec" => String(e.spec), "url" => String(e.url)) for e in m.imports]
+    end
+    hasproperty(m, :fences) && (out["fences"] = String[String(f) for f in m.fences])
+    hasproperty(m, :deck_template_hash) && (out["deck_template_hash"] = String(m.deck_template_hash))
+    return out
+end
+
+# The deck template bytes as the gate wire carries them (base64, so the JSON stays valid): `{ok: false}`
+# when no package declares one.
+function deck_template_wire()
+    t = isdefined(SlateExtensionsBase, :deck_template) ? SlateExtensionsBase.deck_template() : nothing
+    t === nothing && return Dict{String,Any}("ok" => false)
+    return Dict{String,Any}("ok" => true, "hash" => t.hash, "source" => t.source,
+        "files" => Dict{String,Any}[Dict{String,Any}("name" => n, "b64" => Base64.base64encode(b))
+                                    for (n, b) in sort!(collect(t.files); by = first)])
+end
+
 # slate_fingerprint + memo-store introspection — shared notebook helpers injected below
 # (one include here serves both namespaces, mirroring how this file itself is shared).
 include(joinpath(@__DIR__, "fingerprint.jl"))

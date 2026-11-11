@@ -3,12 +3,18 @@
 # export hoisting (title/abstract lifted into the title block and dropped from the body).
 using ReTest
 using KaimonSlate
+using JSON
 const NS = KaimonSlate.NotebookServer
 const RE = KaimonSlate.ReportEngine
 
 _mknb(src) = NS.LiveNotebook("fm", "/tmp/fmtest.jl", RE.parse_report(src; title = "Fallback"),
     RE.InProcessKernel(), 1, String[], String[], ReentrantLock(), Channel{String}[],
     ReentrantLock(), "", false, Dict{String,String}())
+
+# A kernel for the deck-template test: it counts the byte pulls and reads the template from this process.
+struct CountingKernel <: RE.Kernel; pulls::Base.RefValue{Int}; end
+RE.get_deck_template(k::CountingKernel, report::RE.Report) =
+    (k.pulls[] += 1; RE.get_deck_template(RE.InProcessKernel(), report))
 
 const ROLES_SRC = """
 #%% md id=ttl title
@@ -871,6 +877,99 @@ x = 1
         nb.report.meta["imports"] = Dict("mermaid" => "https://example.test/mine.js")
         @test NS.state_json(nb)["moduleImports"]["mermaid"] == "https://example.test/mine.js"
         @test NS.state_json(nb)["moduleImports"] == NS._effective_imports(nb)
+    end
+
+    # A package declares a Typst deck template as bytes (`provide_deck_template!`). The manifest carries
+    # its hash, the hub keeps the bytes for the notebook, and the bytes cross the gate only when the hash
+    # changes. `CountingKernel` stands in for the gate and counts the byte pulls.
+    @testset "deck template → hash in the manifest, bytes pulled on a change" begin
+        SEB = RE.SlateExtensionsBase
+        k = CountingKernel(Ref(0))
+        nb = _mknb("#%% code id=c\n1 + 1\n")
+        nb.kernel = k
+        files = Dict("layouts/title.typ" => Vector{UInt8}("#let title = 1"), "fonts/a.ttf" => UInt8[0, 1, 2, 255])
+        try
+            SEB._DECK_TEMPLATE[] = nothing
+            @test NS.notebook_deck_template(nb) === nothing
+            NS._refresh_extensions!(nb)                          # no template declared: nothing to pull
+            @test NS.notebook_deck_template(nb) === nothing && k.pulls[] == 0
+
+            # After a run drain the hub holds the hash and the bytes.
+            SEB.provide_deck_template!("#let slide(b) = b"; files)
+            NS._refresh_extensions!(nb)
+            t = NS.notebook_deck_template(nb)
+            @test t.hash == SEB.deck_template().hash
+            @test t.source == "#let slide(b) = b" && t.files == files
+            @test k.pulls[] == 1
+
+            # The same hash: the next drain makes no byte transfer.
+            NS._refresh_extensions!(nb); NS._refresh_extensions!(nb)
+            @test k.pulls[] == 1 && NS.notebook_deck_template(nb).hash == t.hash
+
+            # A changed template changes the hash, and the next drain pulls the new bytes.
+            SEB.provide_deck_template!("#let slide(b) = [b]"; files)
+            NS._refresh_extensions!(nb)
+            t2 = NS.notebook_deck_template(nb)
+            @test t2.hash != t.hash && t2.source == "#let slide(b) = [b]"
+            @test k.pulls[] == 2
+
+            # A manifest without the field clears the template.
+            SEB._DECK_TEMPLATE[] = nothing
+            NS._refresh_extensions!(nb)
+            @test NS.notebook_deck_template(nb) === nothing && k.pulls[] == 2
+        finally
+            SEB._DECK_TEMPLATE[] = nothing
+        end
+    end
+
+    # The worker answers the manifest with the hash and the byte call with base64 bytes. The wire is JSON,
+    # so the hub decodes what comes back from JSON, and refuses a file name that leaves the directory.
+    @testset "deck template wire: bytes round trip, hostile names refused" begin
+        SEB = RE.SlateExtensionsBase
+        files = Dict("layouts/title.typ" => Vector{UInt8}("#let title = 1"), "fonts/a.ttf" => UInt8[0, 1, 2, 255])
+        wire(x) = JSON.parse(JSON.json(x))
+        try
+            SEB._DECK_TEMPLATE[] = nothing
+            @test RE.deck_template_wire() == Dict{String,Any}("ok" => false)
+            SEB.provide_deck_template!("#let slide(b) = b"; files)
+            m = wire(RE.extension_manifest_wire(RE.inprocess_extension_manifest()))
+            @test m["deck_template_hash"] == SEB.deck_template().hash
+            @test !occursin("#let slide", JSON.json(m))           # the manifest has no bytes
+
+            w = wire(RE.deck_template_wire())
+            t = RE._decode_deck_template(w)
+            @test t.hash == m["deck_template_hash"] && t.source == "#let slide(b) = b" && t.files == files
+
+            for bad in ("/etc/passwd", "../x.typ", "a/../../x", "a//b", "a\\b", "C:/x")
+                hostile = copy(w)
+                hostile["files"] = [Dict("name" => bad, "b64" => "AA==")]
+                @test RE._decode_deck_template(hostile) === nothing
+            end
+            @test RE._decode_deck_template(Dict{String,Any}("ok" => false)) === nothing
+        finally
+            SEB._DECK_TEMPLATE[] = nothing
+        end
+    end
+
+    # A notebook that pins an older SEB gives a manifest without the deck-template field. It still
+    # carries every other field, and the hub merges them.
+    @testset "a manifest without the deck-template field keeps the other fields" begin
+        old = (frontend = [(; id = "w:a", js = "JS", esm = false, kind = "")],
+               assets = [(; pkg = "OldPkg", dir = "/old/assets")],
+               imports = [(; spec = "mermaid", url = "https://esm.sh/mermaid@11.4.1")],
+               fences = ["mermaid"])
+        w = RE.extension_manifest_wire(old)
+        @test !haskey(w, "deck_template_hash")
+        @test w["frontend"][1]["js"] == "JS" && w["assets"][1]["pkg"] == "OldPkg"
+        @test w["imports"][1]["spec"] == "mermaid" && w["fences"] == ["mermaid"]
+
+        nb = _mknb("#%% code id=c\n1 + 1\n")
+        @test NS._merge_manifest!(nb, w)
+        @test [e.id for e in NS._frontend_scripts(nb)] == ["w:a"]
+        @test nb.assets["OldPkg"] == "/old/assets"
+        @test nb.pkgimports["mermaid"] == "https://esm.sh/mermaid@11.4.1"
+        @test "mermaid" in nb.fences
+        @test NS.notebook_deck_template(nb) === nothing
     end
 
     # A page can import `/ext-assets/<pkg>/…` before a manifest declares `<pkg>`: a stored preview
