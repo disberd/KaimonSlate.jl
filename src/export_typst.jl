@@ -1180,14 +1180,17 @@ function _bind_text(b)::String
 end
 
 # Compile a .typ to PDF, preferring a system `typst`, else the bundled Typst_jll. `--root`
-# is the temp dir so read()/image() of the per-cell aux files resolve (Typst sandboxes IO).
+# is the project dir so read()/image() of the per-cell aux files resolve (Typst sandboxes IO).
+# A `fonts` subdirectory of it (a deck template may ship fonts there) is added as a font path.
 # Every stream is given explicitly: a detached host process can have its stdin/stdout closed, and
 # a child that inherits a closed descriptor fails to spawn (EBADF).
 function _typst_compile(typ::String, pdf::String)
     root = dirname(typ)
+    fonts = joinpath(root, "fonts")
+    fontflags = isdir(fonts) ? ["--font-path", fonts] : String[]
     sys = Sys.which("typst")
     err = IOBuffer()
-    compile(exe) = run(pipeline(`$exe compile --root $root $typ $pdf`; stdin = devnull, stdout = err, stderr = err))
+    compile(exe) = run(pipeline(`$exe compile --root $root $fontflags $typ $pdf`; stdin = devnull, stdout = err, stderr = err))
     try
         if sys !== nothing
             compile(sys)
@@ -2033,6 +2036,24 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
     return
 end
 
+# Write a deck template's files into the project `dir` and append its source to `io`, after the base
+# preamble, so a `#let slide` or `#let metablock` in it shadows the base one. The source stays inline
+# (an `#include` would not export its lets). A template ships fonts under `fonts/`: `_typst_compile`
+# puts that directory on the font path.
+_apply_deck_template!(io::IO, dir::AbstractString, ::Nothing) = nothing
+function _apply_deck_template!(io::IO, dir::AbstractString, t)
+    root = normpath(dir)
+    for (name, bytes) in t.files
+        path = normpath(joinpath(root, name))
+        startswith(path, root * Base.Filesystem.path_separator) ||
+            throw(ArgumentError("deck template file \"$name\" escapes the project directory"))
+        mkpath(dirname(path))
+        write(path, bytes)
+    end
+    print(io, "\n// ── deck template ──\n", t.source, "\n\n")
+    return
+end
+
 # Assemble a slide-DECK Typst project: one page per slide (segmented by `_slide_segments`),
 # 16:9/4:3 landscape, auto-fit. Code listings are hidden by default on slides (set `code`/
 # `include_source`). With `notes=true`, a speaker-notes appendix follows the deck.
@@ -2053,6 +2074,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
         theme == "dark" && write(joinpath(dir, "code-dark.tmTheme"), _CODE_DARK_TMTHEME)
         io = IOBuffer()
         print(io, _typst_preamble_slides(nb.report.title; theme = theme, ratio = ratio, code = code))
+        _apply_deck_template!(io, dir, notebook_deck_template(nb))
         cells = filter(c -> renders(c.kind), nb.report.cells)
         # Role-tagged metadata → a dedicated title slide (metablock); hoisted title/abstract cells
         # are dropped from the body slides.
@@ -2126,7 +2148,9 @@ end
 
 The complete Typst PROJECT — `doc.typ` plus every figure / markdown / code-listing asset it
 references — as a gzip-compressed tarball (`.tar.gz`). Unpack it and `typst compile doc.typ`
-reproduces the PDF, so the layout and preamble can be tweaked by hand.
+reproduces the PDF, so the layout and preamble can be tweaked by hand. A slide deck whose package
+declares a deck template carries the template files too. When they include a `fonts` directory,
+compile with `typst compile --font-path fonts doc.typ`.
 """
 function export_typst_bundle(nb::LiveNotebook; kwargs...)
     dir = _build_typst_project(nb; kwargs...)

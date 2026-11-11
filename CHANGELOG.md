@@ -19,6 +19,13 @@ were written when they went out. They are marked.
   asks the worker for the bytes only when the hash changes, so 1 to 3 MB of template does not cross the
   gate on each run. A notebook that pins an older `SlateExtensionsBase` has no hash and no template, and
   still gets every other manifest field. This needs a `SlateExtensionsBase` newer than 0.11.3.
+- The PDF deck export applies the deck template of the notebook. The template source goes after the
+  default Typst preamble, so a `#let slide` in it replaces the default one. The template files are
+  written into the Typst project directory, which is the `--root` of the compile. When the project
+  has a `fonts` directory, Typst gets `--font-path` for it. The Typst bundle export carries the same
+  files. To rebuild a deck with template fonts from an unpacked bundle, run
+  `typst compile --font-path fonts doc.typ`. A notebook without a template exports the same `doc.typ`
+  as before.
 
 ### Changed
 
