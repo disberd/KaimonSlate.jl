@@ -427,6 +427,51 @@ SlateExtensionsBase.to_palette_command(c::TaggedCmd) = auto_palette_command(c)
         empty!(SlateExtensionsBase._ASSETS)
     end
 
+    # A package declares a Typst deck template as bytes. The manifest carries only a hash of them; the hub
+    # pulls the bytes with a separate call when the hash changes.
+    @testset "provide_deck_template! (deck template bytes)" begin
+        SlateExtensionsBase._DECK_TEMPLATE[] = nothing            # isolate
+        @test deck_template() === nothing
+        @test !hasproperty(extension_manifest(), :deck_template_hash)   # absent when nothing is declared
+
+        files = Dict("layouts/title.typ" => Vector{UInt8}("#let t = 1"), "fonts/a.ttf" => UInt8[0, 1, 2, 255])
+        provide_deck_template!("#let slide(b) = b"; files)
+        t = deck_template()
+        @test t.source == "#let slide(b) = b"
+        @test t.files == files
+        @test t.hash isa String && length(t.hash) == 64 && all(in("0123456789abcdef"), t.hash)
+        @test extension_manifest().deck_template_hash == t.hash   # the hash only: no source, no bytes
+
+        # The hash covers the source and every (name, bytes) pair, whatever the dict order.
+        h = t.hash
+        provide_deck_template!("#let slide(b) = b"; files = Dict(reverse(collect(files))))
+        @test deck_template().hash == h
+        provide_deck_template!("#let slide(b) = [b]"; files)
+        @test deck_template().hash != h
+        provide_deck_template!("#let slide(b) = b"; files = merge(files, Dict("fonts/a.ttf" => UInt8[0, 1, 2, 254])))
+        @test deck_template().hash != h
+        provide_deck_template!("#let slide(b) = b"; files = Dict("layouts/title.typ" => Vector{UInt8}("#let t = 1")))
+        @test deck_template().hash != h
+        provide_deck_template!("#let slide(b) = b"; files = Dict("layouts/other.typ" => Vector{UInt8}("#let t = 1"),
+                                                                  "fonts/a.ttf" => UInt8[0, 1, 2, 255]))
+        @test deck_template().hash != h
+
+        # A later declaration replaces the earlier one, and the registry holds its own copy of the bytes.
+        bytes = UInt8[7, 8]
+        provide_deck_template!("s"; files = Dict("a.bin" => bytes))
+        bytes[1] = 0
+        @test deck_template().files["a.bin"] == UInt8[7, 8]
+        @test provide_deck_template!("s2") === nothing && isempty(deck_template().files)
+
+        # A file name is a relative POSIX path: the hub writes it into a directory.
+        for bad in ("/etc/passwd", "../x.typ", "a/../../x", "a/./b", "a//b", "a\\b", "C:/x", "", "a/", "a\0b")
+            @test_throws "relative POSIX path" provide_deck_template!("s"; files = Dict(bad => UInt8[1]))
+        end
+        @test deck_template().source == "s2"                       # a rejected call changes nothing
+
+        SlateExtensionsBase._DECK_TEMPLATE[] = nothing
+    end
+
     # Lazy front-end: `required_assets(::Type{W})` + `ensure_widget_assets!` — Slate loads a widget's JS the
     # first time it's seen (no __init__), under the type-derived kind, idempotently.
     @testset "required_assets lazy loading" begin

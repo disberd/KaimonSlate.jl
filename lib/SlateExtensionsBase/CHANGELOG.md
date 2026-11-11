@@ -14,6 +14,15 @@ Two things to know about the published GitHub releases for this package:
 
 ## [Unreleased]
 
+### Added
+
+- **`provide_deck_template!`**, declaring a Typst deck template as bytes: the `.typ` source and named
+  files such as a layout catalogue, art and fonts. A file name is a relative POSIX path, and a name that
+  is absolute or has a `..` segment throws an `ArgumentError`. `deck_template()` returns the template as
+  `(; hash, source, files)`, and `extension_manifest()` gains a `deck_template_hash` field. The field is
+  absent when no package declares a template. The package now depends on the `SHA` standard library for
+  the hash.
+
 ## [0.11.3] - 2026-11-05
 
 ### Added

@@ -42,6 +42,7 @@ enrich the listing (tagline, categories, icon, screenshots, a starter snippet), 
 module SlateExtensionsBase
 
 import Base64   # stdlib — WebPage(obscure=true) base64 packaging
+import SHA      # stdlib — the hash of a deck template
 
 include("controls.jl")
 include("output.jl")
@@ -71,7 +72,8 @@ on_worker_reset, run_worker_resets,
        required_assets, ensure_widget_assets!, ensure_module_frontend!, ensure_module_frontends!,
        frontend_scripts, extension_manifest, provide_assets!, @provide_assets!, @pkg_dir, asset_dirs,
        js_bundle,
-       ext_asset_url, @ext_asset_url, pkg_key, provide_import!, package_imports
+       ext_asset_url, @ext_asset_url, pkg_key, provide_import!, package_imports,
+       provide_deck_template!, deck_template
 # Execution context
 export slate_context, slate_region, slate_regions, slate_side, slate_notebook,
        slate_emit, slate_effect, slate_everywhere, slate_on, slate_off, slate_on_cleanup,
