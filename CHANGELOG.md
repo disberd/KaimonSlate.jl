@@ -12,6 +12,14 @@ were written when they went out. They are marked.
 
 ## [Unreleased]
 
+### Added
+
+- A package that a notebook loads can declare a Typst deck template with `provide_deck_template!`. The
+  worker manifest carries only a hash of the template. The hub keeps the template for each notebook and
+  asks the worker for the bytes only when the hash changes, so 1 to 3 MB of template does not cross the
+  gate on each run. A notebook that pins an older `SlateExtensionsBase` has no hash and no template, and
+  still gets every other manifest field. This needs a `SlateExtensionsBase` newer than 0.11.3.
+
 ### Changed
 
 - The PDF deck now reads each slide's layout tag and title from the same slide model as the live

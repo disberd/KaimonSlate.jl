@@ -68,6 +68,10 @@ struct SseClient
 end
 SseClient(n::Integer) = SseClient(Channel{String}(n), n, Threads.Atomic{Float64}(time()), Threads.Atomic{Bool}(false))
 
+# A deck template held by a notebook: the hash the worker reported, the `.typ` source and the other
+# files (relative POSIX name → bytes).
+const DeckTemplate = @NamedTuple{hash::String, source::String, files::Dict{String,Vector{UInt8}}}
+
 mutable struct LiveNotebook
     id::String                           # hub id (unique; used in /n/<id> + /api/<id>/…)
     path::String
@@ -100,6 +104,9 @@ mutable struct LiveNotebook
                                          # from the same manifest. Tracked only to notice a CHANGE: a markdown cell
                                          # caches its interpolation results, so cells holding a now-claimed (or
                                          # now-unclaimed) fence must be restaled. See `_refresh_fences!`.
+    deck_template::Union{Nothing,DeckTemplate}   # the Typst deck template the packages declare, with its hash; its
+                                         # bytes come from the worker only when the manifest's hash changes. See
+                                         # `_refresh_deck_template!` and `notebook_deck_template`.
     # Set the moment the notebook starts closing. Work started for it in the background (a prepare, a
     # placement, a connect) checks it before creating anything for the notebook or running its cells.
     closed::Bool
@@ -117,7 +124,7 @@ mutable struct LiveNotebook
     LiveNotebook(id, path, report, kernel, version, undo, redo, lock, listeners, llock, agent_id, agent_busy, agents) =
         new(id, path, report, kernel, version, undo, redo, lock, listeners, llock, agent_id, agent_busy, agents,
             Cell[], @NamedTuple{id::String, js::String, esm::Bool, kind::String}[], Dict{String,String}(),
-            Dict{String,String}(), Set{String}(), false, false, 0, Dict{String,UInt}())
+            Dict{String,String}(), Set{String}(), nothing, false, false, 0, Dict{String,UInt}())
 end
 
 # ── Notebook-lock protocol (`nb.lock`) ─────────────────────────────────────────────────────────────
@@ -140,7 +147,8 @@ end
 # Kernel round-trip / blocking-boundary calls that must NEVER run while `nb.lock` is held.
 const _KERNEL_BOUNDARY = Set{Symbol}((:prepare!, :eval_cell!, :eval_stale!, :_eval!, :_eval_one!,
     :_run_code_batch!, :refine_usings!, :refine_macros!, :resolve_usings!, :resolve_macros!,
-    :_module_exports, :_dep_versions, :cancel_eval, :shutdown!, :_refresh_extensions!, :_pull_ext_assets!))
+    :_module_exports, :_dep_versions, :cancel_eval, :shutdown!, :_refresh_extensions!, :_pull_ext_assets!,
+    :get_deck_template))
 
 # Scan an expression for a synchronous call to a boundary symbol (`f(…)` or `Mod.f(…)`). Skips
 # `@async`/`@spawn` and `quote` subtrees — work scheduled there runs LATER, not under the held lock —
@@ -2121,35 +2129,67 @@ function _refresh_extensions!(nb::LiveNotebook)
     lock(_manifest_pull_lock(nb)) do
         manifest = _fetch_manifest(nb)
         manifest === nothing && return false
-        changed = false
-        fe = _manifest_field(manifest, :frontend)
-        if fe !== nothing
-            for e in fe
-                js = _manifest_field(e, :js); js === nothing && continue
-                esm = _manifest_field(e, :esm); esm = esm === true || esm == "true"
-                kind = _manifest_field(e, :kind); kind = kind === nothing ? "" : String(kind)
-                lock(nb.lock) do
-                    _register_frontend!(nb, _manifest_field(e, :id), String(js), esm, kind)
-                end && (changed = true)
-            end
-        end
-        _merge_assets!(nb, manifest) && (changed = true)
-        im = _manifest_field(manifest, :imports)
-        if im !== nothing
-            for e in im
-                spec = _manifest_field(e, :spec); url = _manifest_field(e, :url)
-                (spec === nothing || url === nothing) && continue
-                lock(nb.lock) do
-                    _register_import!(nb, String(spec), String(url))
-                end && (changed = true)
-            end
-        end
-        fl = _manifest_field(manifest, :fences)
-        fl === nothing || (lock(nb.lock) do
-            _refresh_fences!(nb, Set{String}(String(f) for f in fl))
-        end && (changed = true))
-        return changed
+        return _merge_manifest!(nb, manifest)
     end
+end
+
+# Merge one manifest into the notebook's registries. Returns true if anything changed. The caller holds the
+# pull lock. A field that the manifest lacks (an older SlateExtensionsBase) changes nothing, except the
+# deck template, which a manifest without `deck_template_hash` clears.
+function _merge_manifest!(nb::LiveNotebook, manifest)
+    changed = false
+    fe = _manifest_field(manifest, :frontend)
+    if fe !== nothing
+        for e in fe
+            js = _manifest_field(e, :js); js === nothing && continue
+            esm = _manifest_field(e, :esm); esm = esm === true || esm == "true"
+            kind = _manifest_field(e, :kind); kind = kind === nothing ? "" : String(kind)
+            lock(nb.lock) do
+                _register_frontend!(nb, _manifest_field(e, :id), String(js), esm, kind)
+            end && (changed = true)
+        end
+    end
+    _merge_assets!(nb, manifest) && (changed = true)
+    im = _manifest_field(manifest, :imports)
+    if im !== nothing
+        for e in im
+            spec = _manifest_field(e, :spec); url = _manifest_field(e, :url)
+            (spec === nothing || url === nothing) && continue
+            lock(nb.lock) do
+                _register_import!(nb, String(spec), String(url))
+            end && (changed = true)
+        end
+    end
+    fl = _manifest_field(manifest, :fences)
+    fl === nothing || (lock(nb.lock) do
+        _refresh_fences!(nb, Set{String}(String(f) for f in fl))
+    end && (changed = true))
+    _refresh_deck_template!(nb, manifest)
+    return changed
+end
+
+# The deck template that the notebook's loaded packages declare (`provide_deck_template!`), as
+# `(; hash, source, files)` with `files` a name → bytes dict, or `nothing`. It is not in the page state.
+notebook_deck_template(nb::LiveNotebook) = lock(() -> nb.deck_template, nb.lock)
+
+# Keep the notebook's deck template in step with the manifest's `deck_template_hash`. The bytes are 1 to
+# 3 MB, so the kernel is asked for them only when the hash differs from the one held. A failed pull keeps
+# the template held, and the next drain tries again. Off `nb.lock`: the pull is a kernel round trip.
+function _refresh_deck_template!(nb::LiveNotebook, manifest)
+    h = _manifest_field(manifest, :deck_template_hash)
+    held = notebook_deck_template(nb)
+    if h === nothing
+        held === nothing || lock(() -> (nb.deck_template = nothing), nb.lock)
+    elseif held === nothing || held.hash != String(h)
+        t = try
+            ReportEngine.get_deck_template(nb.kernel, nb.report)
+        catch e
+            ReportEngine._rlog("slate: deck template pull failed: $(first(sprint(showerror, e), 120))")
+            nothing
+        end
+        t === nothing || lock(() -> (nb.deck_template = t), nb.lock)
+    end
+    return nothing
 end
 
 # Pull the manifest before serving a page its full state, so a page load sees the front-end as the worker
