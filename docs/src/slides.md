@@ -359,6 +359,8 @@ typeset landscape deck **server-side via Typst** — one slide per page at the d
   source. Choosing any non-hidden **Code listings** size brings them back.
 - **Vector figures** — CairoMakie embeds as PDF, ECharts as SVG (light+dark captured), so a
   slide stays crisp on a projector.
+- **Columns**: a `:::: columns` group prints side by side, and a column with a `width` keeps it. The
+  other columns share the rest equally. Cells tagged `column=2` print side by side with equal widths.
 - **Speaker notes** — tick **Append speaker-notes pages to the deck** to follow the deck with a
   notes appendix (one page per slide that has `notes` cells).
 

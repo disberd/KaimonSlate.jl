@@ -318,11 +318,12 @@ _slide_geom(ratio) = ratio == "4:3" ? ("254mm", "190.5mm") :
 
 # Preamble for the slides layout. Reuses the same block helpers as the article preamble but on a
 # landscape slide page with bigger type. It defines `SLIDE_W` (the page width), `#let fit(body)` (draws
-# its body vertically centered, auto-shrunk down to a 0.5× floor so a tall slide still fits) and
+# its body vertically centered, auto-shrunk down to a 0.5× floor so a tall slide still fits),
+# `#let slidecols(widths, ..cols)` (a row of columns, see its comment) and
 # `#let slide(body, layout: none, title: none, n: none)`: one page per slide, the body inside `fit`.
 # `layout` is the slide's layout tag and `title` its heading (a `heading` element), both `none` when
 # unset; `n` is the slide number on a notes page. A template that is added after this preamble can
-# redefine `slide` to draw each layout its own way.
+# redefine `slide` or `slidecols` to draw each layout its own way.
 function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "dark",
                                 ratio::AbstractString = "16:9", code::AbstractString = "small")
     pre = _typ_str(strip(replace(_MITEX_SHIMS, r"\s+" => " ")))
@@ -405,6 +406,14 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
       let s = if m.height > sz.height and m.height > 0pt { calc.max(0.5, sz.height / m.height) } else { 1.0 }
       scale(origin: top + center, x: s * 100%, y: s * 100%, box(width: sz.width, height: m.height, body))
     })
+    // Side-by-side columns, top aligned. `widths` holds one entry per column: a ratio or a length, or
+    // `none` for a column that shares the rest equally. The other arguments are the column bodies.
+    // Ratios that fill the row or more shrink in proportion, as the flex columns of the live deck do.
+    #let slidecols(widths, ..cols) = {
+      let shrink = widths.all(w => type(w) == ratio) and widths.map(w => w / 1%).sum() >= 100
+      grid(columns: widths.map(w => if w == none { 1fr } else if shrink { w / 1% * 1fr } else { w }),
+        column-gutter: 1.2em, align: top, ..cols.pos())
+    }
     // One slide = one page, vertically centered. The title goes at the top of the body, inside `fit`;
     // a notes page gets a "Notes · slide N" label in its place. Two layouts follow the live deck:
     // `center` centres the text as well; `section` shifts the slide right and draws a larger title,
@@ -1330,9 +1339,9 @@ Each entry has these fields:
 - `title`: `nothing`, or `(text, depth, cell, interpbase)` when the first block of the slide is a
   markdown heading. `text` is the heading without its `#` marks, `depth` is 1 to 6, `cell` is the id of
   the cell that holds it. The heading is not in `blocks`.
-- `blocks`: the body, in order. Each block is `(cell, src, interpbase, row, column, width)`: the cell id,
+- `blocks`: the body, in order. Each block is `(cell, src, interpbase, row, column)`: the cell id,
   the markdown to draw (`nothing` is the whole cell), the number of `{{ }}` interpolations before it in
-  its cell, the side-by-side row that it belongs to, its `column=` value, and its `width=` tag or `nothing`.
+  its cell, the side-by-side row that it belongs to, and its `column=` value.
 - `notes`: the ids of the `notes` cells that belong to the slide.
 
 `drop(cell)` removes a cell from the blocks, and so from the title search; the entry stays in the deck
@@ -1367,9 +1376,7 @@ function slide_deck(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slid
         for f in frags
             col = _cell_column(f.cell)
             (col >= 2 && row > 0) || (row += 1)
-            w = ReportEngine._tag_value(f.cell.flags, "width=")
-            push!(blocks, (cell = f.cell.id, src = f.src, interpbase = f.interpbase, row = row, column = col,
-                           width = isempty(w) ? nothing : String(w)))
+            push!(blocks, (cell = f.cell.id, src = f.src, interpbase = f.interpbase, row = row, column = col))
         end
         push!(deck, (layout = tag("layout"), title = title, blocks = blocks, transition = tag("transition"),
                      auto = tag("auto"), notes = [n.id for n in seg.notes]))
@@ -1913,6 +1920,72 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
     end
 end
 
+# Typst length of a `:::` column's `width` attribute, or "none" when it has none. A bare number is a
+# percentage, as in the live deck; `px` becomes points and `rem` becomes `em`.
+function _column_width_typst(attrs::AbstractString)
+    m = match(r"(?:^|[\s{.])width\s*=\s*\"?([0-9.]+)(%|px|em|rem)?", attrs)
+    m === nothing && return "none"
+    unit = something(m[2], "%")
+    return string(m[1], unit == "px" ? "pt" : unit == "rem" ? "em" : unit)
+end
+
+# Split a markdown source at its `:::: columns` groups. The result holds the text between groups as
+# strings and each group as `(widths, cols)`: one Typst length or "none" and one markdown source per
+# column. Other fenced divs (`::: step`) stay in the text for `_strip_deck_markup`. A `columns` div
+# inside a column stays in that column's source, where the next pass splits it again.
+function _split_columns(src::AbstractString)
+    occursin("columns", src) || return Any[String(src)]
+    pieces = Any[]
+    text = String[]                                  # lines since the last group
+    stack = Symbol[]                                 # the open divs: :columns, :column or :other
+    widths = String[]; cols = Vector{String}[]       # the open columns group
+    infence = false
+    flush!() = (isempty(text) || push!(pieces, join(text, "\n")); empty!(text))
+    for ln in split(String(src), '\n'; keepempty = true)
+        incol = :column in stack
+        target = incol ? cols[end] : text
+        m = occursin(r"^\s*(```|~~~)", ln) ? (infence = !infence; nothing) : infence ? nothing : match(r"^\s*:{3,}\s*(.*?)\s*$", ln)
+        if m === nothing
+            (isempty(stack) || stack[end] !== :columns) && push!(target, ln)   # a group has no prose between its columns
+        elseif isempty(m[1])                                 # a closing fence
+            k = isempty(stack) ? :none : pop!(stack)
+            if k === :columns
+                push!(pieces, (widths = widths, cols = [join(c, "\n") for c in cols]))
+                widths = String[]; cols = Vector{String}[]
+            elseif k === :other || k === :none
+                push!(target, ln)
+            end
+        else                                                 # an opening fence
+            kind = occursin(r"(?:^|[\s{.])columns(?=[\s}]|$)", m[1]) && !(:columns in stack) ? :columns :
+                   occursin(r"(?:^|[\s{.])column(?=[\s}]|$)", m[1]) && !isempty(stack) && stack[end] === :columns ? :column : :other
+            if kind === :columns
+                flush!()
+            elseif kind === :column
+                push!(widths, _column_width_typst(m[1])); push!(cols, String[])
+            else
+                push!(target, ln)
+            end
+            push!(stack, kind)
+        end
+    end
+    while !isempty(stack)                            # an unclosed group still prints
+        pop!(stack) === :columns && push!(pieces, (widths = widths, cols = [join(c, "\n") for c in cols]))
+    end
+    flush!()
+    return isempty(pieces) ? Any[String(src)] : pieces
+end
+
+# One `slidecols` call: `body(j)` prints the j-th column of the row.
+function _print_slidecols(body, io::IO, widths)
+    print(io, "#slidecols((", join(widths, ", "), ",),\n")
+    for j in eachindex(widths)
+        print(io, "[")
+        body(j)
+        print(io, "],\n")
+    end
+    print(io, ")\n\n")
+end
+
 # Emit one slide fragment (a whole cell, or a `---`-split markdown chunk) into the doc.
 # `frag` is a `SlideFrag`-shaped NamedTuple, annotated loosely on purpose: NamedTuple type parameters
 # are INVARIANT, so a literal whose `src` is a concrete `String` (or `Nothing`) is not a subtype of
@@ -1921,7 +1994,26 @@ end
 function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, compfigs::_CompFigs = _NO_COMPFIGS)
     c, srcoverride = frag.cell, frag.src     # `frag.src` is a per-frag SOURCE override (String/nothing), NOT the themed-render Bool `override`
     if is_prose(c.kind)
-        md = _md_for_typst(c, srcoverride === nothing ? c.source : srcoverride; citekeys = citekeys,
+        src = srcoverride === nothing ? c.source : srcoverride
+        pieces = _split_columns(src)
+        if !(length(pieces) == 1 && pieces[1] isa AbstractString)    # a `:::: columns` group splits the cell
+            kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, compfigs)
+            ib = frag.interpbase     # interpolations are numbered across the cell, so each piece starts after the last
+            for (k, p) in enumerate(pieces)
+                pbase = string(base, "p", k)
+                if p isa AbstractString
+                    _emit_slide_frag!(io, dir, pbase, nb, (cell = c, src = String(p), interpbase = ib); kw...)
+                    ib += _md_interp_count(p)
+                else
+                    _print_slidecols(io, p.widths) do j
+                        _emit_slide_frag!(io, dir, string(pbase, "c", j), nb, (cell = c, src = p.cols[j], interpbase = ib); kw...)
+                        ib += _md_interp_count(p.cols[j])
+                    end
+                end
+            end
+            return
+        end
+        md = _md_for_typst(c, src; citekeys = citekeys,
                            compfig = _compfig_stager(c, dir, base, compfigs, sizes),
                            interpbase = frag.interpbase)
         md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = sizes)   # author-embedded images → staged files
@@ -1989,13 +2081,10 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             (isempty(frags) && isempty(titles[si])) && continue
             args = filter(!isempty, [sl.layout === nothing ? "" : "layout: \"$(_typ_str(sl.layout))\"", titles[si]])
             print(io, isempty(args) ? "#slide[\n" : "#slide($(join(args, ", ")))[\n")
-            # Each side-by-side row of the model is a Typst `grid` with a slot per block.
+            # Each side-by-side row of the model is one `slidecols` call with a column per block.
             for row in unique(b.row for b in sl.blocks)
                 fis = findall(b -> b.row == row, sl.blocks)
-                multi = length(fis) > 1
-                multi && print(io, "#grid(columns: (", join(fill("1fr", length(fis)), ", "),
-                                   "), column-gutter: 1.2em, align: top,\n")
-                for fi in fis
+                function emit(fi)
                     f = frags[fi]
                     # Strip the hoisted H1 from the implicit-title cell so it isn't repeated on a body
                     # slide, taking the interpolation offset with it (see `_body_after_hoisted_h1`).
@@ -2003,13 +2092,11 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                         body, off = _body_after_hoisted_h1(f.cell)
                         f = (cell = f.cell, src = body, interpbase = off)
                     end
-                    multi && print(io, "[")
                     _emit_slide_frag!(io, dir, "s$(si)f$(fi)", nb, f; theme = theme, charttheme = ct, override = override,
                                       show_source = show_source, include_params = include_params, citekeys = citekeys,
                                       outputs = outputs, sizes = mediasz, compfigs = compfigs)
-                    multi && print(io, "],\n")
                 end
-                multi && print(io, ")\n\n")
+                length(fis) == 1 ? emit(fis[1]) : _print_slidecols(j -> emit(fis[j]), io, fill("none", length(fis)))
             end
             print(io, "]\n\n")
         end

@@ -123,7 +123,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
 
         - x
 
-        #%% code id=d column=2 width=40%
+        #%% code id=d column=2
         1 + 1
 
         #%% md id=e
@@ -148,9 +148,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test deck[2].layout === nothing && deck[2].transition === nothing && deck[2].auto === nothing
         @test deck[2].title.text == "Plain" && deck[2].title.depth == 2
         @test deck[2].notes == String[]
-        # column group and width of a body block
-        @test [(b.cell, b.row, b.column, b.width) for b in deck[2].blocks] ==
-              [("c", 1, 1, nothing), ("d", 1, 2, "40%")]
+        # column group of a body block
+        @test [(b.cell, b.row, b.column) for b in deck[2].blocks] == [("c", 1, 1), ("d", 1, 2)]
         # a slide whose first block is not a heading has no title
         @test deck[3].title === nothing && deck[3].blocks[1].cell == "e"
         # the first cell with a layout tag wins; a code cell first means no title
@@ -229,6 +228,83 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
             nothing
         end
         @test pdf === nothing || length(pdf) > 1000
+    end
+
+    @testset "slides project: columns" begin
+        # A `:::: columns` group and a `column=N` row both reach doc.typ as one `slidecols` call, with
+        # the `width` of each column or `none`. Other fenced divs keep their content.
+        src = """
+        #%% md id=a
+        ## Cols
+
+        :::: columns
+        ::: {.column width="40%"}
+        <!--raw-typst #context { let p = here().position(); [#metadata((x: p.x.pt())) <colx>] }-->left
+        :::
+        ::: column
+        <!--raw-typst #context { let p = here().position(); [#metadata((x: p.x.pt())) <colx>] }-->right
+        :::
+        ::::
+
+        ::: step
+        kept text
+        :::
+
+        #%% md id=b
+        ## Rows
+
+        one
+
+        #%% md id=c column=2
+        two
+
+        #%% md id=d
+        ## Equal
+
+        :::: columns
+        ::: column
+        <!--raw-typst #context { let p = here().position(); [#metadata((x: p.x.pt())) <eqx>] }-->a
+        :::
+        ::: column
+        <!--raw-typst #context { let p = here().position(); [#metadata((x: p.x.pt())) <eqx>] }-->b
+        :::
+        ::::
+        """
+        dir = NS._build_slides_project(_mknb(src))
+        try
+            doc = read(joinpath(dir, "doc.typ"), String)
+            @test occursin("#let slidecols(widths, ..cols)", doc)
+            @test occursin("#slidecols((40%, none,),", doc)
+            @test occursin("#slidecols((none, none,),", doc)
+            @test count("#slidecols((none, none,),", doc) == 2     # the `column=2` row and the equal group
+            @test NS._column_width_typst("min-width=50%") == "none" && NS._column_width_typst(".column width=30") == "30%"
+            md = join((read(joinpath(dir, f), String) for f in readdir(dir) if endswith(f, ".md")), "\n")
+            @test occursin("kept text", md) && !occursin(":::", md)
+            # The columns start where the widths say (a 16:9 page is 254 mm wide with 16 mm margins;
+            # the gutter is 1.2 em of 19 pt text). Typst needs its packages, so it may be unavailable.
+            plain = try
+                NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
+            catch
+                nothing
+            end
+            if plain === nothing
+                @info "column position check skipped (typst unavailable)"
+            else
+                function xs(label)
+                    out = IOBuffer()
+                    query(exe) = run(pipeline(`$exe query --root $dir $(joinpath(dir, "doc.typ")) $label --field value`;
+                                              stdin = devnull, stdout = out, stderr = devnull))
+                    sys = Sys.which("typst")
+                    sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
+                    return [p["x"] for p in JSON.parse(String(take!(out)))]
+                end
+                left, row, gap = 16 * 72 / 25.4, 222 * 72 / 25.4, 1.2 * 19
+                @test xs("<colx>") ≈ [left, left + 0.4row + gap] atol = 1       # `width="40%"` and the rest
+                @test xs("<eqx>") ≈ [left, left + (row - gap) / 2 + gap] atol = 1   # equal columns
+            end
+        finally
+            rm(dir; recursive = true, force = true)
+        end
     end
 
     @testset "a template slide shadowing the base one receives layout and title" begin
