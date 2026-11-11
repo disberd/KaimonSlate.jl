@@ -23,6 +23,9 @@ were written when they went out. They are marked.
   draw each layout in its own way. The default look stays the same, except that the title of a
   slide that has a figure in a second column now sits above both columns instead of inside the
   first.
+- The default PDF deck now draws `layout=section` and `layout=center` slides like the live deck. A
+  `center` slide has its text and title centred. A `section` slide sits a little further from the
+  left edge, with a larger title and a dimmed level-3 heading. Other slides look the same as before.
 
 ### Fixed
 
