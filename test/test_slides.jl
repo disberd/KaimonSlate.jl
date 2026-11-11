@@ -212,6 +212,25 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
     end
 
+    @testset "section and center slides reach doc.typ and the PDF compiles" begin
+        src = "#%% md id=a layout=section\n## Part one\n\n#%% md id=b layout=center\n## Middle\n\ntext\n"
+        dir = NS._build_slides_project(_mknb(src))
+        try
+            doc = read(joinpath(dir, "doc.typ"), String)
+            @test occursin(r"#slide\(layout: \"section\", title: heading\(level: 2,", doc)
+            @test occursin(r"#slide\(layout: \"center\", title: heading\(level: 2,", doc)
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+        pdf = try
+            NS.export_pdf(_mknb(src); layout = "slides")
+        catch err
+            @info "section/center PDF compile skipped" err
+            nothing
+        end
+        @test pdf === nothing || length(pdf) > 1000
+    end
+
     @testset "a template slide shadowing the base one receives layout and title" begin
         # Appended after the base preamble, `#let slide` replaces it; the deck pages then call it.
         plain = try

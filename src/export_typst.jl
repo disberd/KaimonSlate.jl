@@ -406,13 +406,21 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
       scale(origin: top + center, x: s * 100%, y: s * 100%, box(width: sz.width, height: m.height, body))
     })
     // One slide = one page, vertically centered. The title goes at the top of the body, inside `fit`;
-    // a notes page gets a "Notes · slide N" label in its place.
+    // a notes page gets a "Notes · slide N" label in its place. Two layouts follow the live deck:
+    // `center` centres the text as well; `section` shifts the slide right and draws a larger title,
+    // with a dimmed level-3 heading.
     #let slide(body, layout: none, title: none, n: none) = page[
       #align(horizon)[
-        #fit({
-          if layout == "notes" { text(fill: luma(130))[Notes · slide #n]; v(6pt) } else if title != none { title }
-          body
-        })
+        #pad(left: if layout == "section" { 8mm } else { 0mm })[
+          #fit({
+            set align(center) if layout == "center"
+            show heading.where(level: 3): it => if layout == "section" { text(fill: $(p.text).transparentize(40%), it) } else { it }
+            if layout == "notes" { text(fill: luma(130))[Notes · slide #n]; v(6pt) } else if title != none {
+              if layout == "section" { text(size: 1.6em, title) } else { title }
+            }
+            body
+          })
+        ]
       ]
     ]
 
