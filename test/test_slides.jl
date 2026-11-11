@@ -108,6 +108,143 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test occursin("hello", md) && !occursin("ACME", md)
     end
 
+    @testset "slide_deck: layout, title, blocks, transition, auto, notes" begin
+        src = """
+        #%% md id=a layout=title transition=zoom auto=5
+        # Hello *world*
+
+        body one
+
+        #%% md id=b notes
+        say hello
+
+        #%% md id=c
+        ## Plain
+
+        - x
+
+        #%% code id=d column=2 width=40%
+        1 + 1
+
+        #%% md id=e
+        intro, no heading first
+        ### Later heading
+
+        #%% code id=f slide layout=center
+        y = 2
+
+        #%% md id=g slide layout=section
+        #### Deep title
+        """
+        deck = NS.slide_deck(_mknb(src); level = 3)
+        @test length(deck) == 5
+        # a tagged slide that starts with a heading: tag values, title out of the body
+        @test deck[1].layout == "title" && deck[1].transition == "zoom" && deck[1].auto == "5"
+        @test deck[1].title.text == "Hello *world*" && deck[1].title.depth == 1
+        @test [b.cell for b in deck[1].blocks] == ["a"]
+        @test strip(deck[1].blocks[1].src) == "body one"
+        @test deck[1].notes == ["b"]
+        # an untagged slide: no tag values
+        @test deck[2].layout === nothing && deck[2].transition === nothing && deck[2].auto === nothing
+        @test deck[2].title.text == "Plain" && deck[2].title.depth == 2
+        @test deck[2].notes == String[]
+        # column group and width of a body block
+        @test [(b.cell, b.row, b.column, b.width) for b in deck[2].blocks] ==
+              [("c", 1, 1, nothing), ("d", 1, 2, "40%")]
+        # a slide whose first block is not a heading has no title
+        @test deck[3].title === nothing && deck[3].blocks[1].cell == "e"
+        # the first cell with a layout tag wins; a code cell first means no title
+        @test deck[4].layout == "center" && deck[4].title === nothing
+        # a title-only slide stays in the deck, with no blocks
+        @test deck[5].title.depth == 4 && isempty(deck[5].blocks) && deck[5].layout == "section"
+    end
+
+    @testset "slide_deck: a heading with an interpolation keeps the body's numbering" begin
+        src = "#%% md id=a\n## Total {{ t }}\n\nvalue {{ v }}\n"
+        deck = NS.slide_deck(_mknb(src))
+        @test deck[1].title.interpbase == 0
+        @test deck[1].blocks[1].interpbase == 1
+    end
+
+    @testset "slide_deck: the title follows the CommonMark ATX rule" begin
+        title(src) = (d = NS.slide_deck(_mknb("#%% md id=a\n" * src)); isempty(d) ? nothing : d[1].title)
+        @test title("   ## Indented").text == "Indented"
+        @test title("    ## Code block") === nothing        # four spaces make a code block
+        @test title("# Title##").text == "Title##"           # a closing run needs a space before it
+        @test title("# Title ##").text == "Title"
+    end
+
+    @testset "slides project: layout and title reach doc.typ" begin
+        src = """
+        #%% md id=a layout=center
+        ## Tagged
+
+        text
+
+        #%% md id=b
+        plain body, no heading
+        ## Second
+
+        #%% md id=c notes
+        a note
+
+        #%% md id=r bibliography
+        @book{k, author = {A, B}, title = {T}, publisher = {P}, year = {2000}}
+        """
+        dir = NS._build_slides_project(_mknb(src); notes = true)
+        try
+            doc = read(joinpath(dir, "doc.typ"), String)
+            @test occursin(r"#slide\(layout: \"center\", title: heading\(level: 2,", doc)
+            @test occursin("#slide[\n", doc)                                  # untagged, untitled
+            @test occursin("#slide(layout: \"references\")[", doc)
+            @test occursin(r"#slide\(layout: \"notes\", n: 2\)\[", doc)      # slide 2 has no title
+            @test occursin("#let slide(body, layout: none, title: none, n: none)", doc)
+            @test occursin("#let fit(body)", doc) && occursin("#let SLIDE_W = 254mm", doc)
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+        # the title slide from role-tagged metadata passes its layout
+        dir = NS._build_slides_project(_mknb("#%% md id=t title\n# Doc\n\n#%% md id=a\n## One\n"))
+        try
+            @test occursin("#slide(layout: \"title\", metablock(", read(joinpath(dir, "doc.typ"), String))
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "a template slide shadowing the base one receives layout and title" begin
+        # Appended after the base preamble, `#let slide` replaces it; the deck pages then call it.
+        plain = try
+            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
+        catch
+            nothing
+        end
+        if plain === nothing
+            @info "shadowed slide check skipped (typst unavailable)"
+            @test true
+        else
+            src = "#%% md id=a layout=center\n## Tagged\n\ntext\n"
+            dir = NS._build_slides_project(_mknb(src))
+            try
+                doc = joinpath(dir, "doc.typ")
+                body = read(doc, String)
+                i = first(findfirst("#slide(", body))
+                shadow = "#let slide(body, layout: none, title: none, n: none) = page[#metadata((layout: layout, " *
+                         "has-title: title != none, level: title.level))<seen>#body]\n"
+                write(doc, body[1:i-1] * shadow * body[i:end])
+                out = IOBuffer()
+                query(exe) = run(pipeline(`$exe query --root $dir $doc "<seen>" --field value`;
+                                          stdin = devnull, stdout = out, stderr = devnull))
+                sys = Sys.which("typst")
+                sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
+                seen = only(JSON.parse(String(take!(out))))
+                @test seen["layout"] == "center" && seen["has-title"] && seen["level"] == 2
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+    end
+
     @testset "slide/notes are known tags and round-trip" begin
         @test :slide in RE._KNOWN_TAGS
         @test :notes in RE._KNOWN_TAGS

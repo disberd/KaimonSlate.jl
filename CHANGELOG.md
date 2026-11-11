@@ -12,6 +12,18 @@ were written when they went out. They are marked.
 
 ## [Unreleased]
 
+### Changed
+
+- The PDF deck now reads each slide's layout tag and title from the same slide model as the live
+  deck. The Typst deck preamble defines `SLIDE_W`, `fit(body)` and
+  `slide(body, layout: none, title: none, n: none)`. A slide with a `layout=` tag, or with a heading
+  as its first block, is written as `#slide(layout: …, title: …)[`. The title, references and notes
+  pages pass `layout: "title"`, `"references"` and `"notes"`, and a notes page also passes `n`, the
+  number of its slide. A Typst preamble that is added after the default one can redefine `slide` to
+  draw each layout in its own way. The default look stays the same, except that the title of a
+  slide that has a figure in a second column now sits above both columns instead of inside the
+  first.
+
 ## [2.2.0] - 2026-11-16
 
 ### Added
