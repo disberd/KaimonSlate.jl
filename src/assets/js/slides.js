@@ -70,13 +70,46 @@
     flush();
     return slides;
   }
+  // A slide's title is its first block when that block is an ATX heading of any depth (up to three
+  // leading spaces; a closing `#` run only after a space). A slide that starts with anything else has none.
+  function _titleOf(src) {
+    if (typeof src !== 'string') return null;
+    const ln = src.split('\n').find(l => l.trim());
+    const m = ln && ln.match(/^ {0,3}(#{1,6})[ \t]+(\S.*?)[ \t]*$/);
+    return m ? m[2].replace(/[ \t]+#+$/, '') : null;
+  }
   function _slideTitle(slide) {
-    const cells = (nbState && nbState.cells) || [];
-    for (const id of (slide ? slide.ids : [])) {
-      const c = cells.find(x => x.id === id);
-      if (c && kindInfo(c.kind).prose) { const m = (c.source || '').match(/^\s*#{1,6}\s+(.+?)\s*#*$/m); if (m) return m[1].trim(); }
-    }
-    return null;
+    const c = slide && ((nbState && nbState.cells) || []).find(x => x.id === slide.ids[0]);
+    return c && kindInfo(c.kind).prose ? _titleOf(c.source) : null;
+  }
+  const _isHeading = el => !!el && /^H[1-6]$/.test(el.tagName);
+  // Move the heading that starts the slide's first cell into the slide's own `.slide-title`, outside the
+  // scaled body, so a stylesheet can place it. `src` is the cell's markdown source, or null when the
+  // first cell is not prose. The heading's place is kept on the slide for `_restoreTitle`. Safe to
+  // repeat: a cell that draws its markdown again brings a new heading, which takes the title's place.
+  function _hoistTitle(slide, cell, src) {
+    const t = slide.querySelector('.slide-title');
+    if (_titleOf(src) == null) { if (t) t.remove(); slide._titleHome = null; return; }
+    const md = cell.querySelector('.md'), h = md && md.children[0];
+    if (!_isHeading(h)) return;                      // not drawn yet, or already moved
+    const box = t || document.createElement('div');
+    if (!t) { box.className = 'slide-title md'; slide.insertBefore(box, slide.querySelector('.slide-body')); }
+    box.classList.toggle('role-title', cell.classList.contains('role-title'));   // keeps the document-title look
+    slide._titleHome = { h, parent: md, next: h.nextSibling };
+    [...box.children].forEach(c => c.remove());
+    box.appendChild(h);
+  }
+  // Put the moved heading back where it was, unless its cell drew new content since.
+  function _restoreTitle(slide) {
+    const home = slide._titleHome;
+    if (!home) return;
+    const { h, parent, next } = home;
+    if (next ? next.parentNode === parent : !parent.children.length) parent.insertBefore(h, next);
+    slide._titleHome = null;
+  }
+  function _syncTitle(slide, sld, el) {
+    const c = el && ((nbState && nbState.cells) || []).find(x => x.id === sld.ids[0]);
+    if (c) _hoistTitle(slide, el, kindInfo(c.kind).prose ? c.source : null);
   }
   function _canvasSize() {
     return ((nbState && nbState.slideRatio) || '16:9') === '4:3' ? [1440, 1080] : [1920, 1080];
@@ -186,9 +219,11 @@
     const body = document.createElement('div'); body.className = 'slide-body';
     const num = document.createElement('div'); num.className = 'slide-num'; num.textContent = String(i + 1);
     slide.append(bg, body, num);
+    const cells = (nbState && nbState.cells) || [];
+    // `title` cell role: a stylesheet can match the slide that opens the document.
+    if (sld.ids.some(id => { const c = cells.find(x => x.id === id); return c && c.roleTitle; })) slide.dataset.role = 'title';
     // `column=N` cells live inside a `.cell-row` flex wrapper in the notebook (see notebook.js). Moving
     // the bare cell nodes would drop that wrapper and stack them, so the rows are rebuilt here.
-    const cells = (nbState && nbState.cells) || [];
     let row = null;
     nodes.forEach(({ id, el }, j) => {
       const c = cells.find(x => x.id === id);
@@ -202,6 +237,7 @@
         row.appendChild(el); body.appendChild(row);
       } else { row = null; body.appendChild(el); }
     });
+    _syncTitle(slide, sld, nodes[0] && nodes[0].id === sld.ids[0] ? nodes[0].el : null);
     _applySplit(slide);
     return slide;
   }
@@ -236,6 +272,7 @@
     const stage = document.getElementById('deckstage');
     const old = stage && stage.querySelector('.deck-slide');
     if (old) old.querySelectorAll('video, audio').forEach(m => { m._deckPlayed = false; try { m.pause(); } catch (e) {} });
+    if (old) _restoreTitle(old);
     for (const r of D.restore) {
       r.el.classList.remove('slide-split', 'step', 'deck-cellstep', 'on', 'current');
       delete r.el.dataset.step;
@@ -263,8 +300,9 @@
       requestAnimationFrame(() => {
         pending = false;
         if (!D.open || !slide.isConnected) return;
+        _syncTitle(slide, D.slides[D.idx], document.getElementById('cell-' + D.slides[D.idx].ids[0]));
         _collectSteps(slide, D.slides[D.idx], true);
-            _relayout(slide);
+        _relayout(slide);
       });
     });
     D.mo.observe(body, { childList: true, subtree: true });
@@ -652,12 +690,14 @@
     if (!slide) return;
     _sizeCanvas(slide, stage.clientWidth, stage.clientHeight);
     const body = slide.querySelector('.slide-body');
-    body.style.setProperty('--shrink', 1);
+    slide.style.setProperty('--shrink', 1);
     body.classList.remove('scroll');
     const charts = _slideCharts();
     const u = parseFloat(slide.style.getPropertyValue('--u')) || 1;
     for (const c of charts) { _presentChart(c.inst, u); _ghostStart(c.inst); }
-    const availH = body.clientHeight;
+    // The room a chart may fill is the slide's height: a centred slide's body is only as tall as its
+    // content. The overflow pass below gives back what the chart takes from the title and the body.
+    const availH = slide.clientHeight;
     for (const c of charts) {
       const host = c.dom.parentElement;
       const hw = (host && host.clientWidth) || c.natW;
@@ -735,10 +775,14 @@
   }
   // Scale the body text down until it fits, to a legible floor. True when it still overflows.
   function _shrinkText(body) {
+    // The title scales with the body, so the room is the slide's inner height and the need is the title
+    // plus the body's content.
+    const slide = body.parentNode, title = slide.querySelector('.slide-title'), cs = getComputedStyle(slide);
+    const room = () => slide.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
     let shrink = 1, over = body.scrollHeight - body.clientHeight;
     for (let pass = 0; pass < 3 && over > 1; pass++) {
-      shrink = Math.max(0.62, shrink * body.clientHeight / body.scrollHeight);
-      body.style.setProperty('--shrink', shrink);
+      shrink = Math.max(0.62, shrink * room() / ((title ? title.offsetHeight : 0) + body.scrollHeight));
+      slide.style.setProperty('--shrink', shrink);
       over = body.scrollHeight - body.clientHeight;
       if (shrink <= 0.62) break;
     }
