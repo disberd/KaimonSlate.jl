@@ -26,6 +26,13 @@ were written when they went out. They are marked.
 - The default PDF deck now draws `layout=section` and `layout=center` slides like the live deck. A
   `center` slide has its text and title centred. A `section` slide sits a little further from the
   left edge, with a larger title and a dimmed level-3 heading. Other slides look the same as before.
+- The PDF deck draws a `:::: columns` group as side-by-side columns, as the live deck does. A column
+  with `::: {.column width="40%"}` gets that width, and the other columns share the rest equally. A
+  `column=N` row of cells keeps equal widths. Both use one Typst function,
+  `slidecols(widths, ..cols)`, that is defined in the deck preamble: `widths` has one ratio, length
+  or `none` for each column, and the other arguments are the column bodies. A Typst preamble that is
+  added after the default one can redefine `slidecols`. Other fenced divs, such as `::: step`, still
+  print only their content.
 
 ### Fixed
 
