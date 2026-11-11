@@ -481,6 +481,13 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
                 @test ys[1] >= margin - 0.5 && ys[end] <= pageh - margin + 0.5   # the slide stays inside the margins
                 ys = positions("== Portrait\n\nSome text above the figure.\n\n#figureimg(\"tall.svg\", width: 100%)\n$mark")
                 @test ys[end] <= pageh - margin + 0.5                # the figure does not run off the page
+                # A figure beside a taller column of text does not set the height of the slide, so it
+                # keeps the width of its column: the text gives way, and both scale by one factor.
+                # At that width the figure is 0.30 of the text height; shrunk to `k = 0.25`, 0.16.
+                text = join(fill("The bracket carries the wheel and the tracker.", 15), " ")
+                ys = positions("== Beside\n\n#slidecols((50%, 50%), [$mark$text$mark], [$mark#figureimg(\"fig.svg\")$mark])")
+                @test length(ys) == 4
+                @test (ys[4] - ys[3]) / (ys[2] - ys[1]) > 0.25
             finally
                 rm(dir; recursive = true, force = true)
             end

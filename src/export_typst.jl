@@ -394,7 +394,9 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
     // `SLIDE_W` is the slide page width. `fit(body)` draws `body` at full content width so that it
     // fits the page, as the live deck does:
     // 1. Each figure takes the width of its column (or its `width`, if that is smaller) and at most
-    //    `k` of the page height. `k` is the largest value in [0.25, 1] that fits the slide.
+    //    `k` of the page height. `k` is the largest value in [0.25, 1] that fits the slide. A figure
+    //    beside a taller column of text does not set the height of the slide. When the smallest `k`
+    //    gives no shorter slide, the figures keep `k = 1` and the text gives way instead.
     // 2. When the slide is still too tall, the whole body scales down (floor 0.5×).
     // The body is drawn in a box as tall as its measured height, so a tall body does not break
     // inside the box. The scale uses `reflow`, so the page centres the drawn size of the body, not
@@ -414,12 +416,15 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
         body
       }
       let tall(k) = measure(box(width: sz.width, { show regex("§c§[^§]*§[^§]+§[^§]*§"): it => [[0]]; draw(k) })).height
-      let (lo, hi) = (0.25, 1.0)
-      let k = if tall(hi) <= sz.height { hi } else if tall(lo) > sz.height { lo } else {
-        for _ in range(7) { let mid = (lo + hi) / 2; if tall(mid) <= sz.height { lo = mid } else { hi = mid } }
-        lo
+      let h1 = tall(1.0)
+      let (k, h) = if h1 <= sz.height { (1.0, h1) } else {
+        let h0 = tall(0.25)
+        if h0 >= h1 - 0.5pt { (1.0, h1) } else if h0 > sz.height { (0.25, h0) } else {
+          let (lo, hi) = (0.25, 1.0)
+          for _ in range(7) { let mid = (lo + hi) / 2; if tall(mid) <= sz.height { lo = mid } else { hi = mid } }
+          (lo, tall(lo))
+        }
       }
-      let h = tall(k)
       let s = if h > sz.height and h > 0pt { calc.max(0.5, sz.height / h) } else { 1.0 }
       pad(x: (1 - s) / 2 * sz.width, scale(origin: top + center, x: s * 100%, y: s * 100%, reflow: true, box(width: sz.width, height: h, draw(k))))
     })
