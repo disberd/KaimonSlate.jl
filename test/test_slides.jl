@@ -2,6 +2,7 @@
 # config footer round-trip, cell_json flag exposure, and a Typst slide-deck compile smoke test.
 # Loads the package (NotebookServer holds the segmentation + export), so it runs under Pkg.test.
 using ReTest
+import JSON
 using KaimonSlate
 const NS = KaimonSlate.NotebookServer
 const RE = KaimonSlate.ReportEngine
@@ -107,6 +108,238 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test occursin("hello", md) && !occursin("ACME", md)
     end
 
+    @testset "slide_deck: layout, title, blocks, transition, auto, notes" begin
+        src = """
+        #%% md id=a layout=title transition=zoom auto=5
+        # Hello *world*
+
+        body one
+
+        #%% md id=b notes
+        say hello
+
+        #%% md id=c
+        ## Plain
+
+        - x
+
+        #%% code id=d column=2
+        1 + 1
+
+        #%% md id=e
+        intro, no heading first
+        ### Later heading
+
+        #%% code id=f slide layout=center
+        y = 2
+
+        #%% md id=g slide layout=section
+        #### Deep title
+        """
+        deck = NS.slide_deck(_mknb(src); level = 3)
+        @test length(deck) == 5
+        # a tagged slide that starts with a heading: tag values, title out of the body
+        @test deck[1].layout == "title" && deck[1].transition == "zoom" && deck[1].auto == "5"
+        @test deck[1].title.text == "Hello *world*" && deck[1].title.depth == 1
+        @test [b.cell for b in deck[1].blocks] == ["a"]
+        @test strip(deck[1].blocks[1].src) == "body one"
+        @test deck[1].notes == ["b"]
+        # an untagged slide: no tag values
+        @test deck[2].layout === nothing && deck[2].transition === nothing && deck[2].auto === nothing
+        @test deck[2].title.text == "Plain" && deck[2].title.depth == 2
+        @test deck[2].notes == String[]
+        # column group of a body block
+        @test [(b.cell, b.row, b.column) for b in deck[2].blocks] == [("c", 1, 1), ("d", 1, 2)]
+        # a slide whose first block is not a heading has no title
+        @test deck[3].title === nothing && deck[3].blocks[1].cell == "e"
+        # the first cell with a layout tag wins; a code cell first means no title
+        @test deck[4].layout == "center" && deck[4].title === nothing
+        # a title-only slide stays in the deck, with no blocks
+        @test deck[5].title.depth == 4 && isempty(deck[5].blocks) && deck[5].layout == "section"
+    end
+
+    @testset "slide_deck: a heading with an interpolation keeps the body's numbering" begin
+        src = "#%% md id=a\n## Total {{ t }}\n\nvalue {{ v }}\n"
+        deck = NS.slide_deck(_mknb(src))
+        @test deck[1].title.interpbase == 0
+        @test deck[1].blocks[1].interpbase == 1
+    end
+
+    @testset "slide_deck: the title follows the CommonMark ATX rule" begin
+        title(src) = (d = NS.slide_deck(_mknb("#%% md id=a\n" * src)); isempty(d) ? nothing : d[1].title)
+        @test title("   ## Indented").text == "Indented"
+        @test title("    ## Code block") === nothing        # four spaces make a code block
+        @test title("# Title##").text == "Title##"           # a closing run needs a space before it
+        @test title("# Title ##").text == "Title"
+    end
+
+    @testset "slides project: layout and title reach doc.typ" begin
+        src = """
+        #%% md id=a layout=center
+        ## Tagged
+
+        text
+
+        #%% md id=b
+        plain body, no heading
+        ## Second
+
+        #%% md id=c notes
+        a note
+
+        #%% md id=r bibliography
+        @book{k, author = {A, B}, title = {T}, publisher = {P}, year = {2000}}
+        """
+        dir = NS._build_slides_project(_mknb(src); notes = true)
+        try
+            doc = read(joinpath(dir, "doc.typ"), String)
+            @test occursin(r"#slide\(layout: \"center\", title: heading\(level: 2,", doc)
+            @test occursin("#slide[\n", doc)                                  # untagged, untitled
+            @test occursin("#slide(layout: \"references\")[", doc)
+            @test occursin(r"#slide\(layout: \"notes\", n: 2\)\[", doc)      # slide 2 has no title
+            @test occursin("#let slide(body, layout: none, title: none, n: none)", doc)
+            @test occursin("#let fit(body)", doc) && occursin("#let SLIDE_W = 254mm", doc)
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+        # the title slide from role-tagged metadata passes its layout
+        dir = NS._build_slides_project(_mknb("#%% md id=t title\n# Doc\n\n#%% md id=a\n## One\n"))
+        try
+            @test occursin("#slide(layout: \"title\", metablock(", read(joinpath(dir, "doc.typ"), String))
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "section and center slides reach doc.typ and the PDF compiles" begin
+        src = "#%% md id=a layout=section\n## Part one\n\n#%% md id=b layout=center\n## Middle\n\ntext\n"
+        dir = NS._build_slides_project(_mknb(src))
+        try
+            doc = read(joinpath(dir, "doc.typ"), String)
+            @test occursin(r"#slide\(layout: \"section\", title: heading\(level: 2,", doc)
+            @test occursin(r"#slide\(layout: \"center\", title: heading\(level: 2,", doc)
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+        pdf = try
+            NS.export_pdf(_mknb(src); layout = "slides")
+        catch err
+            @info "section/center PDF compile skipped" err
+            nothing
+        end
+        @test pdf === nothing || length(pdf) > 1000
+    end
+
+    @testset "slides project: columns" begin
+        # A `:::: columns` group and a `column=N` row both reach doc.typ as one `slidecols` call, with
+        # the `width` of each column or `none`. Other fenced divs keep their content.
+        src = """
+        #%% md id=a
+        ## Cols
+
+        :::: columns
+        ::: {.column width="40%"}
+        <!--raw-typst #context { let p = here().position(); [#metadata((x: p.x.pt())) <colx>] }-->left
+        :::
+        ::: column
+        <!--raw-typst #context { let p = here().position(); [#metadata((x: p.x.pt())) <colx>] }-->right
+        :::
+        ::::
+
+        ::: step
+        kept text
+        :::
+
+        #%% md id=b
+        ## Rows
+
+        one
+
+        #%% md id=c column=2
+        two
+
+        #%% md id=d
+        ## Equal
+
+        :::: columns
+        ::: column
+        <!--raw-typst #context { let p = here().position(); [#metadata((x: p.x.pt())) <eqx>] }-->a
+        :::
+        ::: column
+        <!--raw-typst #context { let p = here().position(); [#metadata((x: p.x.pt())) <eqx>] }-->b
+        :::
+        ::::
+        """
+        dir = NS._build_slides_project(_mknb(src))
+        try
+            doc = read(joinpath(dir, "doc.typ"), String)
+            @test occursin("#let slidecols(widths, ..cols)", doc)
+            @test occursin("#slidecols((40%, none,),", doc)
+            @test occursin("#slidecols((none, none,),", doc)
+            @test count("#slidecols((none, none,),", doc) == 2     # the `column=2` row and the equal group
+            @test NS._column_width_typst("min-width=50%") == "none" && NS._column_width_typst(".column width=30") == "30%"
+            md = join((read(joinpath(dir, f), String) for f in readdir(dir) if endswith(f, ".md")), "\n")
+            @test occursin("kept text", md) && !occursin(":::", md)
+            # The columns start where the widths say (a 16:9 page is 254 mm wide with 16 mm margins;
+            # the gutter is 1.2 em of 19 pt text). Typst needs its packages, so it may be unavailable.
+            plain = try
+                NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
+            catch
+                nothing
+            end
+            if plain === nothing
+                @info "column position check skipped (typst unavailable)"
+            else
+                function xs(label)
+                    out = IOBuffer()
+                    query(exe) = run(pipeline(`$exe query --root $dir $(joinpath(dir, "doc.typ")) $label --field value`;
+                                              stdin = devnull, stdout = out, stderr = devnull))
+                    sys = Sys.which("typst")
+                    sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
+                    return [p["x"] for p in JSON.parse(String(take!(out)))]
+                end
+                left, row, gap = 16 * 72 / 25.4, 222 * 72 / 25.4, 1.2 * 19
+                @test xs("<colx>") ≈ [left, left + 0.4row + gap] atol = 1       # `width="40%"` and the rest
+                @test xs("<eqx>") ≈ [left, left + (row - gap) / 2 + gap] atol = 1   # equal columns
+            end
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "a template slide shadowing the base one receives layout and title" begin
+        # Appended after the base preamble, `#let slide` replaces it; the deck pages then call it.
+        plain = try
+            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
+        catch
+            nothing
+        end
+        if plain === nothing
+            @info "shadowed slide check skipped (typst unavailable)"
+            @test true
+        else
+            src = "#%% md id=a layout=center\n## Tagged\n\ntext\n"
+            dir = NS._build_slides_project(_mknb(src))
+            try
+                doc = joinpath(dir, "doc.typ")
+                body = read(doc, String)
+                i = first(findfirst("#slide(", body))
+                shadow = "#let slide(body, layout: none, title: none, n: none) = page[#metadata((layout: layout, " *
+                         "has-title: title != none, level: title.level))<seen>#body]\n"
+                write(doc, body[1:i-1] * shadow * body[i:end])
+                out = IOBuffer()
+                query(exe) = run(pipeline(`$exe query --root $dir $doc "<seen>" --field value`;
+                                          stdin = devnull, stdout = out, stderr = devnull))
+                sys = Sys.which("typst")
+                sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
+                seen = only(JSON.parse(String(take!(out))))
+                @test seen["layout"] == "center" && seen["has-title"] && seen["level"] == 2
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+    end
+
     @testset "slide/notes are known tags and round-trip" begin
         @test :slide in RE._KNOWN_TAGS
         @test :notes in RE._KNOWN_TAGS
@@ -149,6 +382,87 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test pdf === nothing || length(pdf) > 1000
     end
 
+    @testset "a deck template drives the PDF and the bundle" begin
+        # The template font comes from a pinned commit of google/fonts (SIL OFL). Without curl or a
+        # network, the deck still compiles in the fallback font, and only the font check is skipped.
+        fonturl = "https://raw.githubusercontent.com/google/fonts/90abd17b4f97671435798b6147b698aa9087612f/ofl/monoton/Monoton-Regular.ttf"
+        font = try
+            Sys.which("curl") === nothing ? nothing : read(`curl -sSfL --max-time 30 $fonturl`)
+        catch
+            nothing
+        end
+        tpl = """
+        #let slide(body, layout: none, title: none, n: none) = page[
+          #set text(font: "Monoton")
+          TPL layout=#repr(layout) title=#(if title == none { "none" } else { title.body }) name=#toml("cfg.toml").name
+          #body
+        ]
+        """
+        files = Dict("cfg.toml" => Vector{UInt8}("name = \"tomlvalue\"\n"))
+        font === nothing || (files["fonts/Monoton-Regular.ttf"] = font)
+        src = "#%% md id=s layout=center\n## Shown\n\nbody text\n"
+        text(pdf) = (f = tempname() * ".pdf"; write(f, pdf);
+                     try read(`pdftotext -layout $f -`, String) finally rm(f) end)
+        plain = _mknb(src)
+        before = try
+            dir = NS._build_slides_project(plain)
+            try
+                read(joinpath(dir, "doc.typ"), String)
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        catch
+            nothing
+        end
+        nb = _mknb(src)
+        nb.deck_template = (; hash = "h", source = tpl, files)
+        pdf = try
+            NS.export_pdf(nb; layout = "slides")
+        catch err
+            @info "deck template PDF skipped" err
+            nothing
+        end
+        if pdf === nothing || Sys.which("pdftotext") === nothing
+            @test true
+        else
+            t = text(pdf)
+            @test occursin("TPL layout=\"center\"", t) && occursin("title=Shown", t) && occursin("name=tomlvalue", t)
+            if font === nothing || Sys.which("pdffonts") === nothing
+                @info "font check skipped (font download or pdffonts unavailable)"
+                @test true
+            else
+                f = tempname() * ".pdf"; write(f, pdf)
+                fonts = try read(`pdffonts $f`, String) finally rm(f) end
+                @test occursin("Monoton", fonts)
+            end
+
+            # The bundle holds the same files; unpacked, it compiles to the same text and page count.
+            bundle = NS.export_typst_bundle(nb; layout = "slides")
+            out = mktempdir()
+            try
+                gz = joinpath(out, "b.tar.gz"); write(gz, bundle)
+                proj = joinpath(out, "proj"); mkpath(proj)
+                run(`tar -xzf $gz -C $proj`)
+                @test read(joinpath(proj, "cfg.toml"), String) == "name = \"tomlvalue\"\n"
+                NS._typst_compile(joinpath(proj, "doc.typ"), joinpath(proj, "again.pdf"))
+                @test text(read(joinpath(proj, "again.pdf"))) == t
+            finally
+                rm(out; recursive = true, force = true)
+            end
+        end
+
+        # Without a template the preamble is the only prefix; no template text leaks in.
+        @test before === nothing || !occursin("deck template", before)
+
+        # A file name that leaves the project directory is refused at the write site.
+        io = IOBuffer(); d = mktempdir()
+        try
+            @test_throws ArgumentError NS._apply_deck_template!(io, d, (; hash = "h", source = "", files = Dict("../x" => UInt8[])))
+        finally
+            rm(d; recursive = true, force = true)
+        end
+    end
+
     @testset "slide-deck with CITATIONS compiles (measure-in-isolation regression)" begin
         # A cite() inside the slide fit-scaler's measure() used to abort the whole deck with
         # "cannot format citation in isolation" — the measured copy must render citation
@@ -169,6 +483,95 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
                        "  title = {The TeXbook},\n  publisher = {Addison-Wesley},\n  year = {1984}\n}\n")
             pdf = NS.export_pdf(nb; layout = "slides")   # a throw here IS the regression
             @test length(pdf) > 1000
+        end
+    end
+
+    @testset "a slide taller than the page shrinks without overlapping its items" begin
+        # The fit-scaler must draw the body in a box as tall as the body. In a box as tall as the
+        # page, a body taller than the page breaks inside the box, and its last items share one y.
+        # The page must centre the scaled body, so the title stays below the top margin, and the
+        # title keeps its left alignment. `typst query` reads the page position of a marker placed
+        # in the title and after each item.
+        plain = try
+            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
+        catch
+            nothing
+        end
+        if plain === nothing
+            @info "tall slide layout check skipped (typst unavailable)"
+            @test true
+        else
+            mark = "<!--raw-typst #context { let p = here().position(); " *
+                   "[#metadata((page: p.page, x: p.x.pt(), y: p.y.pt())) <slideitem>] }-->"
+            items = join(("- item $i $mark" for i in 1:15), "\n")
+            dir = NS._build_slides_project(_mknb("#%% md id=s\n## Tall $mark\n\n$items\n"))
+            try
+                out = IOBuffer()
+                query(exe) = run(pipeline(`$exe query --root $dir $(joinpath(dir, "doc.typ")) "<slideitem>" --field value`;
+                                          stdin = devnull, stdout = out, stderr = devnull))
+                sys = Sys.which("typst")
+                sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
+                pos = JSON.parse(String(take!(out)))
+                ys = [p["y"] for p in pos]
+                @test length(pos) == 16
+                @test all(p -> p["page"] == 1, pos)               # the slide stays on one page
+                @test all(diff(ys) .> 0)                          # no two items share a line
+                @test ys[1] > 12 * 72 / 25.4                      # the title is below the top margin
+                @test pos[1]["x"] < 254 * 72 / 25.4 / 3           # the title stays at the left, not centred
+                @test ys[end] < 142.875 * 72 / 25.4               # the last item is inside the 16:9 page
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+    end
+
+    @testset "the figures of a slide share the page" begin
+        # Two figures under a title and text must both draw at a visible size, and the slide must
+        # stay inside the page margins. A portrait figure with a `width` must not grow taller than
+        # the page. `typst query` reads the page position of markers around the figures.
+        plain = try
+            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
+        catch
+            nothing
+        end
+        if plain === nothing
+            @info "slide figure layout check skipped (typst unavailable)"
+            @test true
+        else
+            dir = mktempdir()
+            try
+                write(joinpath(dir, "media.json"), "{}")
+                write(joinpath(dir, "fig.svg"), """<svg xmlns="http://www.w3.org/2000/svg" width="900" height="450"><rect width="900" height="450" fill="#38c"/></svg>""")
+                write(joinpath(dir, "tall.svg"), """<svg xmlns="http://www.w3.org/2000/svg" width="400" height="900"><rect width="400" height="900" fill="#3c8"/></svg>""")
+                mark = "#context { let p = here().position(); [#metadata((page: p.page, y: p.y.pt())) <slidefig>] }"
+                function positions(body)
+                    write(joinpath(dir, "doc.typ"), NS._typst_preamble_slides("T"; theme = "light") * "#slide[\n$body\n]\n")
+                    out = IOBuffer()
+                    query(exe) = run(pipeline(`$exe query --root $dir $(joinpath(dir, "doc.typ")) "<slidefig>" --field value`;
+                                              stdin = devnull, stdout = out, stderr = devnull))
+                    sys = Sys.which("typst")
+                    sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
+                    pos = JSON.parse(String(take!(out)))
+                    @test all(p -> p["page"] == 1, pos)
+                    [p["y"] for p in pos]
+                end
+                pageh, margin = 142.875 * 72 / 25.4, 12 * 72 / 25.4
+                ys = positions("$mark\n== Two figures\n\nSome text above the figures.\n\n$mark\n#figureimg(\"fig.svg\")\n$mark\n#figureimg(\"fig.svg\")\n$mark")
+                @test length(ys) == 4
+                @test all(diff(ys[2:end]) .> 0.2 * pageh)          # each figure is at least a fifth of the page high
+                @test ys[1] >= margin - 0.5 && ys[end] <= pageh - margin + 0.5   # the slide stays inside the margins
+                ys = positions("== Portrait\n\nSome text above the figure.\n\n#figureimg(\"tall.svg\", width: 100%)\n$mark")
+                @test ys[end] <= pageh - margin + 0.5                # the figure does not run off the page
+                # A figure beside a taller column of text does not set the height of the slide, so it
+                # keeps the width of its column: the text gives way, and both scale by one factor.
+                # At that width the figure is 0.30 of the text height; shrunk to `k = 0.25`, 0.16.
+                text = join(fill("The bracket carries the wheel and the tracker.", 15), " ")
+                ys = positions("== Beside\n\n#slidecols((50%, 50%), [$mark$text$mark], [$mark#figureimg(\"fig.svg\")$mark])")
+                @test length(ys) == 4
+                @test (ys[4] - ys[3]) / (ys[2] - ys[1]) > 0.25
+            finally
+                rm(dir; recursive = true, force = true)
+            end
         end
     end
 end

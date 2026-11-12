@@ -3124,15 +3124,28 @@ body.presenting { overflow: hidden; }
   align-items: center; justify-content: center; overflow: hidden; }
 
 .deck-slide { --u: 1px; --shrink: 1; position: relative; overflow: hidden; flex: none;
+  box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-start;
+  padding: calc(var(--u) * 84) calc(var(--u) * 120) calc(var(--u) * 72);
+  font-size: calc(var(--u) * 34 * var(--shrink)); line-height: 1.45;
   background: var(--deck-surface); color: var(--deck-fg); font-family: var(--deck-font);
   view-transition-name: deck-slide; transition: opacity .3s ease, transform .3s ease; }
 .slide-bg { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
 .slide-bg-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .slide-bg-dim { position: absolute; inset: 0; background: #000; }
-.slide-body { position: absolute; inset: 0; z-index: 1; box-sizing: border-box;
-  padding: calc(var(--u) * 84) calc(var(--u) * 120) calc(var(--u) * 72);
-  display: flex; flex-direction: column; justify-content: flex-start; gap: calc(var(--u) * 18);
-  font-size: calc(var(--u) * 34 * var(--shrink)); line-height: 1.45; overflow: hidden; }
+/* The slide is a column: the title (`slides.js` moves the heading a slide starts with into it) above
+   the body. Both scale with `--shrink`, so a slide that shrinks keeps its proportions. */
+.slide-title, .slide-body { position: relative; z-index: 1; min-height: 0; }
+.slide-title { flex: none; }
+/* The heading and the block after it were one markdown cell: no padding between them, and the margins
+   below the heading and above the next block collapsed into one. */
+.slide-title.md { padding-bottom: 0; }
+.deck-slide .slide-title.md.role-title { padding-bottom: 0; }
+.slide-title + .slide-body > .cell:first-child .md { padding-top: 0; }
+.slide-title + .slide-body > .cell:first-child .md > :first-child,
+.slide-title + .slide-body > .cell:first-child .md > :first-child > :first-child { margin-top: 0; }
+.slide-title.role-title + .slide-body > .cell:first-child .md > :is(h2, h3):first-child { margin-top: 4px; }
+.slide-body { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: flex-start;
+  gap: calc(var(--u) * 18); overflow: hidden; }
 .slide-body.scroll { overflow-y: auto; }
 .slide-num { position: absolute; z-index: 2; right: calc(var(--u) * 44); bottom: calc(var(--u) * 30);
   font-size: calc(var(--u) * 20); color: var(--deck-dim); font-variant-numeric: tabular-nums; opacity: .7; }
@@ -3227,18 +3240,29 @@ body.zen #nb .md .step, body.zen #nb .md .incremental { box-shadow: none; paddin
 .deck-slide .md .pause { display: none; }
 
 /* Layouts. */
-.deck-slide[data-layout="center"] .slide-body { justify-content: center; text-align: center; align-items: center; }
+.deck-slide:is([data-layout="center"], [data-layout="title"], [data-layout="section"], [data-layout="cover"]) .slide-body {
+  flex: 0 1 auto; }
+.deck-slide:is([data-layout="center"], [data-layout="title"], [data-layout="section"]) { justify-content: center; }
+.deck-slide[data-layout="center"] { text-align: center; }
+.deck-slide[data-layout="center"] .slide-body { align-items: center; }
 .deck-slide[data-layout="center"] .md h2::after { margin-left: auto; margin-right: auto; }
-.deck-slide[data-layout="title"] .slide-body { justify-content: center; align-items: center; text-align: center; }
+.deck-slide[data-layout="title"] { text-align: center; }
+/* Title and body share one column as wide as the wider of the two, centred on the slide, as the
+   heading and the text were one block before the title had an element of its own. */
+.deck-slide[data-layout="title"]:has(> .slide-title) { display: grid; grid-template-columns: minmax(0, max-content);
+  justify-content: center; align-content: center; }
+.deck-slide[data-layout="title"] .slide-body { align-items: center; }
 .deck-slide[data-layout="title"] .md h1 { font-size: 3.4em; margin-bottom: .25em;
   background: linear-gradient(100deg, var(--deck-strong) 20%, var(--deck-accent) 60%, var(--deck-accent2));
   -webkit-background-clip: text; background-clip: text; color: transparent; }
 .deck-slide[data-layout="title"] .md h2, .deck-slide[data-layout="title"] .md h3 { color: var(--deck-dim); font-weight: 500; }
 .deck-slide[data-layout="title"] .md h2::after { display: none; }
-.deck-slide[data-layout="section"] .slide-body { justify-content: center; padding-left: calc(var(--u) * 180); }
+.deck-slide[data-layout="section"] { padding-left: calc(var(--u) * 180); }
 .deck-slide[data-layout="section"] .md h2 { font-size: 3em; }
 .deck-slide[data-layout="section"] .md h3 { color: var(--deck-dim); font-weight: 500; }
-.deck-slide[data-layout="cover"] .slide-body { justify-content: flex-end; }
+.deck-slide[data-layout="cover"] { justify-content: flex-end; }
+/* Static, so a cover image fills the slide rather than the body; a flex item keeps its `z-index` anyway. */
+.deck-slide[data-layout="cover"] .slide-body { position: static; }
 .deck-slide[data-layout="cover"] .md img:first-of-type, .deck-slide[data-layout="cover"] .md video:first-of-type {
   position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; object-fit: cover; border-radius: 0; z-index: -1; }
 .deck-slide[data-layout="cover"] .cell, .deck-slide[data-layout="cover"] .md p { position: static; }
@@ -3492,9 +3516,9 @@ body.is-presenter > .page { position: absolute !important; left: -20000px; top: 
 /* ── Document-metadata role cells (title / abstract / bibliography) ─────────────
    Authored as ordinary cells in natural flow; styled in place so what you see is what
    exports produce. The `.md` body holds rendered markdown. Reuses theme vars. */
-.cell.role-title .md { text-align: center; padding: 6px 0 2px; }
-.cell.role-title .md h1 { font-size: 2rem; margin: 0; color: var(--strong); }
-.cell.role-title .md h2, .cell.role-title .md h3 { font-weight: 400; color: var(--dim); margin: 4px 0 0; }
+.cell.role-title .md, .deck-slide .slide-title.role-title { text-align: center; padding: 6px 0 2px; }
+.cell.role-title .md h1, .deck-slide .slide-title.role-title h1 { font-size: 2rem; margin: 0; color: var(--strong); }
+.cell.role-title .md h2, .cell.role-title .md h3, .deck-slide .slide-title.role-title :is(h2, h3) { font-weight: 400; color: var(--dim); margin: 4px 0 0; }
 .cell.role-abstract .md { position: relative; margin: 2px 0 2px 14px; padding: 8px 14px;
   border-left: 3px solid var(--accent); background: var(--ovl); border-radius: 0 8px 8px 0;
   font-size: .94em; font-style: italic; color: var(--text); }

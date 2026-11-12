@@ -12,12 +12,62 @@ were written when they went out. They are marked.
 
 ## [Unreleased]
 
+### Changed
+
+- The PDF deck now reads each slide's layout tag and title from the same slide model as the live
+  deck. The Typst deck preamble defines `SLIDE_W`, `fit(body)` and
+  `slide(body, layout: none, title: none, n: none)`. A slide with a `layout=` tag, or with a heading
+  as its first block, is written as `#slide(layout: …, title: …)[`. The title, references and notes
+  pages pass `layout: "title"`, `"references"` and `"notes"`, and a notes page also passes `n`, the
+  number of its slide. A Typst preamble that is added after the default one can redefine `slide` to
+  draw each layout in its own way. The default look stays the same, except that the title of a
+  slide that has a figure in a second column now sits above both columns instead of inside the
+  first.
+- The default PDF deck now draws `layout=section` and `layout=center` slides like the live deck. A
+  `center` slide has its text and title centred. A `section` slide sits a little further from the
+  left edge, with a larger title and a dimmed level-3 heading. Other slides look the same as before.
+- The PDF deck draws a `:::: columns` group as side-by-side columns, as the live deck does. A column
+  with `::: {.column width="40%"}` gets that width, and the other columns share the rest equally. A
+  `column=N` row of cells keeps equal widths. Both use one Typst function,
+  `slidecols(widths, ..cols)`, that is defined in the deck preamble: `widths` has one ratio, length
+  or `none` for each column, and the other arguments are the column bodies. A Typst preamble that is
+  added after the default one can redefine `slidecols`. Other fenced divs, such as `::: step`, still
+  print only their content.
+
 ### Added
 
 - An HTML export can carry a table of contents. Turn on **Contents** in the export dialog, or add
   `?toc=1` to the export route, and the page gets a button that opens a side panel of the
   document's headings. The panel highlights the section you are reading, and each heading gets an
   anchor you can link to.
+- A package that a notebook loads can declare a Typst deck template with `provide_deck_template!`. The
+  worker manifest carries only a hash of the template. The hub keeps the template for each notebook and
+  asks the worker for the bytes only when the hash changes, so 1 to 3 MB of template does not cross the
+  gate on each run. A notebook that pins an older `SlateExtensionsBase` has no hash and no template, and
+  still gets every other manifest field. This needs a `SlateExtensionsBase` newer than 0.11.3.
+- The PDF deck export applies the deck template of the notebook. The template source goes after the
+  default Typst preamble, so a `#let slide` in it replaces the default one. The template files are
+  written into the Typst project directory, which is the `--root` of the compile. When the project
+  has a `fonts` directory, Typst gets `--font-path` for it. The Typst bundle export carries the same
+  files. To rebuild a deck with template fonts from an unpacked bundle, run
+  `typst compile --font-path fonts doc.typ`. A notebook without a template exports the same `doc.typ`
+  as before.
+
+### Fixed
+
+- A slide in the PDF deck that is taller than the page shrinks to fit and keeps its items in order.
+  The last items of a long list used to print on top of each other, with an empty bullet below them.
+- The figures of a slide in the PDF deck share the page with the text, as on the live deck. The
+  figures shrink before the text does, so a slide with two or more figures stays inside the page.
+  Such a slide used to run off the top and bottom of the page.
+- A slide in the PDF deck that shrinks to fit stays centred on the page. Its title used to touch or
+  cross the top edge of the page, with empty space at the bottom.
+- A figure that a component sizes for print, such as a portrait card at full width, now fits the
+  slide in the PDF deck. It used to cover the whole slide and run off the page.
+- The live deck puts the heading a slide starts with in its own `.slide-title` element, above the
+  slide body. A slide that starts with a heading of any depth has a title. The heading is not
+  repeated in the body. The slide of a `title` cell has `data-role="title"`, so a stylesheet can
+  match it with CSS only. The default look of the deck does not change.
 
 ## [2.1.0] - 2026-11-08
 

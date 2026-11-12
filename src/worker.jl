@@ -2013,7 +2013,7 @@ const _CONTROL_TOOLS = Set([
 const _UI_TOOLS = Set([
     "__slate_interp", "__slate_rerender_live", "__slate_rerender_fig", "__slate_table_page",
     "__slate_matrix_render", "__slate_complete", "__slate_get_served_asset",
-    "__slate_extension_manifest", "__slate_module_help",
+    "__slate_extension_manifest", "__slate_deck_template", "__slate_module_help",
 ])
 
 # KaimonGate request router (`set_request_router!`): a spawner for requests that leave the default
@@ -2197,32 +2197,23 @@ function __slate_bundle_info()
 end
 
 "The worker's SlateExtensionsBase extension manifest — what its loaded packages registered for the
-page to mirror: `{frontend:[{id, js, esm, kind}]}` (widget renderers + editor extensions declared from
-`__init__`; `esm` ⇒ ES module; a non-empty `kind` ⇒ a component whose default export Slate wraps). The
-server pulls this at the end of each run drain and on an `/ext-assets/` miss, and injects the scripts
-into the page. Empty when no such package is loaded."
+page to mirror: `{frontend:[{id, js, esm, kind}], assets, imports, fences, deck_template_hash}` (widget
+renderers + editor extensions declared from `__init__`; `esm` ⇒ ES module; a non-empty `kind` ⇒ a
+component whose default export Slate wraps). The server pulls this at the end of each run drain and on an
+`/ext-assets/` miss, and injects the scripts into the page. Empty when no such package is loaded. The
+deck template travels as its hash only: the bytes come from `__slate_deck_template`."
 function __slate_extension_manifest()
-    out = Dict{String,Any}("frontend" => Dict{String,Any}[], "assets" => Dict{String,Any}[],
-                           "imports" => Dict{String,Any}[], "fences" => String[])
-    try
-        m = inprocess_extension_manifest(_NS[])
-        out["frontend"] = Dict{String,Any}[Dict{String,Any}(
-            "id" => String(e.id), "js" => String(e.js), "esm" => e.esm, "kind" => String(e.kind))
-            for e in m.frontend]
-        out["assets"] = Dict{String,Any}[Dict{String,Any}(
-            "pkg" => String(e.pkg), "dir" => String(e.dir)) for e in m.assets]
-        # Read separately (and only if present): a notebook project pinning an older SEB yields a
-        # manifest without this field, and reading it inside the block above would drop `frontend` and
-        # `assets` too — every extension's front-end silently vanishing over one missing seam.
-        if hasproperty(m, :imports)
-            out["imports"] = Dict{String,Any}[Dict{String,Any}(
-                "spec" => String(e.spec), "url" => String(e.url)) for e in m.imports]
-        end
-        hasproperty(m, :fences) && (out["fences"] = String[String(f) for f in m.fences])
+    return try
+        extension_manifest_wire(inprocess_extension_manifest(_NS[]))
     catch
+        extension_manifest_wire((; frontend = (), assets = ()))
     end
-    return out
 end
+
+"The bytes of the deck template the worker's packages declared (`provide_deck_template!`), base64 in a
+JSON-safe shape: `{ok, hash, source, files:[{name, b64}]}`. `{ok: false}` when none is declared. The
+server calls this only when the manifest's `deck_template_hash` differs from the one it holds."
+__slate_deck_template() = deck_template_wire()
 
 # `slate_pkg` / the package pane: `_pkg_apply` (pkg_ops.jl), shared with the in-process kernel.
 __slate_pkg(op, name) = _pkg_apply(op, name)
@@ -3015,6 +3006,7 @@ function tools()
         KaimonGate.GateTool("__slate_reconstruct", __slate_reconstruct),
         KaimonGate.GateTool("__slate_bundle_info", __slate_bundle_info),
         KaimonGate.GateTool("__slate_extension_manifest", __slate_extension_manifest),
+        KaimonGate.GateTool("__slate_deck_template", __slate_deck_template),
         KaimonGate.GateTool("__slate_get_served_asset", __slate_get_served_asset),
         KaimonGate.GateTool("__slate_overflow_file", __slate_overflow_file),
         KaimonGate.GateTool("__slate_rerender_live", __slate_rerender_live),
