@@ -52,6 +52,10 @@ were written when they went out. They are marked.
   files. To rebuild a deck with template fonts from an unpacked bundle, run
   `typst compile --font-path fonts doc.typ`. A notebook without a template exports the same `doc.typ`
   as before.
+- **Print the live deck.** A new export format, "PDF — the live deck as presented", prints the
+  deck as the audience sees it: the hub opens `?deck=print` in headless Chrome, one page per slide
+  at its last step, with the deck's own CSS. Text and SVG stay vector. `export.pdf?layout=present`,
+  or `export_pdf(notebook; layout = "present")`.
 
 ### Fixed
 
@@ -68,6 +72,10 @@ were written when they went out. They are marked.
   slide body. A slide that starts with a heading of any depth has a title. The heading is not
   repeated in the body. The slide of a `title` cell has `data-role="title"`, so a stylesheet can
   match it with CSS only. The default look of the deck does not change.
+- A deck video rendered from the record panel uses the editor's palette. The headless Chrome has no
+  saved theme, so every capture came out in the default palette. A notebook URL takes
+  `?slatetheme=<name>` to set the palette for that page, and `slide_view` and `render_deck` take a
+  `theme` argument.
 
 ## [2.1.0] - 2026-11-08
 
