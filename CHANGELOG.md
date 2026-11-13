@@ -93,6 +93,9 @@ were written when they went out. They are marked.
   A markdown cell and an output add no space above or below them: the gap between the cells of a
   slide is the only space between them. The cell of a slide's heading is not drawn once the heading
   is in the title, so the first block of a slide sits at the same place whatever cell it comes from.
+- `?deck=sheet`, `?deck=print` and `?deck=S.K` wait for the cells' images before they copy a slide.
+  A markdown cell or an output with an image fills in only after the image decodes, so a capture
+  taken at once showed the cell empty: a contact sheet with no figures and no markdown images.
 
 ## [2.1.0] - 2026-11-08
 
