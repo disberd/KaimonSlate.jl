@@ -1506,11 +1506,22 @@
       for (const c of dv.children) c.classList.toggle('derive-cur', c === cur);
     }
     // The same fitting and lighting as the deck, so the preview is what the audience sees.
+    _lightTerms(slide.querySelector('.slide-body'));
+    _fitPreview(slide);
+  }
+  // Fit a drawn preview to its canvas, the way the deck fits a slide. Call it again when the images of
+  // the slide have loaded: the copy of an image has no size when it is drawn, so the first fit sees a
+  // slide that is shorter than it will be.
+  function _fitPreview(slide) {
     const body = slide.querySelector('.slide-body');
-    _lightTerms(body);
+    slide.style.setProperty('--shrink', 1);
     _fitFigures(body, 1);
     _fitMath(body);
     _shrinkText(body);
+  }
+  // Fit every slide drawn into `root` again.
+  function _refitPreviews(root) {
+    root.querySelectorAll('.deck-preview').forEach(_fitPreview);
   }
   // ── Rendering the deck to a video ───────────────────────────────────────────
   // The renderer (server_deckshot.jl `deck_render`) steps the deck with `slideNext` and, after each
@@ -1600,7 +1611,7 @@
       const n = document.createElement('span'); n.className = 'deck-sheet-n'; n.textContent = String(i + 1);
       host.appendChild(n);
     });
-    whenLoaded(grid, done);
+    whenLoaded(grid, () => { _refitPreviews(grid); done(); });
   }
   // Every slide at its last step, one page each at the slide's own size (`--u: 1px`), for the hub's
   // PDF of the deck as presented (server_deckshot.jl `deck_pdf`).
@@ -1619,14 +1630,19 @@
       host.style.width = W + 'px'; host.style.height = H + 'px';
       return root.appendChild(host);
     });
+    // The first drawing fits each slide before its images and the deck's fonts have loaded. The
+    // second copies the cells again with them in place, and fits again once the new copies have
+    // loaded: a copied image has no size before that (`_fitPreview`). The notebook is hidden only
+    // after the last fit: a hidden chart shrinks to nothing, and its snapshot with it.
     const draw = () => hosts.forEach((host, i) => _previewInto(host, i, Infinity));
-    // The first drawing fits each slide before its images and the deck's fonts have loaded; the
-    // second fits it again with them in place. The notebook is hidden only after that: a hidden
-    // chart shrinks to nothing, and its snapshot with it.
     draw();
     whenLoaded(root, () => document.fonts.ready.then(() => {
       draw();
-      whenLoaded(root, () => { document.documentElement.classList.add('deck-print-mode'); done(); });
+      whenLoaded(root, () => {
+        _refitPreviews(root);
+        document.documentElement.classList.add('deck-print-mode');
+        done();
+      });
     }));
   }
   function _renderPreviews() {
