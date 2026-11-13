@@ -25,7 +25,8 @@ were written when they went out. They are marked.
   has a `fonts` directory, Typst gets `--font-path` for it. The Typst bundle export carries the same
   files. To rebuild a deck with template fonts from an unpacked bundle, run
   `typst compile --font-path fonts doc.typ`. A notebook without a template exports the same `doc.typ`
-  as before.
+  as before. The export pulls the extension manifest first, so a template whose source is a
+  `PkgAsset` exports as it is on disk now, with no run and no worker restart in between.
 
 ### Changed
 

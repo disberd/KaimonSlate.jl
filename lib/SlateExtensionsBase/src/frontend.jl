@@ -598,6 +598,9 @@ end
 const _DECK_TEMPLATE_LOCK = ReentrantLock()
 const _DECK_TEMPLATE = Ref{Union{Nothing,@NamedTuple{hash::String, source::String,
                                                       files::Dict{String,Vector{UInt8}}}}}(nothing)
+# (; path, mtime) when the source came from a file ([`PkgAsset`](@ref)): [`deck_template`](@ref) reads
+# `path` again when its mtime moves, as the front-end registry does.
+const _DECK_TEMPLATE_FILE = Ref{Union{Nothing,@NamedTuple{path::String, mtime::Float64}}}(nothing)
 
 # A file name is a relative POSIX path: no drive, no backslash, no NUL, and no empty, `.` or `..` segment.
 _template_path_ok(name::AbstractString) =
@@ -623,6 +626,10 @@ Declare a Typst deck template for every notebook that loads this package. `sourc
 `files` maps a file name to its bytes: the layout catalogue, art and fonts that `source` uses. Put fonts
 under `fonts/`. Slate accepts bytes only, so give it `read(path)`, never a path.
 
+When `source` is a [`PkgAsset`](@ref) (`@pkg_asset("typst/deck.typ")`), the registry keeps its path and
+reads the file again when its mtime changes, so an edit to the `.typ` reaches the next export without a
+worker restart. The `files` are kept as given.
+
 A file name must be a relative POSIX path, such as `layouts/title.typ`. A name that is absolute or has a
 `..` segment throws an `ArgumentError`. Call this from `__init__`. A later call replaces the template.
 
@@ -642,18 +649,40 @@ function provide_deck_template!(source::AbstractString;
     t = (; hash = _template_hash(src, copied), source = src, files = copied)
     lock(_DECK_TEMPLATE_LOCK) do
         _DECK_TEMPLATE[] = t
+        _DECK_TEMPLATE_FILE[] = source isa PkgAsset ? (path = source.path, mtime = mtime(source.path)) : nothing
     end
     return nothing
+end
+
+# Read a file-backed source again when its file changed. Call under `_DECK_TEMPLATE_LOCK`. A file that
+# has gone missing or cannot be read keeps the last source: a half-saved file must not drop the template.
+function _refresh_deck_template_file!()
+    f = _DECK_TEMPLATE_FILE[]
+    (f === nothing || _DECK_TEMPLATE[] === nothing) && return
+    t = mtime(f.path)
+    (t == 0 || t == f.mtime) && return
+    src = try
+        read(f.path, String)
+    catch
+        return
+    end
+    files = _DECK_TEMPLATE[].files
+    _DECK_TEMPLATE[] = (; hash = _template_hash(src, files), source = src, files)
+    _DECK_TEMPLATE_FILE[] = (path = f.path, mtime = t)
+    return
 end
 
 """
     deck_template() -> Union{Nothing,NamedTuple}
 
 The template that [`provide_deck_template!`](@ref) declared, as `(; hash, source, files)`, or `nothing`.
-The hash is a hex SHA-256 string. A later `provide_deck_template!` replaces the template and leaves the
-returned value as it was.
+The hash is a hex SHA-256 string. A later `provide_deck_template!`, or an edit to a file-backed source,
+replaces the template and leaves the returned value as it was.
 """
-deck_template() = lock(() -> _DECK_TEMPLATE[], _DECK_TEMPLATE_LOCK)
+deck_template() = lock(_DECK_TEMPLATE_LOCK) do
+    _refresh_deck_template_file!()
+    _DECK_TEMPLATE[]
+end
 
 """
     frontend_scripts() -> Dict{String,String}
