@@ -469,6 +469,24 @@ SlateExtensionsBase.to_palette_command(c::TaggedCmd) = auto_palette_command(c)
         end
         @test deck_template().source == "s2"                       # a rejected call changes nothing
 
+        # A file-backed source (`PkgAsset`) follows edits to its file; the files stay as given.
+        mktempdir() do dir
+            f = joinpath(dir, "deck.typ")
+            write(f, "V1")
+            provide_deck_template!(PkgAsset(f); files = Dict("a.bin" => UInt8[1]))
+            h1 = extension_manifest().deck_template_hash
+            @test deck_template().source == "V1"
+            write(f, "V2")
+            SlateExtensionsBase._DECK_TEMPLATE_FILE[] = (path = f, mtime = SlateExtensionsBase._DECK_TEMPLATE_FILE[].mtime - 10)
+            @test extension_manifest().deck_template_hash != h1
+            @test deck_template().source == "V2" && deck_template().files == Dict("a.bin" => UInt8[1])
+            rm(f)                                                   # a missing file keeps the last source
+            SlateExtensionsBase._DECK_TEMPLATE_FILE[] = (path = f, mtime = 1.0)
+            @test deck_template().source == "V2"
+            provide_deck_template!("plain")                         # a plain string stops following the file
+            @test SlateExtensionsBase._DECK_TEMPLATE_FILE[] === nothing
+        end
+
         SlateExtensionsBase._DECK_TEMPLATE[] = nothing
     end
 

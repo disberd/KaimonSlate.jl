@@ -2090,6 +2090,9 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
     _warm_html_rasters!(nb; theme = ct)   # one round-trip, under the EXPORT's palette (see above)
     compfigs = _warm_component_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_vector_figs!(nb, compfigs; progress = cid -> _export_progress(nb, cid))
+    # Pull the manifest now, so an edit to a file-backed template source (`@pkg_asset`) reaches this
+    # export without a run or a worker restart.
+    _refresh_extensions_for_page!(nb)
     lock(nb.lock) do
         dir = mktempdir()
         mediasz = Dict{String,Any}()   # staged image => its `{width=…}` block, written out as media.json

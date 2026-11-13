@@ -21,7 +21,9 @@ Two things to know about the published GitHub releases for this package:
   is absolute or has a `..` segment throws an `ArgumentError`. `deck_template()` returns the template as
   `(; hash, source, files)`, and `extension_manifest()` gains a `deck_template_hash` field. The field is
   absent when no package declares a template. The package now depends on the `SHA` standard library for
-  the hash.
+  the hash. When `source` is a `PkgAsset` (`@pkg_asset("typst/deck.typ")`), the registry reads the file
+  again when its mtime changes, as it does for a file-backed front-end script, so an edit to the `.typ`
+  reaches Slate without a worker restart.
 
 ## [0.11.3] - 2026-11-05
 
