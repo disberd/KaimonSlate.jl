@@ -3140,7 +3140,6 @@ body.presenting { overflow: hidden; }
    below the heading and above the next block collapsed into one. */
 .slide-title.md { padding-bottom: 0; }
 .deck-slide .slide-title.md.role-title { padding-bottom: 0; }
-.slide-title + .slide-body > .cell:first-child .md { padding-top: 0; }
 .slide-title + .slide-body > .cell:first-child .md > :first-child,
 .slide-title + .slide-body > .cell:first-child .md > :first-child > :first-child { margin-top: 0; }
 .slide-title.role-title + .slide-body > .cell:first-child .md > :is(h2, h3):first-child { margin-top: 4px; }
@@ -3199,18 +3198,31 @@ html.deck-print-mode, html.deck-print-mode body { margin: 0 !important; padding:
 .deck-slide.show-code .cell.slide-split > .output, .deck-slide.show-code .cell.slide-split > .tables,
 .deck-slide.show-code .cell.slide-split > .echarts, .deck-slide.show-code .cell.slide-split > .anim { grid-column: 2; min-width: 0; }
 .deck-slide .output { max-height: none !important; font-size: .7em; }
+/* A markdown output is prose: body size, as in the PDF deck. */
+.deck-slide .output:has(> .dispwrap > .disp > .markdown) { font-size: 1em; }
 .deck-slide .output > .out, .deck-slide .output > .val, .deck-slide .output > .dispwrap { border-top: none; }
+/* The gap between the cells of a slide is the body's `gap`: an output adds no space above or below. */
+.deck-slide .output > .dispwrap { padding-block: 0; }
+/* A cell that held only the slide's heading is empty once the heading is in `.slide-title`. */
+.deck-slide .slide-body > .cell.md:not(:has(> .md > *)) { display: none; }
 .deck-slide .cell > .output, .deck-slide .cell > .echarts, .deck-slide .cell > .tables,
 .deck-slide .cell > .controls, .deck-slide .cell > .anim { border: none !important; }
 .deck-slide .output img, .deck-slide .md img, .deck-slide .md video {
-  max-width: 100%; max-height: calc(var(--u) * 760); height: auto; border-radius: calc(var(--u) * 10); }
+  max-height: calc(var(--u) * 760); height: auto; border-radius: calc(var(--u) * 10); }
+/* `--fitw` is the width the fit pass (slides.js `_fitFigures`) gives a picture so that the slide fits. */
+.deck-slide :is(.output, .md) :is(img, video) { max-width: min(100%, var(--fitw, 100%)) !important; }
 
-/* Typography: one scale, in `em` of the body size, so `--shrink` scales all of it together. */
+/* Typography: one scale, in `em` of the body size, so `--shrink` scales all of it together. A markdown
+   output (`.markdown`) is prose and takes the same rhythm as a markdown cell. The body's `gap` is the
+   space between cells, so a markdown cell adds no padding above or below. */
 .deck-slide .md { font-size: 1em; color: var(--deck-fg); max-width: none; }
-.deck-slide .md p, .deck-slide .md li { font-size: 1em; }
-.deck-slide .md p { margin: 0 0 .55em; }
-.deck-slide .md ul, .deck-slide .md ol { margin: .2em 0 .6em; padding-left: 1.2em; }
-.deck-slide .md li { margin: .28em 0; }
+.deck-slide .slide-body .md { padding-block: 0; }
+.deck-slide :is(.md, .markdown) :is(p, li) { font-size: 1em; }
+.deck-slide :is(.md, .markdown) p { margin: 0 0 .55em; }
+.deck-slide :is(.md, .markdown) :is(ul, ol) { margin: .2em 0 .6em; padding-left: 1.2em; }
+.deck-slide :is(.md, .markdown) li { margin: .28em 0; }
+/* A loose list puts each item in a paragraph: the item margin is the spacing, as in a tight list. */
+.deck-slide :is(.md, .markdown) li > p { margin: 0; }
 .deck-slide .md li::marker { color: var(--deck-accent); }
 .deck-slide .md h1, .deck-slide .md h2, .deck-slide .md h3 { font-family: var(--deck-font); color: var(--deck-strong);
   letter-spacing: -.02em; line-height: 1.1; border: none; margin: 0 0 .45em; }
@@ -3372,7 +3384,7 @@ body.zen #nb .md .step, body.zen #nb .md .incremental { box-shadow: none; paddin
 .deck-slide .slidefig > .sf-layer.step.on:has(~ .sf-layer.on) {
   opacity: 0; visibility: hidden; transition: opacity .2s ease .5s, visibility 0s linear .7s; }
 .deck-slide .slidefig > .sf-base { transition: opacity .2s ease; }
-.deck-slide .slidefig { max-width: min(100%, calc(var(--u) * 760 * var(--sf-ar))) !important; }
+.deck-slide .slidefig { max-width: min(100%, calc(var(--u) * 760 * var(--sf-ar)), var(--fitw, 100%)) !important; }
 .deck-slide .slidefig > .sf-layer.step { transition-duration: .55s; }
 /* `::: derive`: equations stacked in one place, one shown; stepping turns it into the next. */
 .deck-slide .derive { display: grid; justify-items: center; }

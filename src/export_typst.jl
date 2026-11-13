@@ -365,10 +365,16 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
     #let mdlen(e) = if e == none { auto } else if e.at(1) == "%" { e.at(0) * 1% } else if e.at(1) == "em" { e.at(0) * 1em } else { e.at(0) * 1pt }
     #let mdalign(s) = if s == "left" { left } else if s == "right" { right } else { center }
     // An image alone in its paragraph is a figure — centred, matching the notebook and the HTML export.
-    // One sitting in a run of prose stays inline, where the author put it.
+    // A centred one with no height is a `<slate-fig>` marker that `fit` sizes, as an image output is
+    // (see `figureimg`); its `width` is an upper bound. One sitting in a run of prose stays inline,
+    // where the author put it.
     #let mdimage(src, alt: none) = {
       let a = MEDIASZ.at(src, default: (:))
-      let im = image(src, alt: alt, width: mdlen(a.at("width", default: none)), height: mdlen(a.at("height", default: none)))
+      let (w, h) = (a.at("width", default: none), a.at("height", default: none))
+      if a.at("block", default: false) and h == none and a.at("align", default: "center") == "center" {
+        return [#metadata((p: src, w: if w == none { none } else { mdlen(w) })) <slate-fig>]
+      }
+      let im = image(src, alt: alt, width: mdlen(w), height: mdlen(h))
       if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), im) } else { im }
     }
     $(_CITE_SHOW)
@@ -393,40 +399,46 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
       text(size: 0.7em)[#text(fill: $(p.parlabel), weight: "bold")[parameters] #h(6pt) #items.map(it => [#raw(it.at(0)) = #text(weight: "bold", it.at(1))]).join([#h(10pt)])])
     // `SLIDE_W` is the slide page width. `fit(body)` draws `body` at full content width so that it
     // fits the page, as the live deck does:
-    // 1. Each figure takes the width of its column (or its `width`, if that is smaller) and at most
-    //    `k` of the page height. `k` is the largest value in [0.25, 1] that fits the slide. A figure
-    //    beside a taller column of text does not set the height of the slide. When the smallest `k`
-    //    gives no shorter slide, the figures keep `k = 1` and the text gives way instead.
-    // 2. When the slide is still too tall, the whole body scales down (floor 0.5×).
+    // 1. At full size, each figure takes the width of its column (or its `width`, if that is
+    //    smaller), and at most the page height. `f` scales every figure down from its full size.
+    // 2. `s` scales the text down, as the live deck sets a smaller font: the body is laid out at
+    //    width `sz.width / s` and drawn scaled by `s`, so it keeps the full width and its text wraps
+    //    again. `draw` divides the figure sizes by `s`, so `s` does not change the drawn size of a
+    //    figure.
+    // The figures give up height at half the rate of the text: at text scale `s`, `f` is at least
+    // `(1 + s) / 2`. `fit` takes the largest `s` (floor 0.5) that fits, then the largest `f`. At the
+    // floor of `s`, `f` can go down to 0.25. A figure beside a taller column of text does not set the
+    // height of the slide, so a smaller `f` gains nothing and it keeps `f = 1`.
     // The body is drawn in a box as tall as its measured height, so a tall body does not break
-    // inside the box. The scale uses `reflow`, so the page centres the drawn size of the body, not
-    // its size before the scale.
+    // inside the box.
     // Typst cannot measure a cite() in isolation ("cannot format citation in isolation", it needs
     // document context to resolve), so the MEASURED copy renders citation sentinels as a fixed
     // stand-in of comparable width; the real body still renders true citations.
     #let SLIDE_W = $w
     #let fit(body) = layout(sz => {
-      let draw(k) = {
+      let draw(f, s) = {
         show <slate-fig>: it => layout(c => {
           let (p, w) = (it.value.p, it.value.w)
           let n = measure(image(p))
-          let cw = if w == none { c.width } else if type(w) == ratio { c.width * w } else { calc.min(c.width, w) }
-          align(center, image(p, height: calc.max(1pt, calc.min(k * sz.height, cw * (n.height / n.width)))))
+          let cw = if w == none { c.width } else if type(w) == ratio { c.width * w } else { calc.min(c.width, w / s) }
+          align(center, image(p, height: calc.max(1pt, f * calc.min(sz.height / s, cw * (n.height / n.width)))))
         })
         body
       }
-      let tall(k) = measure(box(width: sz.width, { show regex("§c§[^§]*§[^§]+§[^§]*§"): it => [[0]]; draw(k) })).height
-      let h1 = tall(1.0)
-      let (k, h) = if h1 <= sz.height { (1.0, h1) } else {
-        let h0 = tall(0.25)
-        if h0 >= h1 - 0.5pt { (1.0, h1) } else if h0 > sz.height { (0.25, h0) } else {
-          let (lo, hi) = (0.25, 1.0)
-          for _ in range(7) { let mid = (lo + hi) / 2; if tall(mid) <= sz.height { lo = mid } else { hi = mid } }
-          (lo, tall(lo))
-        }
+      let tall(f, s) = measure(box(width: sz.width / s, { show regex("§c§[^§]*§[^§]+§[^§]*§"): it => [[0]]; draw(f, s) })).height
+      let fits(f, s) = s * tall(f, s) <= sz.height
+      // The largest `f` in [lo, 1] that fits at text scale `s`, or `lo` when none does.
+      let best-f(s, lo) = if fits(1.0, s) { 1.0 } else {
+        let (a, b) = (lo, 1.0)
+        for _ in range(6) { let m = (a + b) / 2; if fits(m, s) { a = m } else { b = m } }
+        a
       }
-      let s = if h > sz.height and h > 0pt { calc.max(0.5, sz.height / h) } else { 1.0 }
-      pad(x: (1 - s) / 2 * sz.width, scale(origin: top + center, x: s * 100%, y: s * 100%, reflow: true, box(width: sz.width, height: h, draw(k))))
+      let (s, f) = if fits(1.0, 1.0) { (1.0, 1.0) } else if not fits(0.75, 0.5) { (0.5, best-f(0.5, 0.25)) } else {
+        let (lo, hi) = (0.5, 1.0)
+        for _ in range(6) { let m = (lo + hi) / 2; if fits((1 + m) / 2, m) { lo = m } else { hi = m } }
+        (lo, best-f(lo, (1 + lo) / 2))
+      }
+      scale(origin: top + left, x: s * 100%, y: s * 100%, reflow: true, box(width: sz.width / s, height: tall(f, s), draw(f, s)))
     })
     // Side-by-side columns, top aligned. `widths` holds one entry per column: a ratio or a length, or
     // `none` for a column that shares the rest equally. The other arguments are the column bodies.

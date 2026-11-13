@@ -77,6 +77,22 @@ were written when they went out. They are marked.
   saved theme, so every capture came out in the default palette. A notebook URL takes
   `?slatetheme=<name>` to set the palette for that page, and `slide_view` and `render_deck` take a
   `theme` argument.
+- A slide in the PDF deck that is too tall now sets its text smaller and wraps it again over the
+  full width, as the live deck does. The whole body used to scale down, which left a narrow block in
+  the middle of the page with empty margins at the sides, and made the figures smaller too.
+- When a slide is too tall, its text and its figures share the shrink, on the live deck and in the
+  PDF deck: a figure gives up height at half the rate of the text, so at text scale `s` it keeps at
+  least `(1 + s) / 2` of its full size. Only at the text's floor do the figures shrink further. On
+  the live deck this now applies to an image output and a markdown image too, as to a
+  `slide_figure`, and side-by-side figures count once. In the PDF deck, a centred markdown image
+  on its own line is a figure that `fit` sizes, as an image output is. A slide with a picture
+  beside text used to shrink its text to the floor while the picture kept its size.
+- On the live deck, a markdown output (for example a `Markdown.parse` value) is set at the body
+  size, as in the PDF deck, not at the smaller size of other outputs, and takes the paragraph and
+  list spacing of a markdown cell. A loose list (each item a paragraph) is spaced like a tight one.
+  A markdown cell and an output add no space above or below them: the gap between the cells of a
+  slide is the only space between them. The cell of a slide's heading is not drawn once the heading
+  is in the title, so the first block of a slide sits at the same place whatever cell it comes from.
 
 ## [2.1.0] - 2026-11-08
 
