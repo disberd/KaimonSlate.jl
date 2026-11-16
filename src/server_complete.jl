@@ -2383,6 +2383,26 @@ function _make_router(h::Hub)
         n = replace_cells!(nb, e; label = String(get(b, "label", "replace")))
         j = state_json(nb); j["changed"] = n; _json(j)
     end))
+    # Format code-cell texts (server_codeformat.jl) without changing the notebook: the page applies
+    # the result, through `cells-replace` when authoring and into the editors in a workbook. Body
+    # {sources: {cellId: text, …}, formatted?}; `formatted` carries a browser-side formatter's output
+    # for the hub to check. Answers {formatted, failed, formatter}.
+    HTTP.register!(router, "POST", "/api/{id}/format", req -> _withnb(h, req, nb -> begin
+        b = _body(req); s = get(b, "sources", nothing); f = get(b, "formatted", nothing)
+        s isa AbstractDict || return _json(Dict("ok" => false, "message" => "no sources"))
+        r = format_texts(nb, s; formatted = f isa AbstractDict ? f : nothing)
+        _json(Dict{String,Any}("ok" => true, "formatted" => r.formatted, "failed" => r.failed,
+                               "formatter" => r.formatter))
+    end))
+    # The formatter this notebook uses, and the global default the Settings panel edits.
+    HTTP.register!(router, "GET", "/api/{id}/formatter", req -> _withnb(h, req, nb ->
+        _json(merge(notebook_formatter(nb), Dict{String,Any}("default" => formatter_default())))))
+    HTTP.register!(router, "POST", "/api/{id}/formatter-default", req -> begin
+        n = String(get(_body(req), "name", ""))
+        n in FORMATTERS || return _json(Dict("ok" => false, "message" => "unknown formatter"))
+        set_formatter_default!(n)
+        _json(Dict{String,Any}("ok" => true, "default" => formatter_default()))
+    end)
     # Set/clear a cell behavior flag (collapsed / hidecode / trace / cache / …) across one or many cells
     # in ONE persist → one history entry. Body {flag, value, cells?}: `cells` (a list of ids) targets
     # just those, omitted ⇒ every applicable cell. An eval-affecting flag (trace/cache/…) restales and
@@ -2813,7 +2833,7 @@ function _make_router(h::Hub)
             # `layout=present`: the live deck printed in headless Chrome (server_deckshot.jl), not
             # Typst, in Slate palette `slatetheme` (the headless browser has no saved one).
             get(qp, "layout", "") == "present" ?
-                deck_pdf("$(_hub_url(h))/n/$(nb.id)?deck=print&shot=1" * _slatetheme_qs(get(qp, "slatetheme", ""))) :
+                deck_pdf(deck_print_url(_hub_url(h), nb.id; theme = get(qp, "slatetheme", ""), steps = get(qp, "steps", ""))) :
             export_pdf(nb; _pdf_export_opts(qp, nb)...)
         catch e
             return HTTP.Response(500, "PDF export failed: " * sprint(showerror, e))
@@ -3652,7 +3672,9 @@ end
 # account on a shared machine (a cluster login node), which can open 127.0.0.1 directly and send any
 # headers it likes. On Linux the kernel says who owns the far end of a loopback connection (see
 # peer_owner.jl), so a loopback request is served only when that is the account running the hub.
-# SSH forwards and VS Code's port forwarding connect as the logged-in user and pass.
+# SSH forwards and VS Code's port forwarding connect as the logged-in user and pass. Under WSL, a
+# browser on Windows reaches the hub through a relay running as root, or with no Linux socket at all,
+# and is served; WSL is then as open as Windows, where the check does not run.
 #
 # Elsewhere the check is skipped: macOS and Windows have no equivalent lookup, and are rarely shared
 # between accounts. A non-loopback peer is not a local account; the bind address governs those. An
@@ -3692,7 +3714,7 @@ function _peer_is_owner(stream)::Bool
         known === nothing || return known
         here = HTTP.TCP.local_addr(tracked.conn)
         uid = PeerOwner.owner_uid(_addr_bytes(peer), peer.port, _addr_bytes(here), here.port)
-        ok = uid !== nothing && uid == PeerOwner.my_uid()
+        ok = PeerOwner.accepts(uid, PeerOwner.my_uid(); wsl = PeerOwner.is_wsl())
         lock(() -> (_PEER_SEEN[tracked] = ok), _PEER_SEEN_LOCK)
         return ok
     catch e

@@ -572,12 +572,16 @@ async function _runPdfExport() {
   } catch (e) { await alertDark('PDF export failed: ' + e); }
   finally { hideLoading(); }
 }
-// The live deck as presented: the hub prints it in headless Chrome. It has no options.
+// Layout "as presented": the hub prints the live deck in headless Chrome, in the palette the Theme
+// picker resolves to. The Typst options do not apply.
+const _pdfPresent = () => (document.getElementById('pdflayout').value || '').startsWith('present');
 async function _runDeckPrint() {
+  ['pdftheme', 'pdflayout', 'pdfsteps'].forEach(id => localStorage.setItem('slate_' + id, document.getElementById(id).value));
   showLoading('Printing the deck in headless Chrome…');
   try {
-    const theme = typeof curSlateTheme === 'function' ? curSlateTheme() : '';
-    const r = await fetch(_apipath('/api/export.pdf') + '?layout=present&slatetheme=' + encodeURIComponent(theme));
+    const { charttheme } = _resolveExportTheme(document.getElementById('pdftheme').value);
+    const steps = document.getElementById('pdfsteps').value;
+    const r = await fetch(_apipath('/api/export.pdf') + '?layout=present&slatetheme=' + encodeURIComponent(charttheme) + '&steps=' + steps);
     if (!r.ok) { await alertDark('PDF export failed:\n' + (await r.text())); return; }
     _saveBlob(await r.blob(), '.pdf');
   } catch (e) { await alertDark('PDF export failed: ' + e); }
@@ -591,7 +595,7 @@ function closeExportModal() { document.getElementById('exportbg').classList.remo
 function _pdfSyncThemeWarn() {
   const row = document.getElementById('pdfthemewarnrow');
   const pick = (document.getElementById('pdftheme') || {}).value;
-  if (row) row.style.display = (_exFormat() === 'pdf' && pick && pick !== 'asis') ? '' : 'none';
+  if (row) row.style.display = (_exFormat() === 'pdf' && !_pdfPresent() && pick && pick !== 'asis') ? '' : 'none';
 }
 // Show the speaker-notes row only for the slides layout (PDF only).
 function _pdfSyncSlides() {
@@ -603,7 +607,22 @@ function _pdfSyncSlides() {
 function _exSyncRows() {
   const f = _exFormat();
   document.querySelectorAll('#exportbg .exrow').forEach(el => { el.style.display = el.classList.contains('fmt-' + f) ? '' : 'none'; });
-  if (f === 'pdf') { _pdfSyncSlides(); _pdfSyncThemeWarn(); }
+  if (f === 'pdf') {
+    // The Chrome layout needs a browser on the hub's machine: without one it is listed but cannot
+    // be chosen, and its tooltip says what is missing.
+    const why = (nbState && nbState.deckBrowser) || '';
+    const lay = document.getElementById('pdflayout');
+    const chromeOpt = lay.querySelector('option[value="present|1"]');
+    if (chromeOpt) { chromeOpt.disabled = !!why; chromeOpt.title = why; }
+    if (why && _pdfPresent()) lay.value = 'slides|1';
+    _pdfSyncSlides(); _pdfSyncThemeWarn();
+    if (_pdfPresent()) document.querySelectorAll('#exportbg .typst-only').forEach(el => { el.style.display = 'none'; });
+    document.getElementById('pdfstepsrow').style.display = _pdfPresent() ? '' : 'none';
+    // The deck's own ratio (a notebook setting), shown where a slide layout is chosen.
+    const deck = /^(slides|present)\|/.test(document.getElementById('pdflayout').value || '');
+    document.getElementById('pdfratiorow').style.display = deck ? '' : 'none';
+    document.getElementById('pdfratio').value = (nbState && nbState.slideRatio) || '16:9';
+  }
   if (f === 'docs') _docsPrefill();
   // A write's log row is part of its format's rows, but has nothing to show until something is written.
   [['appoutrow', 'appout'], ['docsoutrow', 'docsout']].forEach(([r, o]) => {
@@ -799,8 +818,10 @@ window.openWebsiteExport = () => openExport('website');   // "advanced options" 
 function openExport(preset) {
   let fmt = preset === 'slides' ? 'pdf' : preset === 'website' ? 'website' : (localStorage.getItem('slate_exfmt') || 'html');
   if (preset !== 'website' && fmt === 'website') fmt = 'html';   // Website is Publish now, not an Export format
-  document.getElementById('exfmt').value = fmt;
-  ['pdftheme', 'pdflayout', 'pdfbody', 'pdfcode'].forEach(id => {
+  const exf = document.getElementById('exfmt');
+  if (![...exf.options].some(o => o.value === fmt)) fmt = 'html';   // a saved format the dialog no longer offers
+  exf.value = fmt;
+  ['pdftheme', 'pdflayout', 'pdfbody', 'pdfcode', 'pdfsteps'].forEach(id => {
     const v = localStorage.getItem('slate_' + id); if (v != null) document.getElementById(id).value = v;
   });
   { const el = document.getElementById('appworkbook');
@@ -908,8 +929,7 @@ function closeExport(go) {
   if (fmt === 'website') return;   // publishing runs via the ☁ button → publishToSite(), not through closeExport
   if (fmt === 'app' || fmt === 'docs') return;       // …and the app export via "Write app folder" → exportApp(), which keeps the dialog open
   if (fmt === 'standalone') return exportStandalone();
-  if (fmt === 'deckpdf') return _runDeckPrint();
-  return _runPdfExport();
+  return _pdfPresent() ? _runDeckPrint() : _runPdfExport();
 }
 // Back-compat entry points (palette / keys): open the unified modal, PDF preselecting the deck.
 function exportPdf(preset) { return openExport(preset === 'slides' ? 'slides' : undefined); }

@@ -853,6 +853,14 @@ function _load_slate_config!()
         return nothing
     end
     NotebookServer.CHECKER_ON[] = get(_slate_config(), "checker_on", false) === true
+    let f = get(_slate_config(), "formatter", "runic")
+        f in NotebookServer.FORMATTERS && (NotebookServer.FORMATTER_DEFAULT[] = String(f))
+    end
+    NotebookServer._FORMATTER_PERSIST[] = function (name)
+        cfg = _slate_config(); cfg["formatter"] = name
+        _persist_slate_config!(cfg)
+        return nothing
+    end
     # Workers' telemetry kept on disk per notebook (slate.json "telemetry_log", "telemetry_keep_days").
     NotebookServer.TELEMETRY_LOG[] = get(_slate_config(), "telemetry_log", true) !== false
     let k = get(_slate_config(), "telemetry_keep_days", 14)
@@ -3286,8 +3294,8 @@ function create_tools(GateTool::Type)
     figure, that a step brings in what it should, and that nothing is cut off. `slide = 0` shows
     the WHOLE DECK as a contact sheet, every slide at its last step: start a review there. The reply
     also gives the deck's position (which slide of how many, which step of how many) and the error of
-    any math on the slide that failed to typeset. Needs Chrome or Chromium on the hub's machine (or
-    KAIMONSLATE_CHROME pointing at one). `theme` names the Slate palette to paint in (e.g.
+    any math on the slide that failed to typeset. Needs Chrome, Chromium, Edge or Brave on the hub's
+    machine (or KAIMONSLATE_CHROME pointing at one). `theme` names the Slate palette to paint in (e.g.
     "daylight", "nord"; "" for the default), since the headless browser does not know the author's.
     """
     function slide_view(notebook::String; slide::Int = 1, step::String = "end", theme::String = "")::String
@@ -3317,7 +3325,7 @@ function create_tools(GateTool::Type)
     is longer than `length`, the reply says how long it needs. Rendering takes about as long as the
     deck's motion plays, not the video's length. Waits up to about four minutes; a longer render keeps
     going, and calling this again reports how far it has got (it does not start a second one). Needs
-    Chrome or Chromium and ffmpeg on the hub's machine. `theme` names the Slate palette to paint in
+    Chrome, Chromium, Edge or Brave and ffmpeg on the hub's machine. `theme` names the Slate palette to paint in
     (e.g. "daylight", "nord"; "" for the default), since the headless browser does not know the author's.
     """
     function render_deck(notebook::String; length::String = "5:00", fps::Int = 30, theme::String = "")::String
@@ -3537,21 +3545,22 @@ function create_tools(GateTool::Type)
     "hidden")`; `body ∈ ("","large","normal","compact","small")`. `path` overrides the output
     file (default: a temp path). Returns the written path — pass it to `Read` to see the pages.
 
-    Set `layout="slides"` to render a 16:9 (or `slideratio=4:3`) presentation DECK — one slide
+    Set `layout="slides"` to render a 16:9 (or the notebook's `slideratio`, 16:10 or 4:3) presentation DECK — one slide
     per page, segmented by markdown headings + `slide`/`notes` cell tags (see the live "Present"
     mode). On a deck, code is hidden by default (set `source="1"`/`code` to show it) and
     `notes="1"` appends a speaker-notes section.
 
     Set `layout="present"` to print the LIVE deck instead, as the audience sees it: one page per
-    slide at its last step, drawn by the deck's own CSS in a headless Chrome (Chrome or Chromium on
-    the hub's machine, or KAIMONSLATE_CHROME), in the Slate palette `charttheme` names ("" for the
-    default). Only `path` and `charttheme` apply; the other options are for Typst.
+    slide at its last step, drawn by the deck's own CSS in a headless browser (Chrome, Chromium,
+    Edge or Brave on the hub's machine, or KAIMONSLATE_CHROME), in the Slate palette `charttheme` names ("" for the
+    default). `steps="all"` prints a page for every step of each slide instead. Only `path`,
+    `charttheme` and `steps` apply; the other options are for Typst.
     """
     function export_pdf_tool(notebook::String; theme::String = "light", charttheme::String = "",
                              override::String = "0", params::String = "0",
                              source::String = "1", style::String = "article", columns::String = "1",
                              code::String = "normal", body::String = "", path::String = "",
-                             layout::String = "article", notes::String = "0")::String
+                             layout::String = "article", notes::String = "0", steps::String = "")::String
         nb, err = _nb(notebook); nb === nothing && return err
         # A cell whose output is HTML (a record grid, a custom card) has no figure bytes behind it,
         # so the PDF gets one by rasterising the rendered card IN AN OPEN TAB. Exporting headless
@@ -3568,7 +3577,7 @@ function create_tools(GateTool::Type)
         slide_source = slides ? (source == "1") : (source != "0")
         pdf = try
             layout == "present" ?
-                NotebookServer.deck_pdf("$(_base())/n/$(nb.id)?deck=print&shot=1" * NotebookServer._slatetheme_qs(charttheme)) :
+                NotebookServer.deck_pdf(NotebookServer.deck_print_url(_base(), nb.id; theme = charttheme, steps)) :
             export_pdf(nb; include_source = slide_source, style = style,
                        columns = something(tryparse(Int, columns), 1), theme = theme,
                        charttheme = charttheme, override = override == "1",

@@ -36,10 +36,6 @@ were written when they went out. They are marked.
 
 ### Added
 
-- An HTML export can carry a table of contents. Turn on **Contents** in the export dialog, or add
-  `?toc=1` to the export route, and the page gets a button that opens a side panel of the
-  document's headings. The panel highlights the section you are reading, and each heading gets an
-  anchor you can link to.
 - A package that a notebook loads can declare a Typst deck template with `provide_deck_template!`. The
   worker manifest carries only a hash of the template. The hub keeps the template for each notebook and
   asks the worker for the bytes only when the hash changes, so 1 to 3 MB of template does not cross the
@@ -53,15 +49,9 @@ were written when they went out. They are marked.
   `typst compile --font-path fonts doc.typ`. A notebook without a template exports the same `doc.typ`
   as before. The export pulls the extension manifest first, so a template whose source is a
   `PkgAsset` exports as it is on disk now, with no run and no worker restart in between.
-- **Print the live deck.** A new export format, "PDF — the live deck as presented", prints the
-  deck as the audience sees it: the hub opens `?deck=print` in headless Chrome, one page per slide
-  at its last step, with the deck's own CSS. Text and SVG stay vector. `export.pdf?layout=present`,
-  or `export_pdf(notebook; layout = "present")`.
 
 ### Fixed
 
-- A slide in the PDF deck that is taller than the page shrinks to fit and keeps its items in order.
-  The last items of a long list used to print on top of each other, with an empty bullet below them.
 - The figures of a slide in the PDF deck share the page with the text, as on the live deck. The
   figures shrink before the text does, so a slide with two or more figures stays inside the page.
   Such a slide used to run off the top and bottom of the page.
@@ -73,10 +63,6 @@ were written when they went out. They are marked.
   slide body. A slide that starts with a heading of any depth has a title. The heading is not
   repeated in the body. The slide of a `title` cell has `data-role="title"`, so a stylesheet can
   match it with CSS only. The default look of the deck does not change.
-- A deck video rendered from the record panel uses the editor's palette. The headless Chrome has no
-  saved theme, so every capture came out in the default palette. A notebook URL takes
-  `?slatetheme=<name>` to set the palette for that page, and `slide_view` and `render_deck` take a
-  `theme` argument.
 - A slide in the PDF deck that is too tall now sets its text smaller and wraps it again over the
   full width, as the live deck does. The whole body used to scale down, which left a narrow block in
   the middle of the page with empty margins at the sides, and made the figures smaller too.
@@ -99,6 +85,76 @@ were written when they went out. They are marked.
 - `?deck=sheet` and `?deck=print` fit each slide again after its images load. The fit ran when the
   slide was drawn, and a copied image has no size then, so a slide with a markdown image kept full
   size, ran past its box, and the footer cut the last lines.
+
+## [2.2.0] - 2026-11-16
+
+### Added
+
+- An HTML export can carry a table of contents. Turn on **Contents** in the export dialog, or add
+  `?toc=1` to the export route, and the page gets a button that opens a side panel of the
+  document's headings. The panel highlights the section you are reading, and each heading gets an
+  anchor you can link to.
+- **Print the live deck.** A new PDF layout, "Slides — as presented (Chrome)", prints the
+  deck as the audience sees it: the hub opens `?deck=print` in headless Chrome, one page per slide
+  at its last step, with the deck's own CSS. Text and SVG stay vector. `export.pdf?layout=present`,
+  or `export_pdf(notebook; layout = "present")`. Steps "Every step" (`steps=all`) prints a page for
+  each build step of a slide instead.
+- **Format cells.** "Format selected cell(s)" (⌘⌥L) and "Format all cells" in the command palette
+  format code with Runic, on the hub, or Fatou, in the browser from its WASM build. A notebook's
+  Formatter setting picks one; otherwise a `fatou.toml` up to the repository root selects Fatou,
+  then the global default in Settings. Formatted text is applied only when it parses to the same
+  program as the source. See "Formatting code" in the notebook basics.
+- The deck print, deck video and slide views run in Edge or Brave as well as Chrome or Chromium, and
+  find a browser installed for one user. Without one, the Chrome layout and the video's Render button
+  are disabled and say what is missing; a `KAIMONSLATE_CHROME` that names no file is reported as such.
+- A deck can be 16:10 (Settings → This notebook → Slide aspect ratio), the shape of a MacBook screen
+  and of many projectors. The live deck, both slide PDF layouts and a rendered video use it. A
+  video is now recorded at the deck's own ratio, so a 4:3 deck's video has no bars either.
+
+### Fixed
+
+- A slide in the PDF deck that is taller than the page shrinks to fit and keeps its items in order.
+  The last items of a long list used to print on top of each other, with an empty bullet below them.
+- A figure in the PDF deck counts in the height of its slide. A figure is now 62% of the body
+  region of the page, as a fixed length. Before, the figure height was a ratio that the slide
+  measure resolved against an unbounded container, so a slide with text and two figures did not
+  shrink and ran off the top and bottom of the page.
+- **Markdown values keep their literal characters in the PDF and the Markdown export.** A `Markdown.MD`
+  value is exported in its `text/markdown` form, which Julia prints without escapes. A literal `*`, `_`,
+  `$` or `!` before a link, and a line that starts with `#`, `-` or `1.`, came out as markup: `_\* note_`
+  printed as `** note*`, and `\*a\*` turned into italic text. A hard line break came out as a soft one.
+  Slate now escapes the text of the value before it prints it, so a CommonMark reader gets the text the
+  page shows. Code, formulas and link targets stay as they are. Brackets stay brackets in the PDF.
+  The text form of an `MD` value (`value_repr`, which the `{{ }}` splice, agents and the debugger read)
+  is now this escaped text, so a locked markdown cell that shows such a value is saved once more.
+- A deck video rendered from the record panel uses the editor's palette. The headless Chrome has no
+  saved theme, so every capture came out in the default palette. A notebook URL takes
+  `?slatetheme=<name>` to set the palette for that page, and `slide_view` and `render_deck` take a
+  `theme` argument.
+- An exported HTML page whose only rich output is charts draws them. The chart runtime called
+  `Slate.roots()`, which is defined only on a page with data assets, so on any other page it
+  stopped before mounting a chart.
+- The deck's contact sheet and the presenter's slide previews draw a diagram's arrowheads and other
+  parts that its SVG refers to by id. A copy of a slide now has ids of its own.
+- A worker that rebuilds its notebook's environment (on the first open under a new Julia, for one)
+  no longer crashes while the hub indexes the notebook's docs. A package operation in a worker
+  leaves compiling to the background pass that shows "Preparing packages", and docs indexing
+  waits until the environment is ready.
+- A cell that stops importing a name the notebook provides, such as `echart`, no longer takes that
+  name away. Removing the globals no cell defines any more now leaves the names a notebook starts with.
+
+## [2.1.1] - 2026-11-15
+
+### Fixed
+
+- `slate --ai` starts its Kaimon host: `--headless` goes after `-m Kaimon`, where Kaimon reads it.
+  A host log that cannot be opened is reported.
+- Precompiling binds the ports the OS assigns to its gate, so another process cannot take one
+  between the check and the bind.
+- In the markdown export, a cell's outputs sit in a blockquote under its code, and text outputs are
+  fenced as text.
+- A hub running under WSL serves a browser on Windows. The owner check now accepts the connection
+  Windows forwards in, where it used to answer that the hub belongs to another account.
 
 ## [2.1.0] - 2026-11-08
 

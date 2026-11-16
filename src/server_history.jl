@@ -309,6 +309,8 @@ const _CONFIG_UI = (
      choices = String[], global_default = nothing, restart = false),
     (key = "macroexpand", group = "Execution", label = "Macro-aware deps", type = :bool, default = true,
      choices = String[], global_default = nothing, restart = false),
+    (key = "formatter", group = "Editing", label = "Formatter", type = :enum, default = "runic",
+     choices = collect(FORMATTERS), global_default = () -> FORMATTER_DEFAULT[], restart = false),
     (key = "slidelevel", group = "Slides", label = "Slide heading level", type = :int, default = 2,
      choices = String[], global_default = nothing, restart = false),
     (key = "slidetransition", group = "Slides", label = "Slide transition", type = :enum, default = "fade",
@@ -318,7 +320,7 @@ const _CONFIG_UI = (
     (key = "slideauto", group = "Slides", label = "Autoplay seconds per step", type = :int, default = 8,
      choices = String[], global_default = nothing, restart = false),
     (key = "slideratio", group = "Slides", label = "Slide aspect ratio", type = :enum, default = "16:9",
-     choices = ["16:9", "4:3"], global_default = nothing, restart = false),
+     choices = ["16:9", "16:10", "4:3"], global_default = nothing, restart = false),
     (key = "bibstyle", group = "Export", label = "Citation style", type = :enum, default = "ieee",
      choices = collect(_CITATION_STYLES), global_default = nothing, restart = false),
     (key = "series", group = "Publishing", label = "Series", type = :string, default = "",
@@ -352,6 +354,12 @@ function notebook_config_payload(nb::LiveNotebook)
                          "overridden" => overridden,
                          "value" => overridden ? meta[it.key] : (gd === nothing ? it.default : gd),
                          "default" => it.default, "global" => gd)
+    end
+    # The formatter inherits from the project as well as the global default: a `fatou.toml` picks Fatou.
+    for d in items
+        d["key"] == "formatter" && !d["overridden"] || continue
+        f = notebook_formatter(nb)
+        d["value"] = f["name"]; d["global"] = f["name"]; d["from"] = f["from"]
     end
     return Dict{String,Any}("items" => collect(items))
 end
@@ -1777,6 +1785,7 @@ function state_json(nb::LiveNotebook)
     meta["slideTimings"] = get(nb.report.meta, "slidetimings", "")           # rehearsed seconds, `<slide>:<step>=<s>,…`
     meta["slideTheme"] = get(nb.report.meta, "slidetheme", "")               # "" = follow the editor theme
     meta["slideRatio"] = get(nb.report.meta, "slideratio", "16:9")           # PDF deck aspect ratio
+    meta["deckBrowser"] = chrome_status_cached().problem                    # "" = the deck print, video and captures can run
     meta["bibStyle"] = get(nb.report.meta, "bibstyle", "ieee")               # CSL citation/reference style
     meta["agentModel"] = get(nb.report.meta, "agentmodel", "")               # per-notebook agent-model override ("" = browser global)
     meta["agentAvailable"] = _agent_available()   # false on a standalone hub (slate --own / serve_notebook) → the UI disables agent chat

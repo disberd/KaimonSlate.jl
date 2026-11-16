@@ -712,6 +712,40 @@ end
     @test NS._slidefig_final_png((; display = [(; mime = "text/html", data = UInt8[0x3c])], assets)) === nothing
 end
 
+@testset "deck print: the page asks for the steps and palette given" begin
+    @test NS.deck_print_url("http://h:1", "nb") == "http://h:1/n/nb?deck=print&shot=1"
+    @test NS.deck_print_url("http://h:1", "nb"; steps = "all", theme = "daylight") ==
+          "http://h:1/n/nb?deck=print&shot=1&steps=all&slatetheme=daylight"
+    @test NS.deck_print_url("http://h:1", "nb"; steps = "last", theme = "x\"><script>") ==
+          "http://h:1/n/nb?deck=print&shot=1"                    # an unknown value or a bad name: the default
+end
+
+@testset "deck browser: KAIMONSLATE_CHROME is used, and a wrong one is named" begin
+    exe = tempname(); write(exe, "")
+    withenv("KAIMONSLATE_CHROME" => exe) do
+        @test NS.chrome_status() == (path = exe, problem = "")
+    end
+    gone = joinpath(tempdir(), "no-such-browser-$(rand(UInt32))")
+    withenv("KAIMONSLATE_CHROME" => gone) do
+        st = NS.chrome_status()
+        @test st.path === nothing && occursin(gone, st.problem)
+    end
+    rm(exe)
+    # The places searched cover the browsers that drive the same way, on each system.
+    files = NS._browser_files()
+    @test any(endswith("Microsoft Edge"), files) && any(endswith("Brave Browser"), files)
+    @test any(f -> startswith(f, joinpath(homedir(), "Applications")), files)
+end
+
+@testset "deck aspect ratios: canvas, video and Typst page agree" begin
+    for (r, (w, h)) in ("16:9" => (1920, 1080), "16:10" => (1920, 1200), "4:3" => (1440, 1080))
+        @test NS.deck_canvas(r) == (w, h)
+        pw, ph = (parse(Float64, chop(s; tail = 2)) for s in NS._slide_geom(r))
+        @test isapprox(pw / ph, w / h; rtol = 1e-6)
+    end
+    @test NS.deck_canvas("") == (1920, 1080)                     # unset: 16:9
+end
+
 @testset "deck video: the length is shared out among the steps" begin
     st(t0, t1; words = 0, step = 1, timing = nothing) =
         Dict{String,Any}("t0" => t0, "t1" => t1, "words" => words, "step" => step, "timing" => timing)

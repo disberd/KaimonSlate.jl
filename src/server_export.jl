@@ -1495,8 +1495,10 @@ const _EXPORT_CHART_RUNTIME_JS = string(
     "var el=r.getElementById?r.getElementById(id):r.querySelector('[id=\"'+id+'\"]');if(el)return el;}return null;}",
     # Mount `[[domid, option], …]` found under `scope.roots` (default: the page), themed from the CSS
     # variables on `scope.themeEl`. Returns one record per chart so a caller can re-theme
-    # (`_slateRethemeCharts`) or dispose (`_slateDisposeCharts`) them — the docs embed does both.
-    "function _slateMountCharts(list,scope){scope=scope||{};var roots=scope.roots||Slate.roots(),out=[];",
+    # (`_slateRethemeCharts`) or dispose (`_slateDisposeCharts`) them — the docs embed does both. A page
+    # with no data assets has no asset runtime, so no `Slate`; its charts are all in the one document.
+    "function _slateMountCharts(list,scope){scope=scope||{};",
+    "var roots=scope.roots||(window.Slate&&Slate.roots?Slate.roots():[document]),out=[];",
     "if(!window.echarts)return out;",
     "try{echarts.registerTheme('slate',_slateExportTheme(scope.themeEl));}catch(e){}",
     "list.forEach(function(c){var el=_slateFindIn(roots,c[0]);if(!el)return;var opt=c[1];",
@@ -2905,8 +2907,8 @@ end
 # data: modules too); any single module that can't be resolved keeps its CDN url.
 function _slate_ui_imports(offline::Bool = false)
     subs = Dict{String,Tuple{String,String}}(
-        "preact"               => ("preact", "dist/preact.module.js"),
-        "preact/hooks"         => ("preact", "hooks/dist/hooks.module.js"),
+        "preact"               => ("preact", "dist/preact.mjs"),
+        "preact/hooks"         => ("preact", "hooks/dist/hooks.mjs"),
         "@preact/signals-core" => ("signals-core", "dist/signals-core.module.js"),
         "@preact/signals"      => ("signals", "dist/signals.module.js"),
         "htm"                  => ("htm", "dist/htm.module.js"),

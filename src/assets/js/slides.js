@@ -111,8 +111,10 @@
     const c = el && ((nbState && nbState.cells) || []).find(x => x.id === sld.ids[0]);
     if (c) _hoistTitle(slide, el, kindInfo(c.kind).prose ? c.source : null);
   }
+  // The slide canvas for the notebook's aspect ratio; the same sizes as `deck_canvas` (server_deckshot.jl).
   function _canvasSize() {
-    return ((nbState && nbState.slideRatio) || '16:9') === '4:3' ? [1440, 1080] : [1920, 1080];
+    const r = (nbState && nbState.slideRatio) || '16:9';
+    return r === '4:3' ? [1440, 1080] : r === '16:10' ? [1920, 1200] : [1920, 1080];
   }
 
   // ── Shared deck state ───────────────────────────────────────────────────────
@@ -190,8 +192,11 @@
       img.src = _mediaUrl(v); img.alt = ''; img.className = 'slide-bg-media';
       bgEl.appendChild(img); slide.classList.add('bg-media');
     } else bgEl.style.background = v;      // a colour or a (space-free) gradient
+    // The dimming is a translucent fill rather than an `opacity` layer. A PDF of the deck draws an
+    // `opacity` layer as a transparency group, which a viewer may soften at the page edge, so the
+    // undimmed background shows there as a light line.
     const dim = parseFloat(cfg.bgdim);
-    if (dim > 0) { const s = document.createElement('div'); s.className = 'slide-bg-dim'; s.style.opacity = Math.min(dim, 1); bgEl.appendChild(s); }
+    if (dim > 0) { const s = document.createElement('div'); s.className = 'slide-bg-dim'; s.style.background = 'rgba(0, 0, 0, ' + Math.min(dim, 1) + ')'; bgEl.appendChild(s); }
   }
 
   // The deck style gives every slide without its own `bg` a background; content slides get it dimmed
@@ -1482,12 +1487,33 @@
       t.innerHTML = url ? '<img alt="" src="' + url + '">' : '';
     });
     c.querySelectorAll('video, audio').forEach(m => { m.removeAttribute('data-autoplay'); m.autoplay = false; m.preload = 'metadata'; });
+    _uniqueIds(c);
     return c;
   }
-  // Slide `i` at step `step`, drawn into `host` the way the deck draws it.
+  // Give the ids in a copy a suffix of their own, and point the copy's references at them. An SVG
+  // refers to its own markers, gradients and clip paths by id (`url(#…)`, `href="#…"`, `#…` in its
+  // <style>); with the original's ids those resolve to the original, which the print hides.
+  let _copyN = 0;
+  const _ID_LISTS = ['aria-labelledby', 'aria-describedby', 'aria-controls', 'aria-owns', 'for'];
+  function _uniqueIds(root) {
+    const ids = new Map(), sfx = '-pv' + (++_copyN);
+    root.querySelectorAll('[id]').forEach(el => { ids.set(el.id, el.id + sfx); el.id += sfx; });
+    if (!ids.size) return;
+    const refs = s => s.replace(/#([A-Za-z_][\w.:-]*)/g, (m, id) => ids.has(id) ? '#' + ids.get(id) : m);
+    root.querySelectorAll('*').forEach(el => {
+      for (const a of Array.from(el.attributes)) {
+        const v = _ID_LISTS.includes(a.name) ? a.value.split(/\s+/).map(t => ids.get(t) || t).join(' ')
+                : a.value.includes('#') ? refs(a.value) : a.value;
+        if (v !== a.value) el.setAttribute(a.name, v);
+      }
+    });
+    root.querySelectorAll('style').forEach(st => { st.textContent = refs(st.textContent); });
+  }
+  // Slide `i` at step `step`, drawn into `host` the way the deck draws it. Returns the slide's number
+  // of steps.
   function _previewInto(host, i, step) {
     host.innerHTML = '';
-    if (i >= D.slides.length) { host.innerHTML = '<div class="pv-end">end of deck</div>'; return; }
+    if (i >= D.slides.length) { host.innerHTML = '<div class="pv-end">end of deck</div>'; return 0; }
     const sld = D.slides[i];
     const nodes = sld.ids.map(id => document.getElementById('cell-' + id)).filter(Boolean)
       .map(el => ({ id: el.id.replace(/^cell-/, ''), el: _snapshotCell(el) }));
@@ -1518,6 +1544,7 @@
     _fitFigures(body, 1);
     _fitMath(body);
     _shrinkText(body);
+    return total;
   }
   // Fit every slide drawn into `root` again.
   function _refitPreviews(root) {
@@ -1588,15 +1615,25 @@
     end: D.idx >= D.slides.length - 1 && D.step >= D.total,
   });
 
-  // The sheet and the print copy each chart as it stands, so end the charts' entry animations first.
-  function _stillCharts() {
+  // The sheet and the print copy each chart as it stands. Animation is turned off, and the copy waits
+  // for every chart to report that it has drawn everything (ECharts' `finished`), or `cap` ms: an entry
+  // animation already running when the copy is taken would come out half drawn.
+  function _stillCharts(cap = 3000) {
+    const waits = [];
     document.querySelectorAll('#nb .cell').forEach(el => _cellCharts(el).forEach(inst => {
-      try { inst.setOption({ animation: false }); } catch (e) {}
+      waits.push(new Promise(res => {
+        const t = setTimeout(res, cap);
+        const fin = () => { clearTimeout(t); try { inst.off('finished', fin); } catch (e) {} res(); };
+        try { inst.on('finished', fin); inst.setOption({ animation: false }); } catch (e) { fin(); }
+      }));
     }));
+    return Promise.all(waits);
   }
   // Every slide at its last step, numbered, in a grid over the page.
   function _contactSheet(done, whenLoaded) {
-    _stillCharts();
+    _stillCharts().then(() => _drawSheet(done, whenLoaded));
+  }
+  function _drawSheet(done, whenLoaded) {
     D.slides = buildSlides();
     document.documentElement.classList.add('deck-sheet-mode');
     const [W, H] = _canvasSize();
@@ -1613,31 +1650,51 @@
     });
     whenLoaded(grid, () => { _refitPreviews(grid); done(); });
   }
-  // Every slide at its last step, one page each at the slide's own size (`--u: 1px`), for the hub's
-  // PDF of the deck as presented (server_deckshot.jl `deck_pdf`).
+  // The deck one page per slide at the slide's own size (`--u: 1px`), for the hub's PDF of the deck
+  // as presented (server_deckshot.jl `deck_pdf`). Each slide is at its last step, or with `&steps=all`
+  // on a page for every step from its first, marked by a row of step dots.
   function _printDeck(done, whenLoaded) {
-    _stillCharts();
+    _stillCharts().then(() => _drawPrint(done, whenLoaded));
+  }
+  function _drawPrint(done, whenLoaded) {
     D.slides = buildSlides();
     const [W, H] = _canvasSize();
+    const every = new URLSearchParams(location.search).get('steps') === 'all';
     const root = document.createElement('div');
     root.className = 'deck-print';
     const page = document.createElement('style');
     page.textContent = '@page { size: ' + W + 'px ' + H + 'px; margin: 0; }';
     root.appendChild(page);
     document.body.appendChild(root);
-    const hosts = D.slides.map(() => {
+    const newHost = () => {
       const host = document.createElement('div'); host.className = 'deck-print-page';
       host.style.width = W + 'px'; host.style.height = H + 'px';
       return root.appendChild(host);
+    };
+    const pages = [];
+    D.slides.forEach((_, i) => {
+      if (!every) return pages.push({ host: newHost(), i, step: Infinity, total: 0 });
+      const first = newHost(), total = _previewInto(first, i, 0);
+      for (let k = 0; k <= total; k++) pages.push({ host: k ? newHost() : first, i, step: k, total });
     });
+    const dots = (p) => {
+      const row = document.createElement('div'); row.className = 'deck-print-steps';
+      for (let k = 1; k <= p.total; k++) row.appendChild(document.createElement('i')).className = k <= p.step ? 'on' : '';
+      p.host.appendChild(row);
+    };
+    const draw = () => pages.forEach(p => { _previewInto(p.host, p.i, p.step); if (p.total) dots(p); });
     // The first drawing fits each slide before its images and the deck's fonts have loaded. The
     // second copies the cells again with them in place, and fits again once the new copies have
     // loaded: a copied image has no size before that (`_fitPreview`). The notebook is hidden only
     // after the last fit: a hidden chart shrinks to nothing, and its snapshot with it.
-    const draw = () => hosts.forEach((host, i) => _previewInto(host, i, Infinity));
     draw();
     whenLoaded(root, () => document.fonts.ready.then(() => {
       draw();
+      // The page behind the slides takes the slides' colour. A viewer that scales a page to a size
+      // that falls between two pixels shows a sliver of it at the edge, which would otherwise be white.
+      const sl = root.querySelector('.deck-slide');
+      const under = sl ? getComputedStyle(sl).backgroundColor : '';
+      if (under) document.documentElement.style.setProperty('--deck-print-under', under);
       whenLoaded(root, () => {
         _refitPreviews(root);
         document.documentElement.classList.add('deck-print-mode');
@@ -1742,10 +1799,23 @@
       done();
     };
     const mark = () => setTimeout(() => { document.documentElement.dataset.deckShot = 'ready'; }, 600);
+    // The sheet and the print copy the cells once. A front-end component renders on its own after its
+    // cell has run (a diagram loads its library, then draws), so the copy waits until nothing has been
+    // added to or removed from the notebook for `calm` ms, or `cap` ms in all.
+    const quiet = (done, calm = 500, cap = 15000) => {
+      const nb = document.getElementById('nb');
+      if (!nb) return done();
+      let t = null, fin = false;
+      const end = () => { if (fin) return; fin = true; ob.disconnect(); clearTimeout(t); clearTimeout(c); done(); };
+      const ob = new MutationObserver(() => { clearTimeout(t); t = setTimeout(end, calm); });
+      ob.observe(nb, { childList: true, subtree: true });
+      t = setTimeout(end, calm);
+      const c = setTimeout(end, cap);
+    };
     const go = (tries = 0) => {
       if (!settled() && tries < 600) return setTimeout(() => go(tries + 1), 100);
-      if (DECK_AT === 'sheet') return _contactSheet(mark, whenLoaded);
-      if (DECK_AT === 'print') return _printDeck(mark, whenLoaded);
+      if (DECK_AT === 'sheet') return quiet(() => _contactSheet(mark, whenLoaded));
+      if (DECK_AT === 'print') return quiet(() => _printDeck(mark, whenLoaded));
       const [s, k] = DECK_AT.split('.');
       enterPresent(Math.max(0, (parseInt(s, 10) || 1) - 1));
       _applyStep(k == null || k === 'end' ? D.total : Math.max(0, parseInt(k, 10) || 0), true);

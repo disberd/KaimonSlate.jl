@@ -85,8 +85,9 @@ you ask for the appendix (below). Style them yourself with the `.cell-notes` cla
 
 ## Designing slides
 
-A slide is a fixed 16:9 (or 4:3) canvas that scales to the window, so it lays out the same on a
-laptop, a projector and a shared screen. Everything below is markup in the notebook itself: the deck
+A slide is a fixed 16:9 (or 16:10, or 4:3) canvas that scales to the window, so it lays out the same
+on a laptop, a projector and a shared screen. Pick the ratio of the screen you present on: a MacBook
+and many projectors are 16:10, and a 16:9 deck shows bars above and below on them. Everything below is markup in the notebook itself: the deck
 never holds a second copy of your content.
 
 ### Slide tags
@@ -343,7 +344,7 @@ Remember to drag the slider here.
 ```
 
 Set the **slide level** (the heading depth that starts a slide, 1 through 6, default 2 for `##`),
-the **transition**, and the **aspect ratio** (16:9 or 4:3) per notebook in
+the **transition**, and the **aspect ratio** (16:9, 16:10 or 4:3) per notebook in
 **☰ → ⚙ Settings → This notebook** (see [Configuration](settings.md#This-notebook)). These pin
 to the notebook and travel in its `.jl`.
 
@@ -351,8 +352,8 @@ The live deck follows the editor theme. A PDF deck takes its theme from the expo
 
 ## Export a PDF deck
 
-**☰ → ⬆ Export…**, format **PDF**, layout **🎞 Slides — presentation deck**. This renders a
-typeset landscape deck **server-side via Typst** — one slide per page, 16:9 (or 4:3), auto-fit:
+**☰ → ⬆ Export…**, format **PDF**, layout **🎞 Slides — typeset (Typst)**. This renders a
+typeset landscape deck **server-side via Typst** — one slide per page at the deck's aspect ratio, auto-fit:
 
 - **Code listings are hidden by default** on slides, since a deck usually shows results rather than
   source. Choosing any non-hidden **Code listings** size brings them back.
@@ -370,14 +371,29 @@ and the editable Typst project (`export.typ`).
 
 ### Print the live deck
 
-Format **PDF — the live deck as presented** prints the deck itself instead. The hub opens
+Layout **Slides — as presented (Chrome)** in the PDF export prints the deck itself instead. The hub opens
 `?deck=print` in a headless Chrome and prints one page per slide, at its last step and at the
 slide's own size. The page has the look of the live deck: your palette, its CSS, its fitting, and
 your own slide styles. Text and SVG stay vector. A chart is the snapshot that the contact sheet
-shows, so it is a raster image. This format has no options. It needs Chrome or Chromium on the hub's
-machine (or `KAIMONSLATE_CHROME`). The route is
-`GET /api/<id>/export.pdf?layout=present&slatetheme=<palette>`, and an agent calls
-`export_pdf(notebook; layout = "present", charttheme = "<palette>")`.
+shows, so it is a raster image. Theme picks the palette, and the Typst options do not apply. The page
+size follows the notebook's **Slide aspect ratio**: 1920 × 1080 px at 16:9, 1920 × 1200 px at 16:10,
+1440 × 1080 px at 4:3.
+It needs a Chrome-family browser on the hub's machine: Chrome, Chromium, Edge or Brave, found in
+the usual install places or on the `PATH`, or the one `KAIMONSLATE_CHROME` names. The same browser
+renders a deck video and the slide views an agent asks for. Without one, the layout is listed but
+cannot be chosen, the record panel's **Render** button is disabled, and each says what is missing.
+
+![The PDF export dialog with the Chrome layout: Theme, Slide ratio and Steps](./assets/export-deck-print.png)
+
+**Steps** chooses what a slide with builds prints. **Last step** prints each slide once, as it ends.
+**Every step** prints a page for each step, from the slide before its first build to its end, with
+a row of dots that shows the step. A build that replaces what came before, such as a `derive`
+chain, then keeps every state. All the pages of a slide carry its number.
+
+![A printed page of a slide on its second step, with the step dots in the corner](./assets/deck-print-step.png)
+
+The route is `GET /api/<id>/export.pdf?layout=present&slatetheme=<palette>&steps=all`, and an agent
+calls `export_pdf(notebook; layout = "present", charttheme = "<palette>", steps = "all")`.
 
 ## Zen mode
 

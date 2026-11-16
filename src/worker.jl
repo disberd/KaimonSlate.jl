@@ -1933,6 +1933,9 @@ _doc_scan() = (isassigned(_DOC_SCAN) || (_DOC_SCAN[] = Module(:_SlateDocScan)); 
 
 "Harvest `{module,name,doc}` for the named modules (loading them if needed) — for docs search."
 function __slate_harvest_docs(mod_names::Vector{String})
+    # Nothing is harvested while the environment changes or compiles; the hub does not record an
+    # empty harvest as indexed, so it asks again later.
+    env_work_idle() || return Dict{String,Any}[]
     m = _doc_scan()
     for nm in mod_names
         try; Core.eval(m, Meta.parse("import " * nm)); catch; end   # load if needed; no-op if already
@@ -1954,7 +1957,7 @@ function __slate_module_help(name::String)
     # Fall back to a throwaway module that imports the head package for `?Module` drill-down on a
     # package the notebook hasn't brought into scope.
     m = _doc_scan()
-    try; Core.eval(m, Meta.parse("import " * head)); catch; end   # load the package if needed
+    env_work_idle() && (try; Core.eval(m, Meta.parse("import " * head)); catch; end)   # load the package if needed
     return module_help(m, name)
 end
 
@@ -2148,10 +2151,12 @@ single environment that extends the parent. Called the first time a package is a
 running in base mode. Returns `{ok, message}`."
 function __slate_fork(envdir, parent)
     try
-        _seed_notebook_env!(String(envdir), String(parent))
+        with_env_work(() -> _seed_notebook_env!(String(envdir), String(parent)))
         return Dict{String,Any}("ok" => true)
     catch e
         return Dict{String,Any}("ok" => false, "message" => sprint(showerror, e))
+    finally
+        _after_env_change!()
     end
 end
 
@@ -2170,11 +2175,15 @@ absent (e.g. a fresh git clone) but the footer records a delta. `pkgs` is the fo
 `{name, version, uuid[, source, origin]}` records. Returns `{ok, skipped}` or `{ok=false, message}`."
 function __slate_reconstruct(envdir, parent, pkgs)
     try
-        _seed_notebook_env!(String(envdir), String(parent))
-        skipped = _readd!(pkgs; pinned = true)
+        skipped = with_env_work() do
+            _seed_notebook_env!(String(envdir), String(parent))
+            _readd!(pkgs; pinned = true)
+        end
         return Dict{String,Any}("ok" => true, "skipped" => skipped)
     catch e
         return Dict{String,Any}("ok" => false, "message" => sprint(showerror, e))
+    finally
+        _after_env_change!()
     end
 end
 
@@ -2216,7 +2225,21 @@ server calls this only when the manifest's `deck_template_hash` differs from the
 __slate_deck_template() = deck_template_wire()
 
 # `slate_pkg` / the package pane: `_pkg_apply` (pkg_ops.jl), shared with the in-process kernel.
-__slate_pkg(op, name) = _pkg_apply(op, name)
+__slate_pkg(op, name) = (r = _pkg_apply(op, name); _after_env_change!(); r)
+
+# Pkg operations in this process do not precompile (`JULIA_PKG_PRECOMPILE_AUTO=0`, set in `start`):
+# precompiling in a live worker can take it down. The subprocess pass of `_prepare_env!` compiles
+# what an operation changed. The work count is taken before the pass is spawned, so no harvesting
+# load slips in between the operation and its compile.
+function _after_env_change!()
+    Threads.atomic_add!(_ENV_WORK, 1)
+    Threads.@spawn try
+        _prepare_env_task()
+    finally
+        Threads.atomic_sub!(_ENV_WORK, 1)
+    end
+    return nothing
+end
 
 "Install a package registry into THIS worker's depot, the one the notebook resolves against (for a
 remote region, not the hub's). See `_registry_add` (pkg_ops.jl)."
@@ -2230,10 +2253,14 @@ function __slate_pkg_parent(op, name, parent)
     tokens = filter(!isempty, split(String(name), r"[\s,]+"))
     isempty(tokens) && return Dict{String,Any}("ok" => false, "message" => "empty package name")
     _await_loads()
+    r = with_env_work(() -> _pkg_parent_now(String(op), tokens, String(parent)))
+    _after_env_change!()
+    return r
+end
+function _pkg_parent_now(o, tokens, parent)
     cur = try; dirname(Pkg.project().path); catch; ""; end
     try
-        Pkg.activate(String(parent))
-        o = String(op)
+        Pkg.activate(parent)
         if o == "add"
             s = _pkg_add_specs(tokens)
             add_installed_first!(s.adds)
@@ -3604,7 +3631,7 @@ function _warm_deps()
     end
 end
 
-_prepare_env_task() = try; _prepare_env!(); catch e
+_prepare_env_task() = try; with_env_work(_prepare_env!); catch e
     @warn "slate worker: prepare pass died" exception = e
 end
 
@@ -3637,6 +3664,9 @@ function start(; host::String = "127.0.0.1", port::Int, stream_port::Int,
                blob_curve::Bool = true, blob_bind::String = "", blob_free_port::Bool = false,
                dedicated_threads::Bool = true)
     _check_seb_version()
+    # A Pkg operation in this process does not precompile; `_after_env_change!` runs the subprocess
+    # pass instead.
+    ENV["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
     _STREAM_PORT[] = stream_port   # publish for `__slate_ports` (hub-assigned today; the hub owns only the gate)
     _start_emit_channel!()         # before the gate serves, so `__slate_ports` always reports it
     _reset_image_once_flags!()
@@ -3795,8 +3825,13 @@ function _gate_workload()
         # The ZAP handler notices its closed socket on its next receive timeout. Wait for it, or the
         # image build waits on its open poll handle.
         zap = isdefined(KaimonGate, :_zap_task) ? KaimonGate._zap_task() : nothing
+        # The gate's owner-wake tick closes itself on its first firing after the gate stops. Wait
+        # for that too.
+        wake = isdefined(KaimonGate, :_GATE_WAKE) ? KaimonGate._GATE_WAKE[] : nothing
         redirect_stdout(KaimonGate.stop, devnull)
         zap === nothing || timedwait(() -> istaskdone(zap), 5.0)
+        tick = hasproperty(wake, :tick) ? wake.tick : nothing
+        tick isa Timer && timedwait(() -> !isopen(tick), 5.0)
         old === nothing ? delete!(ENV, "XDG_CACHE_HOME") : (ENV["XDG_CACHE_HOME"] = old)
         rm(cache; recursive = true, force = true)
     end
@@ -3833,8 +3868,11 @@ if ccall(:jl_generating_output, Cint, ()) == 1
     _precompile_start()
     try
         _NS[] = _new_ns(_WarmNS)
-        __slate_eval("1 + 1"; filename = "cell:__prewarm__")
-        __slate_eval("x = sum(rand(10)); x"; filename = "cell:__prewarm__")
+        # Their "ran cell" records go nowhere: output during precompilation is reported as a warning.
+        Logging.with_logger(Logging.ConsoleLogger(devnull)) do
+            __slate_eval("1 + 1"; filename = "cell:__prewarm__")
+            __slate_eval("x = sum(rand(10)); x"; filename = "cell:__prewarm__")
+        end
     catch e
         @warn "SlateWorker precompile workload (eval) failed" exception = (e, catch_backtrace())
     end

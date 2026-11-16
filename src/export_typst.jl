@@ -311,9 +311,10 @@ function _typst_preamble(title::AbstractString; style::AbstractString = "article
     """
 end
 
-# ── Slide-deck preamble (16:9 / 4:3 landscape, one slide per page) ────────────────────────────────
+# ── Slide-deck preamble (16:9 / 16:10 / 4:3 landscape, one slide per page) ────────────────────────
 # Slide page geometry (width, height) for a 254mm-wide canvas. 16:9 is the default deck size.
-_slide_geom(ratio) = ratio == "4:3" ? ("254mm", "190.5mm") : ("254mm", "142.875mm")
+_slide_geom(ratio) = ratio == "4:3" ? ("254mm", "190.5mm") :
+                     ratio == "16:10" ? ("254mm", "158.75mm") : ("254mm", "142.875mm")
 
 # Preamble for the slides layout. Reuses the same block helpers as the article preamble but on a
 # landscape slide page with bigger type. It defines `SLIDE_W` (the page width), `#let fit(body)` (draws
@@ -330,12 +331,13 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
     p = _palette(theme)
     csize = _code_size(code == "normal" ? "small" : code)   # listings are tighter on slides
     w, h = _slide_geom(ratio)
+    vmargin = "12mm"
     rawtheme = isempty(p.codetheme) ? "" : "\n    #set raw(theme: \"$(p.codetheme)\")"
     return """
     #import "@preview/cmarker:$(_CMARKER_VER)"
     #import "@preview/mitex:$(_MITEX_VER)": mitex, mi
     #set document(title: "$(_typ_str(title))")
-    #set page(width: $w, height: $h, margin: (x: 16mm, y: 12mm), fill: $(p.page))
+    #set page(width: $w, height: $h, margin: (x: 16mm, y: $vmargin), fill: $(p.page))
     #set text(font: "New Computer Modern", size: 19pt, fill: $(p.text))$(rawtheme)
     #set par(justify: false, leading: 0.7em, spacing: 1.1em)
     #show heading: set text(fill: $(p.title))
@@ -686,13 +688,13 @@ end
 #
 # Code is left alone: a fenced block or an inline span may legitimately SHOW `\[…\]` (a LaTeX sample),
 # and rewriting it there would corrupt the listing rather than typeset anything — cmarker's math hook
-# doesn't fire inside code in the first place.
-function _normalize_math_delims(src::AbstractString)
+# doesn't fire inside code in the first place. `tex` rewrites the TeX of each formula, and only that.
+function _normalize_math_delims(src::AbstractString; tex = identity)
     out = IOBuffer()
     for (kind, t) in ReportRender._md_segments(src)
         if kind === :math
-            tex, display = ReportRender._math_parts(t)
-            print(out, display ? "\$\$" : "\$", tex, display ? "\$\$" : "\$")
+            body, display = ReportRender._math_parts(t)
+            print(out, display ? "\$\$" : "\$", tex(body), display ? "\$\$" : "\$")
         elseif kind === :dollar
             print(out, "\\\$")
         else
@@ -1056,7 +1058,7 @@ function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString
     _has_figure_bytes(o) && return false
     md = _output_chunk(o, "text/markdown")
     if md !== nothing
-        src = _normalize_math_delims(_portable_tex(md))
+        src = _normalize_math_delims(md; tex = _portable_tex)
         if _typst_typesets(:md, src)
             write(joinpath(dir, base * ".md"), src)
             print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: (image: mdimage))\n")
