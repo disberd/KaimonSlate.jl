@@ -16,9 +16,11 @@ const _DECK_BASE_PATH = joinpath(@__DIR__, "assets", "deck-settings.toml")
 const _INTER_DIR = joinpath(@__DIR__, "assets", "fonts", "inter")
 
 # Copy the shipped Inter files into `dir/fonts` when a font list of the settings names Inter, so that
-# Typst finds the font on any machine. A template's own fonts in `fonts/` stay beside them.
+# Typst finds the font on any machine. A template's own fonts in `fonts/` stay beside them. Font family
+# names are not case-sensitive, in Typst and in CSS.
+_is_inter(n) = lowercase(n) == "inter"
 function _deck_fonts!(dir::AbstractString, s)
-    "Inter" in s["text"]["font"] || "Inter" in s["code"]["font"] || return
+    any(_is_inter, s["text"]["font"]) || any(_is_inter, s["code"]["font"]) || return
     mkpath(joinpath(dir, "fonts"))
     for f in readdir(_INTER_DIR)
         endswith(f, ".ttf") && cp(joinpath(_INTER_DIR, f), joinpath(dir, "fonts", f); force = true)
@@ -335,7 +337,7 @@ function _deck_css_value(s, v, g, k)
     v isa Bool && return v ? "1" : "0"
     v isa Real && return _deck_num(v)
     # "Slate Inter" is the shipped Inter: a machine that has Inter uses its own, with all its weights.
-    v isa Vector{String} && return join((n == "Inter" ? "\"Inter\", \"Slate Inter\"" : "\"$n\"" for n in v), ", ") *
+    v isa Vector{String} && return join((_is_inter(n) ? "\"$n\", \"Slate Inter\"" : "\"$n\"" for n in v), ", ") *
                                    (g == "code" ? ", monospace" : ", sans-serif")
     _deck_choices(g, k) === nothing || return "\"$v\""
     c = _deck_colour(s, v, nothing)
