@@ -815,6 +815,19 @@ end
 # plus the given extension (which INCLUDES the leading dot, e.g. ".html", ".typ.tar.gz").
 _download_name(nb, ext) = replace(splitext(basename(nb.path))[1], r"[^A-Za-z0-9_.-]" => "_") * ext
 
+# The export warnings as the value of the `X-Slate-Warnings` header: a JSON list of at most 20 lines of
+# at most 300 characters, all ASCII (`\uXXXX` escapes), so that a proxy with a small header buffer
+# passes it and the page parses it.
+function _warnings_header(warns)
+    list = [length(w) > 300 ? first(w, 299) * "…" : w for w in first(warns, 20)]
+    length(warns) > 20 && push!(list, "And $(length(warns) - 20) more warnings.")
+    return sprint() do io
+        for c in JSON.json(list)
+            isascii(c) ? print(io, c) : foreach(u -> print(io, "\\u", string(u; base = 16, pad = 4)), transcode(UInt16, string(c)))
+        end
+    end
+end
+
 # Read an MB-valued query param (`key`) and convert to a byte budget: absent or unparseable ⇒ `default`.
 _mb_budget(qp, key, default) = begin
     s = get(qp, key, "")
@@ -2851,7 +2864,7 @@ function _make_router(h::Hub)
         fn = _download_name(nb, ".pdf")
         headers = ["Content-Type" => "application/pdf", "Content-Disposition" => "attachment; filename=\"$fn\""]
         # The export warnings (a JSON list of strings) for the export dialog; the body is the PDF.
-        isempty(warns) || push!(headers, "X-Slate-Warnings" => JSON.json(warns))
+        isempty(warns) || push!(headers, "X-Slate-Warnings" => _warnings_header(warns))
         HTTP.Response(200, headers, pdf)
     end))
     # The editable Typst PROJECT (doc.typ + assets) as a .tar.gz, so the layout can be tweaked and

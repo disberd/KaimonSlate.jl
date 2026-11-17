@@ -659,6 +659,11 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test cap ≈ 0.7 atol = 0.01                          # a tall figure takes at most 0.7 of the slide height
         warns = NS._fit_warnings(recs)                       # the export dialog's warnings
         @test length(warns) == 1 && occursin("Slide 13 ", only(warns))
+        # The header that carries the warnings to the page is ASCII, at most 21 lines of at most 300
+        # characters.
+        h = NS._warnings_header(vcat(["tëst"], fill("x"^400, 30)))
+        l = JSON.parse(h)
+        @test isascii(h) && length(l) == 21 && l[1] == "tëst" && length(l[2]) == 300 && occursin("11 more", l[21])
         # At 4:3 the slide unit is 1/1440 of the page width, as on the live canvas: the body text has
         # the same size in `u` as at 16:9.
         fit43, cap43, _ = query("4:3")

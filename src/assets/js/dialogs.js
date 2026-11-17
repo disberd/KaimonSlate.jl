@@ -592,8 +592,8 @@ async function _runDeckPrint() {
     const steps = document.getElementById('pdfsteps').value;
     const r = await fetch(_apipath('/api/export.pdf') + '?layout=present&slatetheme=' + encodeURIComponent(charttheme) + '&steps=' + steps);
     if (!r.ok) { await alertDark('PDF export failed:\n' + (await r.text())); return; }
-    _pdfShowWarnings(JSON.parse(r.headers.get('X-Slate-Warnings') || '[]'));
     _saveBlob(await r.blob(), '.pdf');
+    _pdfShowWarnings(JSON.parse(r.headers.get('X-Slate-Warnings') || '[]'));
   } catch (e) { await alertDark('PDF export failed: ' + e); }
   finally { hideLoading(); }
 }
