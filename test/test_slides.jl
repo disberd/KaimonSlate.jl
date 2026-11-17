@@ -568,14 +568,13 @@ end
     # author writes (`mdlen`) stay as written.
     abslen = r"(?<![\w.])\d*\.?\d+(px|pt|mm|rem)\b"
     css = replace(read(joinpath(@__DIR__, "..", "src", "assets", "notebook.css"), String), r"/\*.*?\*/"s => "")
+    rules = [m for m in eachmatch(r"(?:^|(?<=[{}]))\s*([^{}@]+?)\s*\{([^{}]*)\}", css) if startswith(m[1], ".deck-slide")]
+    @test length(rules) > 100                          # the scan reads every rule, not a few
     bad = String[]
-    for m in eachmatch(r"(?:^|[{}])\s*([^{}@]+?)\s*\{([^{}]*)\}", css)
-        startswith(m[1], ".deck-slide") || continue
-        for d in split(m[2], ';')
-            d = strip(d)
-            startswith(d, "--u:") && continue          # the slide unit itself
-            occursin(abslen, d) && push!(bad, "$(m[1]) { $d }")
-        end
+    for m in rules, d in split(m[2], ';')
+        d = strip(d)
+        startswith(d, "--u:") && continue              # the slide unit itself
+        occursin(abslen, d) && push!(bad, "$(m[1]) { $d }")
     end
     @test isempty(bad)
     pre = split(NS._typst_preamble_slides("T"), '\n')

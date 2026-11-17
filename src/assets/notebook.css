@@ -3254,7 +3254,7 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide .md h2 { font-size: 1.85em; font-weight: 750; }
 .deck-slide .md h3 { font-size: 1.2em; font-weight: 650; color: var(--deck-accent); }
 .deck-slide .md h2::after { content: ""; display: block; width: 2.2em; height: calc(var(--u) * 6); margin-top: .32em;
-  border-radius: 99px; background: linear-gradient(90deg, var(--deck-accent), var(--deck-accent2)); }
+  border-radius: calc(var(--u) * 99); background: linear-gradient(90deg, var(--deck-accent), var(--deck-accent2)); }
 .deck-slide .md strong { color: var(--deck-strong); }
 .deck-slide .md code { font-size: .85em; }
 .deck-slide .md pre { font-size: .62em; }
