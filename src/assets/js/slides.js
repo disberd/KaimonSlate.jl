@@ -1534,6 +1534,7 @@
     // The same fitting and lighting as the deck, so the preview is what the audience sees.
     _lightTerms(slide.querySelector('.slide-body'));
     _fitPreview(slide);
+    return total;
   }
   // Fit a drawn preview to its canvas, the way the deck fits a slide. Call it again when the images of
   // the slide have loaded: the copy of an image has no size when it is drawn, so the first fit sees a
@@ -1544,7 +1545,6 @@
     _fitFigures(body, 1);
     _fitMath(body);
     _shrinkText(body);
-    return total;
   }
   // Fit every slide drawn into `root` again.
   function _refitPreviews(root) {
