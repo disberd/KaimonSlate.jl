@@ -665,8 +665,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test count(r -> r["at_floor"], recs) == 1
         @test 0.62 <= fig["s"] < 1 && tie(fig) <= fig["f"] < 1 && !fig["at_floor"]   # the figure shrinks less than the text
         @test cap ≈ 0.7 atol = 0.01                          # a tall figure takes at most 0.7 of the slide height
-        warns = NS._fit_warnings(recs)                       # the export dialog's warnings
-        @test length(warns) == 1 && occursin("Slide 13 ", only(warns))
+        warns = NS._fit_warnings(recs; unit = "Page")        # the export dialog's warnings: a PDF page number
+        @test length(warns) == 1 && startswith(only(warns), "Page 13 ")
         # The header that carries the warnings to the page is ASCII, at most 21 lines of at most 300
         # characters.
         h = NS._warnings_header(vcat(["tëst"], fill("x"^400, 30)))

@@ -1441,9 +1441,12 @@ function _typst_query(typ::String, selector::AbstractString)
     return JSON.parse(String(take!(out)))
 end
 
-# An export warning for each slide that the slides preamble `fit` records at the floor.
-_fit_warnings(records) = ["Slide $(r["slide"]) does not fit at the smallest text size: its end runs past the page bottom."
-                          for r in records if r isa AbstractDict && get(r, "kind", "") == "fit" && get(r, "at_floor", false) === true]
+# An export warning for each slide that a fit record marks at the floor. `unit` names the number of the
+# record: "Slide" for the live index of the deck print, "Page" for the PDF page of the slides preamble
+# `fit` (the PDF drops a slide with no content, so a page number is not always the slide number).
+_fit_warnings(records; unit::AbstractString = "Slide") =
+    ["$unit $(r["slide"]) does not fit at the smallest text size: its end runs past the page bottom."
+     for r in records if r isa AbstractDict && get(r, "kind", "") == "fit" && get(r, "at_floor", false) === true]
 
 """
     export_pdf(nb; include_source=true, style="article", columns=1,
@@ -1473,7 +1476,7 @@ function _export_pdf_report(nb::LiveNotebook; kwargs...)
         typ = joinpath(dir, "doc.typ"); pdf = joinpath(dir, "out.pdf")
         _typst_compile(typ, pdf)
         warns = get(kwargs, :layout, "") == "slides" ?
-            vcat(notebook_deck_settings(nb).warnings, _fit_warnings(_typst_query(typ, "<slate>"))) : String[]
+            vcat(notebook_deck_settings(nb).warnings, _fit_warnings(_typst_query(typ, "<slate>"); unit = "Page")) : String[]
         return read(pdf), warns
     finally
         rm(dir; recursive = true, force = true)
