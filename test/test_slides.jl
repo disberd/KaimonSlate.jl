@@ -766,6 +766,11 @@ end
     for h in ("codeblock", "outblock", "valblock", "errblock", "figureimg", "notefig", "figcaption", "paramblock")
         @test occursin("#let $h(", pre)
     end
+    # The public `code=` sizes of the slides PDF are factors on the deck setting `code.size`.
+    for (code, f) in (("normal", 1), ("small", 1), ("smaller", 7.5 / 8.5), ("tiny", 6.5 / 8.5))
+        m = match(r"#let codeblock\(.*text\(size: ([0-9.]+) \* settings\.code\.size", NS._typst_preamble_slides("T"; code))
+        @test m !== nothing && isapprox(parse(Float64, m[1]), f; atol = 1e-4)
+    end
 end
 
 @testset "deck lengths: em for text, the slide unit for geometry" begin
