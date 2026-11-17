@@ -511,88 +511,51 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
 
     @testset "slide-deck PDF compiles" begin
         nb = _mknb("#%% md id=t\n# Deck\nhi\n\n#%% md id=s\n## One\n\n- a\n- b\n")
-        # Typst fetches registry packages on first compile; guard on network/availability so the
-        # suite stays green offline — but assert real bytes whenever it does run.
-        pdf = try
-            NS.export_pdf(nb; layout = "slides", theme = "dark")
-        catch err
-            @info "slide PDF compile skipped" err
-            nothing
-        end
-        @test pdf === nothing || length(pdf) > 1000
+        @test length(NS.export_pdf(nb; layout = "slides", theme = "dark")) > 1000
     end
 
     @testset "a deck template drives the PDF and the bundle" begin
-        # The template font comes from a pinned commit of google/fonts (SIL OFL). Without curl or a
-        # network, the deck still compiles in the fallback font, and only the font check is skipped.
-        fonturl = "https://raw.githubusercontent.com/google/fonts/90abd17b4f97671435798b6147b698aa9087612f/ofl/monoton/Monoton-Regular.ttf"
-        font = try
-            Sys.which("curl") === nothing ? nothing : read(`curl -sSfL --max-time 30 $fonturl`)
-        catch
-            nothing
-        end
+        # The template sets its text in Inter from its own `fonts` directory (the shipped Inter file).
+        # Its settings name another font, so Slate copies no Inter: only the template file can give it.
         tpl = """
         #let slide(body, layout: none, title: none, n: none) = page[
-          #set text(font: "Monoton")
+          #set text(font: "Inter")
           TPL layout=#repr(layout) title=#(if title == none { "none" } else { title.body }) name=#toml("cfg.toml").name
           #body
         ]
         """
-        files = Dict("cfg.toml" => Vector{UInt8}("name = \"tomlvalue\"\n"))
-        font === nothing || (files["fonts/Monoton-Regular.ttf"] = font)
+        files = Dict("cfg.toml" => Vector{UInt8}("name = \"tomlvalue\"\n"),
+                     "fonts/Inter-Regular.ttf" => read(joinpath(NS._INTER_DIR, "Inter-Regular.ttf")))
         src = "#%% md id=s layout=center\n## Shown\n\nbody text\n"
         text(pdf) = (f = tempname() * ".pdf"; write(f, pdf);
                      try read(`pdftotext -layout $f -`, String) finally rm(f) end)
-        plain = _mknb(src)
-        before = try
-            dir = NS._build_slides_project(plain)
-            try
-                read(joinpath(dir, "doc.typ"), String)
-            finally
-                rm(dir; recursive = true, force = true)
-            end
-        catch
-            nothing
-        end
+        dir = NS._build_slides_project(_mknb(src))
+        before = try read(joinpath(dir, "doc.typ"), String) finally rm(dir; recursive = true, force = true) end
         nb = _mknb(src)
-        nb.deck_template = (; hash = "h", source = tpl, settings = "", files)
-        pdf = try
-            NS.export_pdf(nb; layout = "slides")
-        catch err
-            @info "deck template PDF skipped" err
-            nothing
-        end
-        if pdf === nothing || Sys.which("pdftotext") === nothing
-            @test true
-        else
-            t = text(pdf)
-            @test occursin("TPL layout=\"center\"", t) && occursin("title=Shown", t) && occursin("name=tomlvalue", t)
-            if font === nothing || Sys.which("pdffonts") === nothing
-                @info "font check skipped (font download or pdffonts unavailable)"
-                @test true
-            else
-                f = tempname() * ".pdf"; write(f, pdf)
-                fonts = try read(`pdffonts $f`, String) finally rm(f) end
-                @test occursin("Monoton", fonts)
-            end
+        nb.deck_template = (; hash = "h", source = tpl, settings = "[text]\nfont = [\"DejaVu Sans\"]\n", files)
+        pdf = NS.export_pdf(nb; layout = "slides")
+        t = text(pdf)
+        @test occursin("TPL layout=\"center\"", t) && occursin("title=Shown", t) && occursin("name=tomlvalue", t)
+        f = tempname() * ".pdf"; write(f, pdf)
+        fonts = try read(`pdffonts $f`, String) finally rm(f) end
+        @test occursin("Inter-Regular", fonts)
 
-            # The bundle holds the same files; unpacked, it compiles to the same text and page count.
-            bundle = NS.export_typst_bundle(nb; layout = "slides")
-            out = mktempdir()
-            try
-                gz = joinpath(out, "b.tar.gz"); write(gz, bundle)
-                proj = joinpath(out, "proj"); mkpath(proj)
-                run(`tar -xzf $gz -C $proj`)
-                @test read(joinpath(proj, "cfg.toml"), String) == "name = \"tomlvalue\"\n"
-                NS._typst_compile(joinpath(proj, "doc.typ"), joinpath(proj, "again.pdf"))
-                @test text(read(joinpath(proj, "again.pdf"))) == t
-            finally
-                rm(out; recursive = true, force = true)
-            end
+        # The bundle holds the same files; unpacked, it compiles to the same text and page count.
+        bundle = NS.export_typst_bundle(nb; layout = "slides")
+        out = mktempdir()
+        try
+            gz = joinpath(out, "b.tar.gz"); write(gz, bundle)
+            proj = joinpath(out, "proj"); mkpath(proj)
+            run(`tar -xzf $gz -C $proj`)
+            @test read(joinpath(proj, "cfg.toml"), String) == "name = \"tomlvalue\"\n"
+            NS._typst_compile(joinpath(proj, "doc.typ"), joinpath(proj, "again.pdf"))
+            @test text(read(joinpath(proj, "again.pdf"))) == t
+        finally
+            rm(out; recursive = true, force = true)
         end
 
         # Without a template the preamble is the only prefix; no template text leaks in.
-        @test before === nothing || !occursin("deck template", before)
+        @test !occursin("deck template", before)
 
         # A file name that leaves the project directory is refused at the write site.
         io = IOBuffer(); d = mktempdir()
@@ -606,25 +569,12 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
 
     @testset "slide-deck with CITATIONS compiles (measure-in-isolation regression)" begin
         # A cite() inside the slide fit-scaler's measure() used to abort the whole deck with
-        # "cannot format citation in isolation" — the measured copy must render citation
-        # sentinels as a stand-in, while the real slide keeps the true citation. Gate on a PLAIN
-        # deck compiling first (typst/packages/network available), so offline skips both but a
-        # citation-specific failure can never hide behind the skip.
-        plain = try
-            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
-        catch
-            nothing
-        end
-        if plain === nothing
-            @info "cited slide PDF compile skipped (typst unavailable)"
-            @test true
-        else
-            nb = _mknb("#%% md id=s\n## Cited slide\n\nSee [@knuth1984, p. 3].\n\n" *
-                       "#%% md id=refs bibliography\n@book{knuth1984,\n  author = {Knuth, D.},\n" *
-                       "  title = {The TeXbook},\n  publisher = {Addison-Wesley},\n  year = {1984}\n}\n")
-            pdf = NS.export_pdf(nb; layout = "slides")   # a throw here IS the regression
-            @test length(pdf) > 1000
-        end
+        # "cannot format citation in isolation". The measured copy must render citation sentinels
+        # as a stand-in, while the real slide keeps the true citation.
+        nb = _mknb("#%% md id=s\n## Cited slide\n\nSee [@knuth1984, p. 3].\n\n" *
+                   "#%% md id=refs bibliography\n@book{knuth1984,\n  author = {Knuth, D.},\n" *
+                   "  title = {The TeXbook},\n  publisher = {Addison-Wesley},\n  year = {1984}\n}\n")
+        @test length(NS.export_pdf(nb; layout = "slides")) > 1000   # a throw here IS the regression
     end
 
     @testset "the PDF deck fits each slide and records the fit" begin
