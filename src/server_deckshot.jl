@@ -238,12 +238,12 @@ function deck_pdf_report(url::AbstractString; timeout::Real = 120)
 end
 
 # The deck print of notebook `nb` on the hub at `base` (see `deck_print_url`) and its export warnings:
-# the checks of the deck settings, then the slides at the fit floor. The page takes one Slate palette:
-# `figures.slate-palette` when the deck settings name one (the figures' palette comes first), else
-# `theme`, the export picker.
+# the checks of the deck settings, then the slides at the fit floor. The page takes the Slate palette
+# `theme`, the export picker; the page draws its charts in `figures.slate-palette` when the deck
+# settings name one (`deckFigurePalette` of the state).
 function deck_print_report(nb, base::AbstractString; theme::AbstractString = "", steps::AbstractString = "")
     ds = notebook_deck_settings(nb)
-    pdf, floor = deck_pdf_report(deck_print_url(base, nb.id; theme = _deck_figure_palette(ds.values, theme), steps))
+    pdf, floor = deck_pdf_report(deck_print_url(base, nb.id; theme, steps))
     return pdf, vcat(ds.warnings, floor)
 end
 

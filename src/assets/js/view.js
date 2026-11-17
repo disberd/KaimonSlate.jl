@@ -157,13 +157,14 @@ function applyPackageImports(state) {
 
 // The deck settings as custom properties (`deckCss`, written by the hub in `:where(…)` rules): one
 // `<style>` element, replaced when the text changes. The base CSS of the deck reads these values, and a
-// package CSS can override them.
+// package CSS can override them. A deck page also draws its charts in the deck's figure palette.
 function applyDeckSettings(state) {
   const css = state && state.deckCss;
   if (typeof css !== 'string') return;
   let el = document.getElementById('slate-deck-settings');
   if (!el) { el = document.createElement('style'); el.id = 'slate-deck-settings'; document.head.appendChild(el); }
   if (el.textContent !== css) el.textContent = css;
+  if (window._syncChartPalette) window._syncChartPalette();
 }
 
 window._slateFEInjected = window._slateFEInjected || new Set();

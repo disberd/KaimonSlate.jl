@@ -417,6 +417,11 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         # A figure palette that the deck settings name wins over the export palette.
         fixed = NS.deck_settings("[figures]\nslate-palette = \"daylight\"\n", "").values
         @test NS.deck_settings_dict(fixed; palette = "midnight")["slate_palette"] == "daylight"
+        # The page gets it too, so that the live deck draws its charts in it ("" = the UI theme).
+        nb = _mknb("#%% md id=a\n## A\n")
+        @test NS.state_json(nb)["deckFigurePalette"] == ""
+        nb.report.meta["decksettings"] = "[figures]\nslate-palette = \"daylight\"\n"
+        @test NS.state_json(nb)["deckFigurePalette"] == "daylight"
 
         # Live: `slate.` names stay CSS references, and every rule is inside `:where(…)`, so that a
         # package CSS overrides it.

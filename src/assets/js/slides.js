@@ -607,20 +607,21 @@
   // A chart's natural size is its size in the notebook, recorded while the notebook is on screen: once
   // presenting, the notebook is hidden and a chart measured there has no real width. A chart first
   // seen on a slide (a cell re-ran while it was up) takes its size there, unless that is degenerate.
-  const _natural = new WeakMap();   // chart instance → [w, h]
+  // Keyed by element: a palette change draws a new chart into the same element.
+  const _natural = new WeakMap();   // chart element → [w, h]
   // The notebook's own inline sizing of a chart element, saved before the deck first changes it. Keyed
   // by element: a cell that re-runs may draw a new chart into the same element.
   const _origStyle = new WeakMap(); // chart element → [inline width, inline height]
   function _recordNatural(inst) {
     const w = inst.getWidth(), h = inst.getHeight();
-    _natural.set(inst, (w >= 240 && h >= 120) ? [w, h] : [900, 450]);
+    _natural.set(inst.getDom(), (w >= 240 && h >= 120) ? [w, h] : [900, 450]);
   }
   function _slideCharts() {
     const out = [];
     for (const r of D.restore) for (const inst of _cellCharts(r.el)) {
       const dom = inst.getDom && inst.getDom(); if (!dom || !dom.isConnected) continue;
-      if (!_natural.has(inst)) _recordNatural(inst);
-      const [natW, natH] = _natural.get(inst);
+      if (!_natural.has(dom)) _recordNatural(inst);
+      const [natW, natH] = _natural.get(dom);
       out.push({ inst, dom, natW, natH });
     }
     return out;
@@ -1307,6 +1308,7 @@
     deck.style.display = '';
     deck.dataset.style = _deckStyle();
     _mountSlide(D.idx);
+    if (window._syncChartPalette) window._syncChartPalette();   // the charts take the deck's figure palette
     _emit('enter');
     _broadcast();
   }
@@ -1329,6 +1331,7 @@
     if (D.laser) deckLaser();
     if (D.draw) deckDraw();
     document.body.classList.remove('presenting');
+    if (window._syncChartPalette) window._syncChartPalette();   // the charts go back to the UI theme
     const deck = document.getElementById('deck');
     if (deck) { deck.style.display = 'none'; deck.classList.remove('black-on'); }
     if (D.fs && document.exitFullscreen) { try { document.exitFullscreen(); } catch (e) {} D.fs = false; }
@@ -1784,6 +1787,11 @@
   // `&render=1` is the video renderer's mode (server_deckshot.jl `deck_render`): the controls are
   // hidden, but transitions run, since they are what it records.
   const DECK_AT = new URLSearchParams(location.search).get('deck');
+  // A deck page (the open deck, a capture, the sheet, the print, the presenter window) draws its
+  // charts in the deck's figure palette (core.js `_syncChartPalette`). The state can come in before
+  // this file runs, so the palette is synced here too.
+  window._onDeck = () => D.open || !!DECK_AT || IS_PRESENTER;
+  if (window._syncChartPalette) window._syncChartPalette();
   if (DECK_AT && !IS_PRESENTER) {
     const q = new URLSearchParams(location.search);
     if (q.get('shot') === '1') document.documentElement.classList.add('deck-shot');

@@ -123,10 +123,11 @@ function _snapCell(cellId, insts, spec) {
     // (export_typst.jl) already falls back cleanly to this PNG when no SVG snapshot exists, so
     // dropping the eager SVG render costs nothing but export-time vector crispness for ECharts
     // figures specifically (Makie figures already export true vector PDF separately).
-    // Match the live theme's page colour (not a hardcoded dark) so the PNG fallback reads correctly
-    // on a light export too; charts declare a transparent bg, so without an explicit fill they'd come
-    // through with none.
-    const _bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0e1116';
+    // Match the page colour of the chart's palette (not a hardcoded dark) so the PNG fallback reads
+    // correctly on a light export too; charts declare a transparent bg, so without an explicit fill
+    // they'd come through with none. On a deck page the charts can take the deck's figure palette.
+    const _bg = (_chartPalette && _themeVarsFor(_chartPalette)['--bg']) ||
+                getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#0e1116';
     try { png = (inst.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: _bg }) || '').split(',')[1] || ''; } catch (_) {}
     if (png) fetch(_apipath('/api/snapshot'), { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -798,6 +799,7 @@ function _applySize(el, inst, s) {
 // FOLLOW the active Slate theme. Built once, lazily (echarts must be loaded); rebuilt on a theme
 // switch (window._onSlateThemeChange). Series colour cycle order mirrors slate_series_cycle() in Julia.
 let _slateThemeReady = false;
+let _chartPalette = '';   // see `_syncChartPalette`
 function _slateThemeVar(cs, name, dflt) { const v = cs.getPropertyValue(name).trim(); return v || dflt; }
 function _slateAxisTheme(line, label, name) {
   // Font sizes lifted off ECharts' small defaults (12px) toward the Makie Slate theme, so an ECharts
@@ -879,12 +881,14 @@ function _slateEchartsThemeFrom(V, fam) {
     ...(dark === null ? {} : { darkMode: dark }),
   };
 }
-// The live-theme ECharts theme (registered as 'slate') — reads the currently-applied CSS vars.
+// The live-theme ECharts theme (registered as 'slate') — reads the currently-applied CSS vars, or the
+// vars of `_chartPalette` when a deck page draws its charts in the deck's figure palette.
 function _slateEchartsTheme() {
   const cs = getComputedStyle(document.documentElement);
   // The document's real computed font stack — a valid canvas font-family that still matches the page.
   const fam = (getComputedStyle(document.body || document.documentElement).fontFamily || '').trim();
-  return _slateEchartsThemeFrom((n, d) => _slateThemeVar(cs, n, d), fam || undefined);
+  const vars = _chartPalette ? _themeVarsFor(_chartPalette) : null;
+  return _slateEchartsThemeFrom(vars ? (n, d) => vars[n] || d : (n, d) => _slateThemeVar(cs, n, d), fam || undefined);
 }
 // Read ONE Slate palette's CSS custom properties straight from its stylesheet rule (":root" for
 // midnight, `html[data-slate-theme="<name>"]` otherwise), merged over :root so a block that omits a
@@ -930,6 +934,14 @@ window._reinitCharts = () => {
 window._onSlateThemeChange = () => {
   try { _slateThemeReady = false; _ensureSlateTheme(); } catch (_) {}
   window._reinitCharts();
+};
+// The Slate palette of the charts: on a deck page (`window._onDeck`, slides.js) the deck settings'
+// `figures.slate-palette` (`deckFigurePalette` of the state), else '' (the UI theme). A change
+// redraws every chart.
+window._syncChartPalette = () => {
+  const st = window.__slateState || {};
+  const p = (window._onDeck && window._onDeck() && st.deckFigurePalette) || '';
+  if (p !== _chartPalette) { _chartPalette = p; window._onSlateThemeChange(); }
 };
 
 // ── Chart renderer: canvas (default) or svg ──────────────────────────────────────────────────────
