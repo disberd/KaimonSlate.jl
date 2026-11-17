@@ -305,6 +305,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test isempty(base.warnings)
         @test base.values["text"]["size"] == (value = 34.0, unit = :u)
         len(g, k, r) = r.values[g][k]
+        wpath(r, p) = count(w -> occursin("`$p`", w), r.warnings)       # the warnings about key path `p`
 
         r = NS.deck_settings("[text]\nsize = \"36u\"\nline-height = 1.3\n", "[text]\nsize = \"38u\"\n")
         @test isempty(r.warnings)
@@ -314,13 +315,13 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
 
         # An unknown group or key: a warning, and no value.
         r = NS.deck_settings("[text]\nsizes = \"36u\"\n[nogroup]\na = 1\n", "")
-        @test length(r.warnings) == 2 && all(w -> occursin("is not a", w), r.warnings)
+        @test length(r.warnings) == 2 && wpath(r, "text.sizes") == 1 && wpath(r, "nogroup") == 1
         @test r.values == base.values
 
         # A unit that is not the unit of the key, or not u or em: a warning, and the value below stays.
         r = NS.deck_settings("[text]\nsize = \"36u\"\n", "[text]\nsize = \"2em\"\n[columns]\ngap = \"56px\"\n")
         @test len("text", "size", r).value == 36 && len("columns", "gap", r) == (value = 56.0, unit = :u)
-        @test count(w -> occursin("unit", w), r.warnings) == 2
+        @test length(r.warnings) == 2 && wpath(r, "text.size") == 1 && wpath(r, "columns.gap") == 1
 
         # Values reach CSS and Typst text, so each must match a strict pattern.
         r = NS.deck_settings("[roles]\nfg = \"red; } body { x\"\n[text]\nfont = [\"Inter\\\"; }\"]\n" *
@@ -328,7 +329,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test length(r.warnings) == 4 && r.values == base.values
 
         # A base key from a deck template warns; from the notebook it does not.
-        @test any(w -> occursin("base key", w), NS.deck_settings("[rhythm]\ncell-gap = \"20u\"\n", "").warnings)
+        r = NS.deck_settings("[rhythm]\ncell-gap = \"20u\"\n", "")
+        @test length(r.warnings) == 1 && wpath(r, "rhythm.cell-gap") == 1 && r.values["rhythm"]["cell-gap"].value == 20
         @test isempty(NS.deck_settings("", "[rhythm]\ncell-gap = \"20u\"\n").warnings)
 
         # A colour word must be in [palette] (or [roles], outside the roles); else the base value stays.
@@ -356,7 +358,6 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test d["admonition"]["aside"]["radius"] == d["admonition"]["radius"]
 
         # A category with the name of a default key: a warning, and the notebook page still loads.
-        wpath(r, p) = count(w -> occursin("`$p`", w), r.warnings)
         r = NS.deck_settings("", "[admonition.fill]\naccent = \"#ffffff\"\n")
         @test wpath(r, "admonition.fill") == 1 && r.values == base.values
         nb = _mknb("#%% md id=a\n## A\n")
@@ -429,6 +430,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         css = NS.state_json(nb)["deckCss"]
         @test occursin("--deck-fg: var(--text);", css) && occursin("--deck-surface: var(--bg);", css)
         @test occursin("--deck-strong: var(--strong);", css)    # bold text and headings keep the theme's --strong
+        @test occursin("--deck-font: \"Inter\", \"Slate Inter\", sans-serif;", css)   # the font keeps its property name
         @test occursin("--deck-rhythm-cell-gap: calc(18 * var(--u));", css)
         rules = [strip(r) for r in split(css, '}') if !isempty(strip(r))]
         @test !isempty(rules) && all(r -> startswith(r, ":where("), rules)
