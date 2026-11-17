@@ -634,7 +634,9 @@ Declare a Typst deck template for every notebook that loads this package. `sourc
 
 `settings` is the partial deck-settings file of the template: TOML text or bytes. Slate merges it on its
 base settings key by key, and the notebook setting `decksettings` on top. Slate checks each key and
-value; see the Slate docs for the keys.
+value; see the Slate docs for the keys. On the live deck each value is a `--deck-*` custom property.
+The colour roles (`--deck-fg`, …), `--deck-font` and the palette are on the deck root (`.deck`); every
+other value is on each slide, so a CSS rule that overrides one must match `.deck-slide`, not `.deck`.
 
 `files` maps a file name to its bytes: the layout catalogue, art and fonts that `source` uses. Put fonts
 under `fonts/`.
@@ -644,7 +646,9 @@ under `fonts/`.
 mtime changes, so an edit reaches the next export without a worker restart.
 
 A file name must be a relative POSIX path, such as `layouts/title.typ`. A name that is absolute or has a
-`..` segment throws an `ArgumentError`. Call this from `__init__`. A later call replaces the template.
+`..` segment throws an `ArgumentError`. The slides export refuses the names of the files that Slate
+writes into the project (`doc.typ`, `deck-settings.typ`, `media.json`, `code-dark.tmTheme`). Call this
+from `__init__`. A later call replaces the template.
 
 The manifest carries a hash of the template, settings included ([`extension_manifest`](@ref)). Slate
 pulls the bytes only when the hash changes.

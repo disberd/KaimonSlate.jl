@@ -2292,7 +2292,9 @@ end
 # Write a deck template's files into the project `dir` and append its source to `io`, after the base
 # preamble, so a `#let slide` or `#let metablock` in it shadows the base one. The source stays inline
 # (an `#include` would not export its lets). A template ships fonts under `fonts/`: `_typst_compile`
-# puts that directory on the font path.
+# puts that directory on the font path. A template file must not have the name of a file that Slate
+# writes into the project.
+const _SLATE_PROJECT_FILES = ("doc.typ", "deck-settings.typ", "media.json", "code-dark.tmTheme")
 _apply_deck_template!(io::IO, dir::AbstractString, ::Nothing) = nothing
 function _apply_deck_template!(io::IO, dir::AbstractString, t)
     root = normpath(dir)
@@ -2300,6 +2302,8 @@ function _apply_deck_template!(io::IO, dir::AbstractString, t)
         path = normpath(joinpath(root, name))
         startswith(path, root * Base.Filesystem.path_separator) ||
             throw(ArgumentError("deck template file \"$name\" escapes the project directory"))
+        relpath(path, root) in _SLATE_PROJECT_FILES &&
+            throw(ArgumentError("deck template file \"$name\" has the name of a file that Slate writes"))
         mkpath(dirname(path))
         write(path, bytes)
     end

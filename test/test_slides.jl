@@ -595,11 +595,14 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         # Without a template the preamble is the only prefix; no template text leaks in.
         @test !occursin("deck template", before)
 
-        # A file name that leaves the project directory is refused at the write site.
+        # The write site refuses a file name that leaves the project directory, and the name of a file
+        # that Slate writes.
         io = IOBuffer(); d = mktempdir()
         try
-            @test_throws ArgumentError NS._apply_deck_template!(io, d, (; hash = "h", source = "", settings = "",
-                                                                      files = Dict("../x" => UInt8[])))
+            for name in ("../x", "deck-settings.typ")
+                @test_throws ArgumentError NS._apply_deck_template!(io, d, (; hash = "h", source = "", settings = "",
+                                                                          files = Dict(name => UInt8[])))
+            end
         finally
             rm(d; recursive = true, force = true)
         end
