@@ -628,12 +628,14 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
     end
 
     @testset "the PDF deck fits each slide and records the fit" begin
-        # The fixture deck at 16:9 and at 4:3, with three slides added: a figure wider than its column
-        # that shares a tall slide with text, a portrait figure alone whose drawn height is measured,
-        # and a slide of text that is taller than the page at full size. One `typst query` per ratio
-        # reads the fit records of `fit` (label `<slate>`).
+        # The fixture deck at 16:9 and at 4:3, with four slides added: a figure that shares a tall
+        # slide with text, a portrait figure alone whose drawn height is measured, a slide of text
+        # that is taller than the page at full size, and a data table of 35 rows, which shrinks with the
+        # text. One `typst query` per ratio reads the fit records of `fit` (label `<slate>`).
         fixture = read(joinpath(@__DIR__, "fixtures", "deck_fixture.jl"), String)
         svg(w, h) = """<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h"><rect width="$w" height="$h" fill="#38c"/></svg>"""
+        table = NS._typst_table(Dict("columns" => [Dict("name" => "n"), Dict("name" => "square")],
+                                     "rows" => [[i, i^2] for i in 1:35]); theme = "deck")
         extra = """
         #slide(title: heading(level: 2)[A figure that shares the slide])[
         Two lines of text above the figure make this slide taller than the page at full size, so
@@ -644,6 +646,9 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         #slide[#layout(sz => [#metadata(measure(block(width: sz.width, figureimg("tall.svg"))).height / SLIDE_H) <figcap>])]
         #slide(title: heading(level: 2)[A tall slide of text])[
         #for i in range(20) [Line #i of a slide that is a little taller than the page at full size.\\ ]
+        ]
+        #slide(title: heading(level: 2)[A data table])[
+        $table
         ]
         """
         function query(ratio)
@@ -661,9 +666,10 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
         tie(r) = (1 + r["s"]) / 2
         fit, cap, recs = query("16:9")
-        @test sort(collect(keys(fit))) == 1:17              # one page per slide: no slide breaks
+        @test sort(collect(keys(fit))) == 1:18              # one page per slide: no slide breaks
         tall, atfloor, fig = fit[17], fit[13], fit[15]      # the added tall slide, fixture "…at the floor"
         @test 0.62 <= tall["s"] < 1 && tall["f"] >= tie(tall) && !tall["at_floor"]
+        @test fit[18]["s"] < 1 && !fit[18]["at_floor"]      # the table shrinks with the text
         @test atfloor["at_floor"] && atfloor["s"] == 0.62
         @test count(r -> r["at_floor"], recs) == 1
         @test 0.62 <= fig["s"] < 1 && tie(fig) <= fig["f"] < 1 && !fig["at_floor"]   # the figure shrinks less than the text
@@ -772,7 +778,8 @@ end
 @testset "deck lengths: em for text, the slide unit for geometry" begin
     # The fit changes the text size only, so a deck length that must follow the text is in em and a
     # fixed one is in the slide unit (`--u` live, `u` in Typst), never in px, pt, mm or rem. This scans
-    # the notebook.css rules whose selector starts with `.deck-slide`, and the Typst slides preamble.
+    # the notebook.css rules whose selector starts with `.deck-slide`, the Typst slides preamble and a
+    # data table of a slide (`_typst_table`).
     # It does not cover deck rules under other selectors (`.slide-title`, `.slide-body`,
     # `.deck-sheet`, `.cell.role-title`), the notebook rules that reach into a slide, or template
     # CSS: the parity run (`parity.mjs`) catches what leaks from those. Markdown image sizes that the
@@ -790,6 +797,9 @@ end
     @test isempty(bad)
     pre = split(NS._typst_preamble_slides("T"), '\n')
     @test isempty(filter(l -> occursin(abslen, l) && !occursin(r"#let (SLIDE_[WH]|mdlen)\b", l), pre))
+    spec = Dict("columns" => [Dict("name" => "a")], "rows" => [[1], [2]],
+                "opts" => Dict{String,Any}("title" => "T", "nrows" => 300))
+    @test !occursin(abslen, NS._typst_table(spec; theme = "deck"))
 end
 
 @testset "the API reference covers the deck" begin

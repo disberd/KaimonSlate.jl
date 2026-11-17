@@ -1009,33 +1009,45 @@ function _typst_table(spec; theme::AbstractString = "light")::String
     isempty(cols) && return ""
     ncol = length(cols)
     p = _palette(theme)
+    # On a slide each size is in `em` (of `table.text-size` inside the table), so that the fit's text
+    # scale shrinks the table with the text. The table sets no rule, inset or fill: the base slide gives
+    # them and the column widths (`base-rhythm`, `base-table` in the slides preamble), as for a markdown
+    # table, and a deck template gives its own.
+    deck = theme == "deck"
+    z = deck ? (body = "", head = "", title = "1.05em", gap = ("0.6em", "0.5em"), more = "settings.table.text-size") :
+               (body = "size: 8pt, ", head = "size: 8.5pt, ", title = "10.5pt", gap = ("6pt", "5pt"), more = "8pt")
     _typalign(a) = a == "right" ? "right" : (a == "center" ? "center" : "left")
     fmts = Any[_col_format(c) for c in cols]   # _col_* column-spec accessors are shared (server_export.jl)
-    inner(v, fmt) = "[#text(size: 8pt, \"" * _typ_str(ReportEngine._format_cell(v, fmt)) * "\")]"
+    inner(v, fmt) = "[#text($(z.body)\"" * _typ_str(ReportEngine._format_cell(v, fmt)) * "\")]"
     cell(v, col, fmt) = _typ_viz_cell(v, col, inner(v, fmt))
     io = IOBuffer()
     # per-column alignment (numbers right, bools center) + a themed grid stroke
     print(io, "#align(center)[\n")   # center the table block on the page
     # A caption above the table, matching the browser and the HTML export.
     ttl = _table_title(opts)
-    ttl === nothing || print(io, "#block(above: 6pt, below: 5pt)[#text(size: 10.5pt, weight: \"bold\", \"",
+    ttl === nothing || print(io, "#block(above: $(z.gap[1]), below: $(z.gap[2]))[#text(size: $(z.title), weight: \"bold\", \"",
                              _typ_str(ttl), "\")]\n")
-    print(io, "#table(columns: ", ncol, ", inset: 5pt, align: (", join((_typalign(_col_align(c)) for c in cols), ", "), "), stroke: 0.4pt + $(p.tablestroke),\n")
-    # zebra: header shaded (row 0), odd body rows a subtle stripe
-    print(io, "  fill: (_, row) => if row == 0 { $(p.tableheadbg) } else if calc.odd(row) { $(p.tablestripe) },\n")
+    aligns = join((_typalign(_col_align(c)) for c in cols), ", ")
+    if deck
+        print(io, "#[#set text(size: settings.table.text-size)\n#table(columns: ", ncol, ", align: (", aligns, ",),\n")
+    else
+        print(io, "#table(columns: ", ncol, ", inset: 5pt, align: (", aligns, "), stroke: 0.4pt + $(p.tablestroke),\n")
+        # zebra: header shaded (row 0), odd body rows a subtle stripe
+        print(io, "  fill: (_, row) => if row == 0 { $(p.tableheadbg) } else if calc.odd(row) { $(p.tablestripe) },\n")
+    end
     # repeat the header on every page a long table spills onto
-    print(io, "  table.header(repeat: true, ", join(["[#text(size: 8.5pt, weight: \"bold\", \"" * _typ_str(_col_name(c)) * "\")]" for c in cols], ", "), "),\n")
+    print(io, "  table.header(repeat: true, ", join(["[#text($(z.head)weight: \"bold\", \"" * _typ_str(_col_name(c)) * "\")]" for c in cols], ", "), "),\n")
     maxr = Int(something(get(opts, "export_rows", nothing), 200))   # per-table export_rows hint, else default cap
     for (ri, r) in enumerate(rows)
         ri > maxr && break
         print(io, "  ", join([cell(ci <= length(r) ? r[ci] : nothing, cols[ci], fmts[ci]) for ci in 1:ncol], ", "), ",\n")
     end
-    print(io, ")\n")
+    print(io, deck ? ")\n]\n" : ")\n")
     # accurate truncation: the wire ships at most `maxr` here AND a paged table ships only page 1,
     # so report against opts.nrows (the true total), not the shipped-row count.
     total = Int(get(opts, "nrows", length(rows)))
     shown = min(length(rows), maxr)
-    shown < total && print(io, "#text(size: 8pt, fill: gray)[… ", total - shown, " more rows (", total, " total)]\n")
+    shown < total && print(io, "#text(size: $(z.more), fill: gray)[… ", total - shown, " more rows (", total, " total)]\n")
     print(io, "]\n")   # close #align(center)
     return String(take!(io))
 end
