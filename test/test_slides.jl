@@ -409,6 +409,21 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test sizes[1] ≈ 34 && sizes[2] ≈ 40
     end
 
+    # The base deck font is Inter in the PDF too: the project carries the shipped files, and Typst
+    # embeds them on a machine that has no Inter of its own.
+    @testset "the base slides PDF is set in the shipped Inter" begin
+        nb = _mknb("#%% md id=a\n## A\n\nbody text\n")
+        dir = NS._build_slides_project(nb)
+        try
+            @test isfile(joinpath(dir, "fonts", "Inter-Regular.ttf")) && isfile(joinpath(dir, "fonts", "Inter-Bold.ttf"))
+            pdf = joinpath(dir, "out.pdf")
+            NS._typst_compile(joinpath(dir, "doc.typ"), pdf)
+            @test occursin("Inter-Regular", read(`pdffonts $pdf`, String))
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
     @testset "cell_json exposes slide/notes flags" begin
         r = RE.parse_report("#%% code id=a slide\nx=1\n\n#%% md id=b notes\nhi\n")
         j1 = NS.cell_json(r.cells[1]); j2 = NS.cell_json(r.cells[2])

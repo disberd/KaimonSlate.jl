@@ -9,6 +9,22 @@
 
 const _DECK_BASE_PATH = joinpath(@__DIR__, "assets", "deck-settings.toml")
 
+# The base deck font: Inter 4.1 (github.com/rsms/inter, release v4.1, the static TTF files of
+# `extras/ttf`), under the SIL Open Font License (`LICENSE.txt` beside the files). The live deck loads
+# it as "Slate Inter" (notebook.css `@font-face`), after an "Inter" that the machine has; a slides
+# export copies it into the project's `fonts` directory.
+const _INTER_DIR = joinpath(@__DIR__, "assets", "fonts", "inter")
+
+# Copy the shipped Inter files into `dir/fonts` when a font list of the settings names Inter, so that
+# Typst finds the font on any machine. A template's own fonts in `fonts/` stay beside them.
+function _deck_fonts!(dir::AbstractString, s)
+    "Inter" in s["text"]["font"] || "Inter" in s["code"]["font"] || return
+    mkpath(joinpath(dir, "fonts"))
+    for f in readdir(_INTER_DIR)
+        endswith(f, ".ttf") && cp(joinpath(_INTER_DIR, f), joinpath(dir, "fonts", f); force = true)
+    end
+end
+
 # Base keys: Slate warns when a deck template sets one. The notebook can set them with no warning.
 const _DECK_BASE_GROUPS = ("rhythm", "fit", "columns")
 const _DECK_BASE_KEYS = ("table.text-size", "table.line-height", "table.pad-x", "table.header-pad-y",
@@ -300,7 +316,9 @@ function _deck_css_value(s, v, g, k)
     v isa NamedTuple && return v.unit === :u ? "calc($(_deck_num(v.value)) * var(--u))" : "$(_deck_num(v.value))em"
     v isa Bool && return v ? "1" : "0"
     v isa Real && return _deck_num(v)
-    v isa Vector{String} && return join(("\"$n\"" for n in v), ", ") * (g == "code" ? ", monospace" : ", sans-serif")
+    # "Slate Inter" is the shipped Inter: a machine that has Inter uses its own, with all its weights.
+    v isa Vector{String} && return join((n == "Inter" ? "\"Inter\", \"Slate Inter\"" : "\"$n\"" for n in v), ", ") *
+                                   (g == "code" ? ", monospace" : ", sans-serif")
     _deck_choices(g, k) === nothing || return "\"$v\""
     c = _deck_colour(s, v, nothing)
     return c === nothing ? "transparent" : c

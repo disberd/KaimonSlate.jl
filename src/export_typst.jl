@@ -2176,6 +2176,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
         syntax = _deck_syntax(ds.values, ReportEngine._resolve_palette(palette))
         syntax == "dark" && write(joinpath(dir, "code-dark.tmTheme"), _CODE_DARK_TMTHEME)
         write(joinpath(dir, "deck-settings.typ"), deck_settings_typ(ds.values; ratio, palette))
+        _deck_fonts!(dir, ds.values)
         io = IOBuffer()
         print(io, _typst_preamble_slides(nb.report.title; syntax, code))
         _apply_deck_template!(io, dir, notebook_deck_template(nb))
@@ -2253,9 +2254,10 @@ end
 
 The complete Typst PROJECT — `doc.typ` plus every figure / markdown / code-listing asset it
 references — as a gzip-compressed tarball (`.tar.gz`). Unpack it and `typst compile doc.typ`
-reproduces the PDF, so the layout and preamble can be tweaked by hand. A slide deck whose package
-declares a deck template carries the template files too. When they include a `fonts` directory,
-compile with `typst compile --font-path fonts doc.typ`.
+reproduces the PDF, so the layout and preamble can be tweaked by hand. A slide deck carries its deck
+settings (`deck-settings.typ`), the files of its deck template, and the shipped Inter font when its
+settings use it. When the project has a `fonts` directory, compile with
+`typst compile --font-path fonts doc.typ`.
 """
 function export_typst_bundle(nb::LiveNotebook; kwargs...)
     dir = _build_typst_project(nb; kwargs...)

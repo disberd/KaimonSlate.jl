@@ -1230,6 +1230,15 @@ function _make_router(h::Hub)
                                         "Cache-Control" => "public, max-age=31536000, immutable"], read(p)) :
                     HTTP.Response(404)
     end)
+    # The base deck font (Inter 4.1, OFL, `assets/fonts/inter`): the `@font-face` rules of notebook.css.
+    HTTP.register!(router, "GET", "/assets/fonts/inter/{file}", req -> begin
+        f = HTTP.getparam(req, "file")
+        (occursin('/', f) || occursin('\\', f) || occursin("..", f) || !endswith(f, ".ttf")) && return HTTP.Response(404)
+        p = joinpath(_INTER_DIR, f)
+        isfile(p) ? HTTP.Response(200, ["Content-Type" => "font/ttf",
+                                        "Cache-Control" => "public, max-age=31536000, immutable"], read(p)) :
+                    HTTP.Response(404)
+    end)
     # Local site host: serve a persistent named site (export_to_site) over HTTP so its client-side
     # index — which `fetch`es slate-site.json (blocked on file://) — works. Greedy `**` for nested
     # slug dirs; `_site_file` resolves + guards against `..` traversal outside the site dir.
