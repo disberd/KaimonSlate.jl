@@ -263,10 +263,11 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
             md = join((read(joinpath(dir, f), String) for f in readdir(dir) if endswith(f, ".md")), "\n")
             @test occursin("kept text", md) && !occursin(":::", md)
             # The columns start where the widths say: on a 16:9 page 1 u is 720 pt / 1920, the margins
-            # are 121 u and the gutter is 56 u.
+            # are the 120 u of the live deck plus the 16 u padding of a markdown cell, and the gutter is
+            # the deck setting `columns.gap`.
             xs(label) = [p["x"] for p in NS._typst_query(joinpath(dir, "doc.typ"), label)]
             u = 720 / 1920
-            left, row, gap = 121u, 720 - 242u, 56u
+            left, row, gap = 136u, 720 - 272u, NS.deck_settings("", "").values["columns"]["gap"].value * u
             @test xs("<colx>") ≈ [left, left + 0.4row + gap] atol = 1       # `width="40%"` and the rest
             @test xs("<eqx>") ≈ [left, left + (row - gap) / 2 + gap] atol = 1   # equal columns
         finally
@@ -407,6 +408,31 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
             end
         end
         @test sizes[1] ≈ 34 && sizes[2] ≈ 40
+    end
+
+    # The base preamble copies the rhythm and the geometry of the live base deck: two paragraphs are
+    # `text.line-height` + `text.paragraph-after` apart, and a content slide shows its number at the
+    # bottom right.
+    @testset "the base PDF: the paragraph gap of the settings, the slide number" begin
+        # A mark inside the first line of each paragraph (at the start of a line, the comment would be
+        # an HTML block that joins the two paragraphs).
+        mark(k) = "<!--raw-typst #context [#metadata(here().position().y.pt()) <$k>]-->"
+        set = "[text]\nparagraph-after = \"1em\"\n"
+        nb = _mknb("#%% md id=a\n## A\n\nOne$(mark("p1")) line.\n\nThe$(mark("p2")) next line.\n")
+        nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}())
+        dir = NS._build_slides_project(nb)
+        try
+            doc = joinpath(dir, "doc.typ")
+            y(k) = only(NS._typst_query(doc, "<$k>")) / (720 / 1920)      # in u
+            t = NS.deck_settings(set, "").values["text"]
+            @test y("p2") - y("p1") ≈ t["size"].value * (t["line-height"] + t["paragraph-after"].value) atol = 0.5
+            pdf = joinpath(dir, "out.pdf")
+            NS._typst_compile(doc, pdf)
+            num = match(r"xMin=\"([\d.]+)\" yMin=\"([\d.]+)\"[^>]*>1</word>", read(`pdftotext -bbox -f 1 -l 1 $pdf -`, String))
+            @test num !== nothing && parse(Float64, num[1]) > 680 && parse(Float64, num[2]) > 380
+        finally
+            rm(dir; recursive = true, force = true)
+        end
     end
 
     # The base deck font is Inter in the PDF too: the project carries the shipped files, and Typst
@@ -551,10 +577,10 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
     end
 
     @testset "the PDF deck fits each slide and records the fit" begin
-        # The fixture deck at 16:9 and at 4:3, with three slides added: a figure that shares a tall
-        # slide with text, a portrait figure alone whose drawn height is measured, and a slide of text
-        # that is taller than the page at full size. One `typst query` per ratio reads the fit records
-        # of `fit` (label `<slate>`).
+        # The fixture deck at 16:9 and at 4:3, with three slides added: a figure wider than its column
+        # that shares a tall slide with text, a portrait figure alone whose drawn height is measured,
+        # and a slide of text that is taller than the page at full size. One `typst query` per ratio
+        # reads the fit records of `fit` (label `<slate>`).
         fixture = read(joinpath(@__DIR__, "fixtures", "deck_fixture.jl"), String)
         svg(w, h) = """<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h"><rect width="$w" height="$h" fill="#38c"/></svg>"""
         extra = """
@@ -572,7 +598,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         function query(ratio)
             dir = NS._build_slides_project(_mknb(fixture); ratio)
             try
-                write(joinpath(dir, "wide.svg"), svg(900, 450)); write(joinpath(dir, "tall.svg"), svg(300, 900))
+                write(joinpath(dir, "wide.svg"), svg(2400, 1200)); write(joinpath(dir, "tall.svg"), svg(300, 900))
                 doc = joinpath(dir, "doc.typ")
                 open(io -> print(io, extra), doc, "a")
                 vals = NS._typst_query(doc, "selector(<slate>).or(<figcap>)")

@@ -43,10 +43,11 @@ h2 = "1.85em"
 h3 = "1.2em"
 weight = 750
 
+# `cell-gap` is the gap between the cells of a slide and below a key message, `after-table` the space
+# below a table. `heading-above` and `heading-below` are the margins of a heading, in em of the heading.
 [rhythm]
 cell-gap = "18u"
 after-table = "0em"
-nested-list = "0.28em"
 heading-above = "0.6em"
 heading-below = "0.45em"
 
