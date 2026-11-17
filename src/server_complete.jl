@@ -491,6 +491,7 @@ function _acp_models()
     models
 end
 
+include("deck_settings.jl")  # deck settings: base file, merge, checks, the CSS and Typst outputs
 include("export_typst.jl")   # export_pdf(nb) — publication-quality PDF via Typst (uses types defined above)
 include("bib_remote.jl")     # a bibliography named by its address: fetched, cached, revalidated
 include("memostore.jl")      # MemoStore (server-side copy — stateless, root passed explicitly): pack/unpack

@@ -469,22 +469,38 @@ SlateExtensionsBase.to_palette_command(c::TaggedCmd) = auto_palette_command(c)
         end
         @test deck_template().source == "s2"                       # a rejected call changes nothing
 
-        # A file-backed source (`PkgAsset`) follows edits to its file; the files stay as given.
+        # The settings are part of the hash.
+        provide_deck_template!("s"; settings = "[text]\nsize = \"36u\"\n")
+        hs = deck_template().hash
+        @test deck_template().settings == "[text]\nsize = \"36u\"\n"
+        provide_deck_template!("s"; settings = Vector{UInt8}("[text]\nsize = \"38u\"\n"))
+        @test deck_template().hash != hs && deck_template().settings == "[text]\nsize = \"38u\"\n"
+        provide_deck_template!("s")
+        @test deck_template().settings == ""
+
+        # A file-backed source, settings file or file (`PkgAsset`) follows edits to its file.
         mktempdir() do dir
-            f = joinpath(dir, "deck.typ")
-            write(f, "V1")
-            provide_deck_template!(PkgAsset(f); files = Dict("a.bin" => UInt8[1]))
-            h1 = extension_manifest().deck_template_hash
-            @test deck_template().source == "V1"
-            write(f, "V2")
-            SlateExtensionsBase._DECK_TEMPLATE_FILE[] = (path = f, mtime = SlateExtensionsBase._DECK_TEMPLATE_FILE[].mtime - 10)
-            @test extension_manifest().deck_template_hash != h1
-            @test deck_template().source == "V2" && deck_template().files == Dict("a.bin" => UInt8[1])
+            f, sf, af = joinpath(dir, "deck.typ"), joinpath(dir, "deck.toml"), joinpath(dir, "a.bin")
+            write(f, "V1"); write(sf, "S1"); write(af, UInt8[1])
+            provide_deck_template!(PkgAsset(f); settings = PkgAsset(sf),
+                                   files = Dict("a.bin" => PkgAsset(af), "b.bin" => UInt8[2]))
+            @test deck_template().files == Dict("a.bin" => UInt8[1], "b.bin" => UInt8[2])
+            age!(key) = (e = SlateExtensionsBase._DECK_TEMPLATE_FILES[key];
+                         SlateExtensionsBase._DECK_TEMPLATE_FILES[key] = (path = e.path, mtime = e.mtime - 10))
+            for (key, path, edit, check) in (("source", f, "V2", t -> t.source == "V2"),
+                                             ("settings", sf, "S2", t -> t.settings == "S2"),
+                                             ("files/a.bin", af, UInt8[9], t -> t.files["a.bin"] == UInt8[9]))
+                h1 = extension_manifest().deck_template_hash
+                write(path, edit); age!(key)
+                @test extension_manifest().deck_template_hash != h1
+                @test check(deck_template())
+            end
+            @test deck_template().files["b.bin"] == UInt8[2]       # bytes given as bytes stay as given
             rm(f)                                                   # a missing file keeps the last source
-            SlateExtensionsBase._DECK_TEMPLATE_FILE[] = (path = f, mtime = 1.0)
+            age!("source")
             @test deck_template().source == "V2"
             provide_deck_template!("plain")                         # a plain string stops following the file
-            @test SlateExtensionsBase._DECK_TEMPLATE_FILE[] === nothing
+            @test isempty(SlateExtensionsBase._DECK_TEMPLATE_FILES)
         end
 
         SlateExtensionsBase._DECK_TEMPLATE[] = nothing

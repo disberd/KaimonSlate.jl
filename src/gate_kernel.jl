@@ -2226,25 +2226,28 @@ _deck_file_name_ok(name::AbstractString) =
     all(s -> !isempty(s) && s != "." && s != "..", split(name, '/'))
 
 # The deck template a worker sent (`__slate_deck_template`, see `deck_template_wire`) as
-# `(; hash, source, files)` with decoded bytes, or `nothing` when the worker has none or sent anything
-# the hub cannot trust: a file name that leaves the directory, or bytes that do not decode.
+# `(; hash, source, settings, files)` with decoded bytes, or `nothing` when the worker has none or sent
+# anything the hub cannot trust: a file name that leaves the directory, or bytes that do not decode. A
+# worker with an older SlateExtensionsBase sends no settings: they are `""`.
 function _decode_deck_template(res)
     field(x, k::Symbol) = x === nothing ? nothing : get(x, k, get(x, String(k), nothing))
     field(res, :ok) === true || return nothing
     hash, source, entries = field(res, :hash), field(res, :source), field(res, :files)
-    (hash isa AbstractString && source isa AbstractString && entries !== nothing) || return nothing
+    settings = something(field(res, :settings), "")
+    (hash isa AbstractString && source isa AbstractString && settings isa AbstractString && entries !== nothing) ||
+        return nothing
     files = Dict{String,Vector{UInt8}}()
     for e in entries
         name, b64 = field(e, :name), field(e, :b64)
         (name isa AbstractString && b64 isa AbstractString && _deck_file_name_ok(name)) || return nothing
         files[String(name)] = try; Base64.base64decode(b64); catch; return nothing; end
     end
-    return (; hash = String(hash), source = String(source), files)
+    return (; hash = String(hash), source = String(source), settings = String(settings), files)
 end
 
-# The deck template of the worker's loaded packages as `(; hash, source, files)`, or `nothing`. The bytes
-# are 1 to 3 MB, so the hub calls this only when the manifest's `deck_template_hash` changes, never on
-# each drain.
+# The deck template of the worker's loaded packages as `(; hash, source, settings, files)`, or `nothing`.
+# The bytes are 1 to 3 MB, so the hub calls this only when the manifest's `deck_template_hash` changes,
+# never on each drain.
 function get_deck_template(k::GateKernel, ::Report)
     res = try
         _tool(k, "__slate_deck_template", Dict{String,Any}(); timeout = 60.0)
@@ -2260,7 +2263,8 @@ function get_deck_template(::InProcessKernel, ::Report)
     isdefined(SlateExtensionsBase, :deck_template) || return nothing
     t = Base.invokelatest(SlateExtensionsBase.deck_template)
     t === nothing && return nothing
-    return (; hash = t.hash, source = t.source, files = copy(t.files))
+    return (; hash = t.hash, source = t.source, settings = hasproperty(t, :settings) ? t.settings : "",
+            files = copy(t.files))
 end
 
 # Filesystem coordinates for a self-contained export (active project dir + path-dep sources).

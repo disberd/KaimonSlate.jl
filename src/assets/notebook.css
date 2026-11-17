@@ -2437,9 +2437,11 @@ body.dag-open.dag-bottom .page { padding-bottom:calc(var(--dagh, 42vh) + 40px); 
 .cfgbadge.global { color:var(--text); }
 .cfgbadge.default { color:var(--dim); }
 .cfgctl { display:flex; align-items:center; gap:6px; flex-shrink:0; }
-.cfgctl select, .cfgctl input.cfgtext, .cfgctl input.cfgnum { background:var(--bg3); color:var(--text); border:1px solid var(--border);
+.cfgctl select, .cfgctl input.cfgtext, .cfgctl input.cfgnum, .cfgctl textarea.cfgarea { background:var(--bg3); color:var(--text); border:1px solid var(--border);
   border-radius:6px; padding:3px 7px; font-size:.82rem; }
 .cfgctl input.cfgtext { width:170px; font-family:'Cascadia Code',monospace; }
+.cfgctl textarea.cfgarea { width:260px; font-family:'Cascadia Code',monospace; resize:vertical; }
+.cfgsub.cfgwarn { color:var(--gold); }
 .cfgctl input.cfgnum { width:56px; }
 .cfgctl select:focus, .cfgctl input:focus { outline:none; border-color:var(--accent); }
 .cfgclear { background:none; border:1px solid var(--bg3); color:var(--dim); border-radius:6px; padding:2px 7px; cursor:pointer; font-size:.78rem; }

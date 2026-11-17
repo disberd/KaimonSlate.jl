@@ -965,10 +965,30 @@ x = 1
             @test t2.hash != t.hash && t2.source == "#let slide(b) = [b]"
             @test k.pulls[] == 2
 
+            # A settings file and a file given as `PkgAsset`s follow edits: the next drain pulls them, and
+            # the merged deck settings change.
+            mktempdir() do dir
+                sf, af = joinpath(dir, "deck.toml"), joinpath(dir, "logo.svg")
+                write(sf, "[text]\nsize = \"36u\"\n"); write(af, "<svg/>")
+                SEB.provide_deck_template!("#let slide(b) = b"; settings = SEB.PkgAsset(sf),
+                                           files = Dict("logo.svg" => SEB.PkgAsset(af)))
+                NS._refresh_extensions!(nb)
+                @test NS.notebook_deck_settings(nb).values["text"]["size"].value == 36
+                write(sf, "[text]\nsize = \"40u\"\n"); write(af, "<svg id=\"b\"/>")
+                for key in ("settings", "files/logo.svg")
+                    e = SEB._DECK_TEMPLATE_FILES[key]
+                    SEB._DECK_TEMPLATE_FILES[key] = (path = e.path, mtime = e.mtime - 10)
+                end
+                NS._refresh_extensions!(nb)
+                @test NS.notebook_deck_settings(nb).values["text"]["size"].value == 40
+                @test NS.notebook_deck_template(nb).files["logo.svg"] == Vector{UInt8}("<svg id=\"b\"/>")
+            end
+
             # A manifest without the field clears the template.
             SEB._DECK_TEMPLATE[] = nothing
+            n = k.pulls[]
             NS._refresh_extensions!(nb)
-            @test NS.notebook_deck_template(nb) === nothing && k.pulls[] == 2
+            @test NS.notebook_deck_template(nb) === nothing && k.pulls[] == n
         finally
             SEB._DECK_TEMPLATE[] = nothing
         end
@@ -983,7 +1003,7 @@ x = 1
         try
             SEB._DECK_TEMPLATE[] = nothing
             @test RE.deck_template_wire() == Dict{String,Any}("ok" => false)
-            SEB.provide_deck_template!("#let slide(b) = b"; files)
+            SEB.provide_deck_template!("#let slide(b) = b"; settings = "[text]\nsize = \"36u\"\n", files)
             m = wire(RE.extension_manifest_wire(RE.inprocess_extension_manifest()))
             @test m["deck_template_hash"] == SEB.deck_template().hash
             @test !occursin("#let slide", JSON.json(m))           # the manifest has no bytes
@@ -991,6 +1011,7 @@ x = 1
             w = wire(RE.deck_template_wire())
             t = RE._decode_deck_template(w)
             @test t.hash == m["deck_template_hash"] && t.source == "#let slide(b) = b" && t.files == files
+            @test t.settings == "[text]\nsize = \"36u\"\n"
 
             for bad in ("/etc/passwd", "../x.typ", "a/../../x", "a//b", "a\\b", "C:/x")
                 hostile = copy(w)

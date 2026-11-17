@@ -289,10 +289,69 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         r.meta["slidelevel"] = 3
         r.meta["slidetransition"] = "slide"
         r.meta["slideratio"] = "4:3"
+        r.meta["decksettings"] = "[text]\nsize = \"36u\"  # a comment\n"
         r2 = RE.parse_report(RE.serialize_report(r))
         @test r2.meta["slidelevel"] === 3           # parsed back as an Int, not a String
         @test r2.meta["slidetransition"] == "slide"
         @test r2.meta["slideratio"] == "4:3"
+        @test r2.meta["decksettings"] == r.meta["decksettings"]   # several lines survive the footer
+    end
+
+    # The deck settings: base file ← deck template ← notebook, key by key. A value that fails a check
+    # gives a warning, and the value below it stays.
+    @testset "deck settings: merge order and checks" begin
+        base = NS.deck_settings("", "")
+        @test isempty(base.warnings)
+        @test base.values["text"]["size"] == (value = 34.0, unit = :u)
+        len(g, k, r) = r.values[g][k]
+
+        r = NS.deck_settings("[text]\nsize = \"36u\"\nline-height = 1.3\n", "[text]\nsize = \"38u\"\n")
+        @test isempty(r.warnings)
+        @test len("text", "size", r) == (value = 38.0, unit = :u)       # the notebook wins
+        @test len("text", "line-height", r) == 1.3                      # the template's other key stays
+        @test len("text", "paragraph-after", r) == (value = 0.55, unit = :em)   # the base fills the rest
+
+        # An unknown group or key: a warning, and no value.
+        r = NS.deck_settings("[text]\nsizes = \"36u\"\n[nogroup]\na = 1\n", "")
+        @test length(r.warnings) == 2 && all(w -> occursin("is not a", w), r.warnings)
+        @test r.values == base.values
+
+        # A unit that is not the unit of the key, or not u or em: a warning, and the value below stays.
+        r = NS.deck_settings("[text]\nsize = \"36u\"\n", "[text]\nsize = \"2em\"\n[columns]\ngap = \"56px\"\n")
+        @test len("text", "size", r).value == 36 && len("columns", "gap", r) == (value = 56.0, unit = :u)
+        @test count(w -> occursin("unit", w), r.warnings) == 2
+
+        # Values reach CSS and Typst text, so each must match a strict pattern.
+        r = NS.deck_settings("[roles]\nfg = \"red; } body { x\"\n[text]\nfont = [\"Inter\\\"; }\"]\n" *
+                             "[code]\nsyntax = \"neon\"\n[palette]\nbad = \"blue\"\n", "")
+        @test length(r.warnings) == 4 && r.values == base.values
+
+        # A base key from a deck template warns; from the notebook it does not.
+        @test any(w -> occursin("base key", w), NS.deck_settings("[rhythm]\ncell-gap = \"20u\"\n", "").warnings)
+        @test isempty(NS.deck_settings("", "[rhythm]\ncell-gap = \"20u\"\n").warnings)
+
+        # A colour word must be in [palette] (or [roles], outside the roles); else the base value stays.
+        r = NS.deck_settings("[palette]\nnavy = \"#003247\"\n[roles]\nfg = \"navy\"\n[caption]\ncolor = \"accent\"\n", "")
+        @test isempty(r.warnings) && r.values["roles"]["fg"] == "navy" && r.values["caption"]["color"] == "accent"
+        r = NS.deck_settings("[roles]\nfg = \"dim\"\n", "")
+        @test length(r.warnings) == 1 && r.values["roles"]["fg"] == "slate.text"
+
+        # A fixed surface with text roles on the Slate palette warns.
+        r = NS.deck_settings("[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\n", "")
+        @test length(r.warnings) == 1 && occursin("roles.strong", r.warnings[1]) && occursin("roles.dim", r.warnings[1])
+        @test isempty(NS.deck_settings("[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\nstrong = \"#003247\"\n" *
+                                       "dim = \"#8197a6\"\n", "").warnings)
+
+        # Text that is not TOML: one warning, and the layer is not used.
+        r = NS.deck_settings("[text\n", "")
+        @test length(r.warnings) == 1 && r.values == base.values
+
+        # An admonition category takes the default for the keys it does not set; any word is a category.
+        r = NS.deck_settings("[admonition.aside]\naccent = \"#123456\"\n", "")
+        @test isempty(r.warnings)
+        d = NS.deck_settings_dict(r.values; palette = "daylight")
+        @test d["admonition"]["aside"]["accent"] == "#123456"
+        @test d["admonition"]["aside"]["radius"] == d["admonition"]["radius"]
     end
 
     @testset "cell_json exposes slide/notes flags" begin
@@ -349,7 +408,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
             nothing
         end
         nb = _mknb(src)
-        nb.deck_template = (; hash = "h", source = tpl, files)
+        nb.deck_template = (; hash = "h", source = tpl, settings = "", files)
         pdf = try
             NS.export_pdf(nb; layout = "slides")
         catch err
@@ -391,7 +450,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         # A file name that leaves the project directory is refused at the write site.
         io = IOBuffer(); d = mktempdir()
         try
-            @test_throws ArgumentError NS._apply_deck_template!(io, d, (; hash = "h", source = "", files = Dict("../x" => UInt8[])))
+            @test_throws ArgumentError NS._apply_deck_template!(io, d, (; hash = "h", source = "", settings = "",
+                                                                      files = Dict("../x" => UInt8[])))
         finally
             rm(d; recursive = true, force = true)
         end

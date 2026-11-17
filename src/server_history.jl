@@ -321,6 +321,9 @@ const _CONFIG_UI = (
      choices = String[], global_default = nothing, restart = false),
     (key = "slideratio", group = "Slides", label = "Slide aspect ratio", type = :enum, default = "16:9",
      choices = ["16:9", "16:10", "4:3"], global_default = nothing, restart = false),
+    # TOML text merged on the deck template's settings (deck_settings.jl). Shown as a text area.
+    (key = "decksettings", group = "Slides", label = "Deck settings (TOML)", type = :text, default = "",
+     choices = String[], global_default = nothing, restart = false),
     (key = "bibstyle", group = "Export", label = "Citation style", type = :enum, default = "ieee",
      choices = collect(_CITATION_STYLES), global_default = nothing, restart = false),
     (key = "series", group = "Publishing", label = "Series", type = :string, default = "",

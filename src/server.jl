@@ -68,9 +68,9 @@ struct SseClient
 end
 SseClient(n::Integer) = SseClient(Channel{String}(n), n, Threads.Atomic{Float64}(time()), Threads.Atomic{Bool}(false))
 
-# A deck template held by a notebook: the hash the worker reported, the `.typ` source and the other
-# files (relative POSIX name → bytes).
-const DeckTemplate = @NamedTuple{hash::String, source::String, files::Dict{String,Vector{UInt8}}}
+# A deck template held by a notebook: the hash the worker reported, the `.typ` source, the partial
+# deck-settings TOML text (`""` when none) and the other files (relative POSIX name → bytes).
+const DeckTemplate = @NamedTuple{hash::String, source::String, settings::String, files::Dict{String,Vector{UInt8}}}
 
 mutable struct LiveNotebook
     id::String                           # hub id (unique; used in /n/<id> + /api/<id>/…)
@@ -2164,22 +2164,26 @@ function _merge_manifest!(nb::LiveNotebook, manifest)
     fl === nothing || (lock(nb.lock) do
         _refresh_fences!(nb, Set{String}(String(f) for f in fl))
     end && (changed = true))
-    _refresh_deck_template!(nb, manifest)
+    _refresh_deck_template!(nb, manifest) && (changed = true)
     return changed
 end
 
 # The deck template that the notebook's loaded packages declare (`provide_deck_template!`), as
-# `(; hash, source, files)` with `files` a name → bytes dict, or `nothing`. It is not in the page state.
+# `(; hash, source, settings, files)` with `files` a name → bytes dict, or `nothing`. Only its deck
+# settings reach the page state (`deck_settings_css`).
 notebook_deck_template(nb::LiveNotebook) = lock(() -> nb.deck_template, nb.lock)
 
 # Keep the notebook's deck template in step with the manifest's `deck_template_hash`. The bytes are 1 to
 # 3 MB, so the kernel is asked for them only when the hash differs from the one held. A failed pull keeps
 # the template held, and the next drain tries again. Off `nb.lock`: the pull is a kernel round trip.
+# Returns true when the template changed, so that the page gets the new deck settings.
 function _refresh_deck_template!(nb::LiveNotebook, manifest)
     h = _manifest_field(manifest, :deck_template_hash)
     held = notebook_deck_template(nb)
     if h === nothing
-        held === nothing || lock(() -> (nb.deck_template = nothing), nb.lock)
+        held === nothing && return false
+        lock(() -> (nb.deck_template = nothing), nb.lock)
+        return true
     elseif held === nothing || held.hash != String(h)
         t = try
             ReportEngine.get_deck_template(nb.kernel, nb.report)
@@ -2187,9 +2191,11 @@ function _refresh_deck_template!(nb::LiveNotebook, manifest)
             ReportEngine._rlog("slate: deck template pull failed: $(first(sprint(showerror, e), 120))")
             nothing
         end
-        t === nothing || lock(() -> (nb.deck_template = t), nb.lock)
+        t === nothing && return false
+        lock(() -> (nb.deck_template = t), nb.lock)
+        return true
     end
-    return nothing
+    return false
 end
 
 # Pull the manifest before serving a page its full state, so a page load sees the front-end as the worker
