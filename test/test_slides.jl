@@ -173,7 +173,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test title("# Title ##").text == "Title"
     end
 
-    @testset "slides project: layout and title reach doc.typ" begin
+    @testset "slides project: layouts and titles reach doc.typ" begin
         src = """
         #%% md id=a layout=center
         ## Tagged
@@ -187,6 +187,9 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         #%% md id=c notes
         a note
 
+        #%% md id=s layout=section
+        ## Part one
+
         #%% md id=r bibliography
         @book{k, author = {A, B}, title = {T}, publisher = {P}, year = {2000}}
         """
@@ -194,11 +197,10 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         try
             doc = read(joinpath(dir, "doc.typ"), String)
             @test occursin(r"#slide\(layout: \"center\", title: heading\(level: 2,", doc)
+            @test occursin(r"#slide\(layout: \"section\", title: heading\(level: 2,", doc)
             @test occursin("#slide[\n", doc)                                  # untagged, untitled
             @test occursin("#slide(layout: \"references\")[", doc)
             @test occursin(r"#slide\(layout: \"notes\", n: 2\)\[", doc)      # slide 2 has no title
-            @test occursin("#let slide(body, layout: none, title: none, n: none)", doc)
-            @test occursin("#let fit(body)", doc) && occursin("#let SLIDE_W = 254mm", doc)
         finally
             rm(dir; recursive = true, force = true)
         end
@@ -209,25 +211,6 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         finally
             rm(dir; recursive = true, force = true)
         end
-    end
-
-    @testset "section and center slides reach doc.typ and the PDF compiles" begin
-        src = "#%% md id=a layout=section\n## Part one\n\n#%% md id=b layout=center\n## Middle\n\ntext\n"
-        dir = NS._build_slides_project(_mknb(src))
-        try
-            doc = read(joinpath(dir, "doc.typ"), String)
-            @test occursin(r"#slide\(layout: \"section\", title: heading\(level: 2,", doc)
-            @test occursin(r"#slide\(layout: \"center\", title: heading\(level: 2,", doc)
-        finally
-            rm(dir; recursive = true, force = true)
-        end
-        pdf = try
-            NS.export_pdf(_mknb(src); layout = "slides")
-        catch err
-            @info "section/center PDF compile skipped" err
-            nothing
-        end
-        @test pdf === nothing || length(pdf) > 1000
     end
 
     @testset "slides project: columns" begin
@@ -273,70 +256,21 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         dir = NS._build_slides_project(_mknb(src))
         try
             doc = read(joinpath(dir, "doc.typ"), String)
-            @test occursin("#let slidecols(widths, ..cols)", doc)
             @test occursin("#slidecols((40%, none,),", doc)
             @test occursin("#slidecols((none, none,),", doc)
             @test count("#slidecols((none, none,),", doc) == 2     # the `column=2` row and the equal group
             @test NS._column_width_typst("min-width=50%") == "none" && NS._column_width_typst(".column width=30") == "30%"
             md = join((read(joinpath(dir, f), String) for f in readdir(dir) if endswith(f, ".md")), "\n")
             @test occursin("kept text", md) && !occursin(":::", md)
-            # The columns start where the widths say (a 16:9 page is 254 mm wide with 16 mm margins;
-            # the gutter is 1.2 em of 19 pt text). Typst needs its packages, so it may be unavailable.
-            plain = try
-                NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
-            catch
-                nothing
-            end
-            if plain === nothing
-                @info "column position check skipped (typst unavailable)"
-            else
-                function xs(label)
-                    out = IOBuffer()
-                    query(exe) = run(pipeline(`$exe query --root $dir $(joinpath(dir, "doc.typ")) $label --field value`;
-                                              stdin = devnull, stdout = out, stderr = devnull))
-                    sys = Sys.which("typst")
-                    sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
-                    return [p["x"] for p in JSON.parse(String(take!(out)))]
-                end
-                left, row, gap = 16 * 72 / 25.4, 222 * 72 / 25.4, 1.2 * 19
-                @test xs("<colx>") ≈ [left, left + 0.4row + gap] atol = 1       # `width="40%"` and the rest
-                @test xs("<eqx>") ≈ [left, left + (row - gap) / 2 + gap] atol = 1   # equal columns
-            end
+            # The columns start where the widths say: on a 16:9 page 1 u is 720 pt / 1920, the margins
+            # are 121 u and the gutter is 56 u.
+            xs(label) = [p["x"] for p in NS._typst_query(joinpath(dir, "doc.typ"), label)]
+            u = 720 / 1920
+            left, row, gap = 121u, 720 - 242u, 56u
+            @test xs("<colx>") ≈ [left, left + 0.4row + gap] atol = 1       # `width="40%"` and the rest
+            @test xs("<eqx>") ≈ [left, left + (row - gap) / 2 + gap] atol = 1   # equal columns
         finally
             rm(dir; recursive = true, force = true)
-        end
-    end
-
-    @testset "a template slide shadowing the base one receives layout and title" begin
-        # Appended after the base preamble, `#let slide` replaces it; the deck pages then call it.
-        plain = try
-            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
-        catch
-            nothing
-        end
-        if plain === nothing
-            @info "shadowed slide check skipped (typst unavailable)"
-            @test true
-        else
-            src = "#%% md id=a layout=center\n## Tagged\n\ntext\n"
-            dir = NS._build_slides_project(_mknb(src))
-            try
-                doc = joinpath(dir, "doc.typ")
-                body = read(doc, String)
-                i = first(findfirst("#slide(", body))
-                shadow = "#let slide(body, layout: none, title: none, n: none) = page[#metadata((layout: layout, " *
-                         "has-title: title != none, level: title.level))<seen>#body]\n"
-                write(doc, body[1:i-1] * shadow * body[i:end])
-                out = IOBuffer()
-                query(exe) = run(pipeline(`$exe query --root $dir $doc "<seen>" --field value`;
-                                          stdin = devnull, stdout = out, stderr = devnull))
-                sys = Sys.which("typst")
-                sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
-                seen = only(JSON.parse(String(take!(out))))
-                @test seen["layout"] == "center" && seen["has-title"] && seen["level"] == 2
-            finally
-                rm(dir; recursive = true, force = true)
-            end
         end
     end
 
@@ -486,93 +420,50 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
     end
 
-    @testset "a slide taller than the page shrinks without overlapping its items" begin
-        # The fit-scaler must draw the body in a box as tall as the body. In a box as tall as the
-        # page, a body taller than the page breaks inside the box, and its last items share one y.
-        # The page must centre the scaled body, so the title stays below the top margin, and the
-        # title keeps its left alignment. `typst query` reads the page position of a marker placed
-        # in the title and after each item.
-        plain = try
-            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
-        catch
-            nothing
-        end
-        if plain === nothing
-            @info "tall slide layout check skipped (typst unavailable)"
-            @test true
-        else
-            mark = "<!--raw-typst #context { let p = here().position(); " *
-                   "[#metadata((page: p.page, x: p.x.pt(), y: p.y.pt())) <slideitem>] }-->"
-            items = join(("- item $i $mark" for i in 1:15), "\n")
-            dir = NS._build_slides_project(_mknb("#%% md id=s\n## Tall $mark\n\n$items\n"))
-            try
-                out = IOBuffer()
-                query(exe) = run(pipeline(`$exe query --root $dir $(joinpath(dir, "doc.typ")) "<slideitem>" --field value`;
-                                          stdin = devnull, stdout = out, stderr = devnull))
-                sys = Sys.which("typst")
-                sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
-                pos = JSON.parse(String(take!(out)))
-                ys = [p["y"] for p in pos]
-                @test length(pos) == 16
-                @test all(p -> p["page"] == 1, pos)               # the slide stays on one page
-                @test all(diff(ys) .> 0)                          # no two items share a line
-                @test ys[1] > 12 * 72 / 25.4                      # the title is below the top margin
-                @test pos[1]["x"] < 254 * 72 / 25.4 / 3           # the title stays at the left, not centred
-                @test ys[end] < 142.875 * 72 / 25.4               # the last item is inside the 16:9 page
-            finally
-                rm(dir; recursive = true, force = true)
-            end
-        end
-    end
+    @testset "the PDF deck fits each slide and records the fit" begin
+        # The fixture deck at 16:9 and at 4:3, with two slides added: a figure that shares a tall
+        # slide with text, and a portrait figure alone whose drawn height is measured. One
+        # `typst query` per ratio reads the fit records of `fit` (label `<slate>`).
+        fixture = read(joinpath(@__DIR__, "fixtures", "deck_fixture.jl"), String)
+        svg(w, h) = """<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h"><rect width="$w" height="$h" fill="#38c"/></svg>"""
+        extra = """
+        #slide(title: heading(level: 2)[A figure that shares the slide])[
+        Two lines of text above the figure make this slide taller than the page at full size, so
+        that the text and the figure share the shrink of the slide.
 
-    @testset "the figures of a slide share the page" begin
-        # Two figures under a title and text must both draw at a visible size, and the slide must
-        # stay inside the page margins. A portrait figure with a `width` must not grow taller than
-        # the page. `typst query` reads the page position of markers around the figures.
-        plain = try
-            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
-        catch
-            nothing
-        end
-        if plain === nothing
-            @info "slide figure layout check skipped (typst unavailable)"
-            @test true
-        else
-            dir = mktempdir()
+        #figureimg("wide.svg")
+        ]
+        #slide[#layout(sz => [#metadata(measure(block(width: sz.width, figureimg("tall.svg"))).height / SLIDE_H) <figcap>])]
+        """
+        function query(ratio)
+            dir = NS._build_slides_project(_mknb(fixture); ratio)
             try
-                write(joinpath(dir, "media.json"), "{}")
-                write(joinpath(dir, "fig.svg"), """<svg xmlns="http://www.w3.org/2000/svg" width="900" height="450"><rect width="900" height="450" fill="#38c"/></svg>""")
-                write(joinpath(dir, "tall.svg"), """<svg xmlns="http://www.w3.org/2000/svg" width="400" height="900"><rect width="400" height="900" fill="#3c8"/></svg>""")
-                mark = "#context { let p = here().position(); [#metadata((page: p.page, y: p.y.pt())) <slidefig>] }"
-                function positions(body)
-                    write(joinpath(dir, "doc.typ"), NS._typst_preamble_slides("T"; theme = "light") * "#slide[\n$body\n]\n")
-                    out = IOBuffer()
-                    query(exe) = run(pipeline(`$exe query --root $dir $(joinpath(dir, "doc.typ")) "<slidefig>" --field value`;
-                                              stdin = devnull, stdout = out, stderr = devnull))
-                    sys = Sys.which("typst")
-                    sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
-                    pos = JSON.parse(String(take!(out)))
-                    @test all(p -> p["page"] == 1, pos)
-                    [p["y"] for p in pos]
-                end
-                pageh, margin = 142.875 * 72 / 25.4, 12 * 72 / 25.4
-                ys = positions("$mark\n== Two figures\n\nSome text above the figures.\n\n$mark\n#figureimg(\"fig.svg\")\n$mark\n#figureimg(\"fig.svg\")\n$mark")
-                @test length(ys) == 4
-                @test all(diff(ys[2:end]) .> 0.2 * pageh)          # each figure is at least a fifth of the page high
-                @test ys[1] >= margin - 0.5 && ys[end] <= pageh - margin + 0.5   # the slide stays inside the margins
-                ys = positions("== Portrait\n\nSome text above the figure.\n\n#figureimg(\"tall.svg\", width: 100%)\n$mark")
-                @test ys[end] <= pageh - margin + 0.5                # the figure does not run off the page
-                # A figure beside a taller column of text does not set the height of the slide, so it
-                # keeps the width of its column: the text gives way, and both scale by one factor.
-                # At that width the figure is 0.30 of the text height; shrunk to `k = 0.25`, 0.16.
-                text = join(fill("The bracket carries the wheel and the tracker.", 15), " ")
-                ys = positions("== Beside\n\n#slidecols((50%, 50%), [$mark$text$mark], [$mark#figureimg(\"fig.svg\")$mark])")
-                @test length(ys) == 4
-                @test (ys[4] - ys[3]) / (ys[2] - ys[1]) > 0.25
+                write(joinpath(dir, "wide.svg"), svg(900, 450)); write(joinpath(dir, "tall.svg"), svg(300, 900))
+                doc = joinpath(dir, "doc.typ")
+                open(io -> print(io, extra), doc, "a")
+                vals = NS._typst_query(doc, "selector(<slate>).or(<figcap>)")
+                fits = filter(v -> v isa AbstractDict && v["kind"] == "fit", vals)
+                return Dict(r["slide"] => r for r in fits), only(filter(v -> v isa Number, vals)), fits
             finally
                 rm(dir; recursive = true, force = true)
             end
         end
+        tie(r) = (1 + r["s"]) / 2
+        fit, cap, recs = query("16:9")
+        @test sort(collect(keys(fit))) == 1:16              # one page per slide: no slide breaks
+        tall, atfloor, fig = fit[12], fit[13], fit[15]      # fixture "A tall slide…", "…at the floor"
+        @test 0.62 <= tall["s"] < 1 && tall["f"] >= tie(tall) && !tall["at_floor"]
+        @test atfloor["at_floor"] && atfloor["s"] == 0.62
+        @test count(r -> r["at_floor"], recs) == 1
+        @test 0.62 <= fig["s"] < 1 && tie(fig) <= fig["f"] < 1 && !fig["at_floor"]   # the figure shrinks less than the text
+        @test cap ≈ 0.7 atol = 0.01                          # a tall figure takes at most 0.7 of the slide height
+        warns = NS._fit_warnings(recs)                       # the export dialog's warnings
+        @test length(warns) == 1 && occursin("Slide 13 ", only(warns))
+        # At 4:3 the slide unit is 1/1440 of the page width, as on the live canvas: the body text has
+        # the same size in `u` as at 16:9.
+        fit43, cap43, _ = query("4:3")
+        @test fit43[2]["size"] ≈ fit[2]["size"] && fit43[2]["s"] == 1
+        @test cap43 ≈ 0.7 atol = 0.01
     end
 end
 
@@ -665,6 +556,29 @@ end
     for h in ("codeblock", "outblock", "valblock", "errblock", "figureimg", "notefig", "figcaption", "paramblock")
         @test occursin("#let $h(", pre)
     end
+end
+
+@testset "deck lengths: em for text, the slide unit for geometry" begin
+    # The fit changes the text size only, so a deck length that must follow the text is in em and a
+    # fixed one is in the slide unit (`--u` live, `u` in Typst), never in px, pt, mm or rem. This scans
+    # the notebook.css rules whose selector starts with `.deck-slide`, and the Typst slides preamble.
+    # It does not cover deck rules under other selectors (`.slide-title`, `.slide-body`,
+    # `.deck-sheet`, `.cell.role-title`), the notebook rules that reach into a slide, or template
+    # CSS: the parity run (`parity.mjs`) catches what leaks from those. Markdown image sizes that the
+    # author writes (`mdlen`) stay as written.
+    abslen = r"(?<![\w.])\d*\.?\d+(px|pt|mm|rem)\b"
+    css = replace(read(joinpath(@__DIR__, "..", "src", "assets", "notebook.css"), String), r"/\*.*?\*/"s => "")
+    rules = [m for m in eachmatch(r"(?:^|(?<=[{}]))\s*([^{}@]+?)\s*\{([^{}]*)\}", css) if startswith(m[1], ".deck-slide")]
+    @test length(rules) > 100                          # the scan reads every rule, not a few
+    bad = String[]
+    for m in rules, d in split(m[2], ';')
+        d = strip(d)
+        startswith(d, "--u:") && continue              # the slide unit itself
+        occursin(abslen, d) && push!(bad, "$(m[1]) { $d }")
+    end
+    @test isempty(bad)
+    pre = split(NS._typst_preamble_slides("T"), '\n')
+    @test isempty(filter(l -> occursin(abslen, l) && !occursin(r"#let (SLIDE_[WH]|mdlen)\b", l), pre))
 end
 
 @testset "the API reference covers the deck" begin

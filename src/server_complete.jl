@@ -2829,18 +2829,20 @@ function _make_router(h::Hub)
     end))
     HTTP.register!(router, "GET", "/api/{id}/export.pdf", req -> _withnb(h, req, nb -> begin
         qp = HTTP.queryparams(HTTP.URI(req.target))
-        pdf = try
+        pdf, warns = try
             # `layout=present`: the live deck printed in headless Chrome (server_deckshot.jl), not
             # Typst, in Slate palette `slatetheme` (the headless browser has no saved one).
             get(qp, "layout", "") == "present" ?
-                deck_pdf(deck_print_url(_hub_url(h), nb.id; theme = get(qp, "slatetheme", ""), steps = get(qp, "steps", ""))) :
-            export_pdf(nb; _pdf_export_opts(qp, nb)...)
+                (deck_pdf(deck_print_url(_hub_url(h), nb.id; theme = get(qp, "slatetheme", ""), steps = get(qp, "steps", ""))), String[]) :
+            _export_pdf_report(nb; _pdf_export_opts(qp, nb)...)
         catch e
             return HTTP.Response(500, "PDF export failed: " * sprint(showerror, e))
         end
         fn = _download_name(nb, ".pdf")
-        HTTP.Response(200, ["Content-Type" => "application/pdf",
-                            "Content-Disposition" => "attachment; filename=\"$fn\""], pdf)
+        headers = ["Content-Type" => "application/pdf", "Content-Disposition" => "attachment; filename=\"$fn\""]
+        # The export warnings (a JSON list of strings) for the export dialog; the body is the PDF.
+        isempty(warns) || push!(headers, "X-Slate-Warnings" => JSON.json(warns))
+        HTTP.Response(200, headers, pdf)
     end))
     # The editable Typst PROJECT (doc.typ + assets) as a .tar.gz, so the layout can be tweaked and
     # recompiled (`typst compile doc.typ`). Same options as export.pdf.

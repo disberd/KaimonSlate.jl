@@ -562,15 +562,24 @@ async function _runPdfExport() {
     // explicit source=1 whenever the picker is not `hidden`.
     const qs = '?theme=' + theme + '&charttheme=' + charttheme + (override ? '&override=1' : '') + '&style=' + style + '&columns=' + columns + '&body=' + body + '&code=' + code + (params ? '&params=1' : '')
       + (slides ? '&layout=slides' + (code !== 'hidden' ? '&source=1' : '') : '') + (notes ? '&notes=1' : '') + _outputsQS();
+    _pdfShowWarnings([]);
     const r = await fetch(_apipath('/api/export.pdf') + qs);
     if (!r.ok) { await alertDark('PDF export failed:\n' + (await r.text())); return; }
     _saveBlob(await r.blob(), '.pdf');
+    _pdfShowWarnings(JSON.parse(r.headers.get('X-Slate-Warnings') || '[]'));
     if (typst) {                                        // also fetch the editable Typst project bundle
       const tr = await fetch(_apipath('/api/export.typ') + qs);
       tr.ok ? _saveBlob(await tr.blob(), '.typ.tar.gz') : await alertDark('Typst bundle failed:\n' + (await tr.text()));
     }
   } catch (e) { await alertDark('PDF export failed: ' + e); }
   finally { hideLoading(); }
+}
+// The export warnings of the last PDF (the hub sends them in `X-Slate-Warnings`), for example a
+// slide that does not fit at the smallest text size. The PDF is written all the same.
+function _pdfShowWarnings(list) {
+  const ul = document.getElementById('pdfwarns');
+  ul.innerHTML = list.map(w => '<li>⚠ ' + _esc(w) + '</li>').join('');
+  document.getElementById('pdfwarnrow').style.display = list.length ? '' : 'none';
 }
 // Layout "as presented": the hub prints the live deck in headless Chrome, in the palette the Theme
 // picker resolves to. The Typst options do not apply.
@@ -625,7 +634,7 @@ function _exSyncRows() {
   }
   if (f === 'docs') _docsPrefill();
   // A write's log row is part of its format's rows, but has nothing to show until something is written.
-  [['appoutrow', 'appout'], ['docsoutrow', 'docsout']].forEach(([r, o]) => {
+  [['appoutrow', 'appout'], ['docsoutrow', 'docsout'], ['pdfwarnrow', 'pdfwarns']].forEach(([r, o]) => {
     const row = document.getElementById(r), out = document.getElementById(o);
     if (row && out && !out.textContent.trim()) row.style.display = 'none';
   });

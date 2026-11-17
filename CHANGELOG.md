@@ -12,6 +12,22 @@ were written when they went out. They are marked.
 
 ## [Unreleased]
 
+### Added
+
+- A package that a notebook loads can declare a Typst deck template with `provide_deck_template!`. The
+  worker manifest carries only a hash of the template. The hub keeps the template for each notebook and
+  asks the worker for the bytes only when the hash changes, so 1 to 3 MB of template does not cross the
+  gate on each run. A notebook that pins an older `SlateExtensionsBase` has no hash and no template, and
+  still gets every other manifest field. This needs a `SlateExtensionsBase` newer than 0.11.3.
+- The PDF deck export applies the deck template of the notebook. The template source goes after the
+  default Typst preamble, so a `#let slide` in it replaces the default one. The template files are
+  written into the Typst project directory, which is the `--root` of the compile. When the project
+  has a `fonts` directory, Typst gets `--font-path` for it. The Typst bundle export carries the same
+  files. To rebuild a deck with template fonts from an unpacked bundle, run
+  `typst compile --font-path fonts doc.typ`. A notebook without a template exports the same `doc.typ`
+  as before. The export pulls the extension manifest first, so a template whose source is a
+  `PkgAsset` exports as it is on disk now, with no run and no worker restart in between.
+
 ### Changed
 
 - The PDF deck now reads each slide's layout tag and title from the same slide model as the live
@@ -33,52 +49,43 @@ were written when they went out. They are marked.
   or `none` for each column, and the other arguments are the column bodies. A Typst preamble that is
   added after the default one can redefine `slidecols`. Other fenced divs, such as `::: step`, still
   print only their content.
-
-### Added
-
-- A package that a notebook loads can declare a Typst deck template with `provide_deck_template!`. The
-  worker manifest carries only a hash of the template. The hub keeps the template for each notebook and
-  asks the worker for the bytes only when the hash changes, so 1 to 3 MB of template does not cross the
-  gate on each run. A notebook that pins an older `SlateExtensionsBase` has no hash and no template, and
-  still gets every other manifest field. This needs a `SlateExtensionsBase` newer than 0.11.3.
-- The PDF deck export applies the deck template of the notebook. The template source goes after the
-  default Typst preamble, so a `#let slide` in it replaces the default one. The template files are
-  written into the Typst project directory, which is the `--root` of the compile. When the project
-  has a `fonts` directory, Typst gets `--font-path` for it. The Typst bundle export carries the same
-  files. To rebuild a deck with template fonts from an unpacked bundle, run
-  `typst compile --font-path fonts doc.typ`. A notebook without a template exports the same `doc.typ`
-  as before. The export pulls the extension manifest first, so a template whose source is a
-  `PkgAsset` exports as it is on disk now, with no run and no worker restart in between.
-
-### Fixed
-
-- The figures of a slide in the PDF deck share the page with the text, as on the live deck. The
-  figures shrink before the text does, so a slide with two or more figures stays inside the page.
-  Such a slide used to run off the top and bottom of the page.
-- A slide in the PDF deck that shrinks to fit stays centred on the page. Its title used to touch or
-  cross the top edge of the page, with empty space at the bottom.
-- A figure that a component sizes for print, such as a portrait card at full width, now fits the
-  slide in the PDF deck. It used to cover the whole slide and run off the page.
 - The live deck puts the heading a slide starts with in its own `.slide-title` element, above the
   slide body. A slide that starts with a heading of any depth has a title. The heading is not
   repeated in the body. The slide of a `title` cell has `data-role="title"`, so a stylesheet can
   match it with CSS only. The default look of the deck does not change.
-- A slide in the PDF deck that is too tall now sets its text smaller and wraps it again over the
-  full width, as the live deck does. The whole body used to scale down, which left a narrow block in
-  the middle of the page with empty margins at the sides, and made the figures smaller too.
+
+### Visible changes
+
+- The PDF deck fits a tall slide as the live deck does: it sets the text smaller and keeps the
+  geometry (margins, gaps, insets) at its size. The smallest text scale in the PDF is now 0.62, as on
+  the live deck; it was 0.5. A shrunk slide is centred at the height it is drawn at, so its title no
+  longer goes above the top margin. A slide that does not fit at 0.62 starts at the top of the page
+  and runs past its bottom.
 - When a slide is too tall, its text and its figures share the shrink, on the live deck and in the
-  PDF deck: a figure gives up height at half the rate of the text, so at text scale `s` it keeps at
-  least `(1 + s) / 2` of its full size. Only at the text's floor do the figures shrink further. On
-  the live deck this now applies to an image output and a markdown image too, as to a
-  `slide_figure`, and side-by-side figures count once. In the PDF deck, a centred markdown image
-  on its own line is a figure that `fit` sizes, as an image output is. A slide with a picture
-  beside text used to shrink its text to the floor while the picture kept its size.
-- On the live deck, a markdown output (for example a `Markdown.parse` value) is set at the body
-  size, as in the PDF deck, not at the smaller size of other outputs, and takes the paragraph and
-  list spacing of a markdown cell. A loose list (each item a paragraph) is spaced like a tight one.
-  A markdown cell and an output add no space above or below them: the gap between the cells of a
-  slide is the only space between them. The cell of a slide's heading is not drawn once the heading
-  is in the title, so the first block of a slide sits at the same place whatever cell it comes from.
+  PDF deck: at text scale `s` a figure keeps at least `(1 + s) / 2` of its full size. Only at the text
+  floor do the figures go down further, to 0.25. On the live deck, charts now shrink with the other
+  figures; they used to shrink to half their size before the text did.
+- One figure cap for every figure, charts included: 0.7 of the slide height, on the live deck and in
+  the PDF deck, at each slide ratio. It replaces 760 u for pictures and 0.82 of the slide height for
+  charts on the live deck, and 0.62 of the page body in the PDF deck. A chart on a slide that fits
+  at full size is about 15 % smaller.
+- On the live deck, the markdown output of a code cell (for example a `Markdown.parse` value) is set
+  at the body size, as in the PDF deck, not at 0.7 of it, and takes the paragraph and list spacing
+  of a markdown cell. A markdown cell and an output add no space above or below them: the gap
+  between the cells of a slide is the only space between them. A cell that held only the slide
+  heading is not drawn once the heading is in the slide title.
+- The export dialog shows a warning for each slide of a PDF deck that does not fit at the smallest
+  text size. The PDF is written all the same.
+- In the PDF deck, the slide unit `u` is 1/1920 of the page width at 16:9 and 16:10 and 1/1440 at
+  4:3, as on the live canvas, so a 4:3 PDF has the text size of the live 4:3 deck; it was 0.75 of
+  it. The deck preamble defines `u` and `SLIDE_H` next to `SLIDE_W`, and records the fit of each
+  slide as `(kind: "fit", slide, s, f, at_floor, size)` under the label `<slate>`. Code listings are
+  0.62 em of the body text, as on the live deck (they were 8.5 pt), and the `code` option scales
+  them. The column gap is 56 u, as on the live deck. Display math that is wider than its column is
+  set smaller down to 0.4 of its size, as on the live deck.
+
+### Fixed
+
 - `?deck=sheet`, `?deck=print` and `?deck=S.K` wait for the cells' images before they copy a slide.
   A markdown cell or an output with an image fills in only after the image decodes, so a capture
   taken at once showed the cell empty: a contact sheet with no figures and no markdown images.

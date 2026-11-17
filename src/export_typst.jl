@@ -316,29 +316,43 @@ end
 _slide_geom(ratio) = ratio == "4:3" ? ("254mm", "190.5mm") :
                      ratio == "16:10" ? ("254mm", "158.75mm") : ("254mm", "142.875mm")
 
+# The size of a code listing on a slide, in em of the body text. The base size is 0.62 em, as on the
+# live deck; the `code` option scales it as its point size scales the 8.5 pt of "small".
+_slide_code_size(code) =
+    string(round(0.62 * parse(Float64, chop(_code_size(code == "normal" ? "small" : code); tail = 2)) / 8.5; digits = 3), "em")
+
+# The fit parameters of a slide. `slides.js` holds the same numbers in `FIT`.
+const _FIT_TYPST = "(text-floor: 0.62, fig-floor: 0.25, fig-cap: 0.7, math-floor: 0.4)"
+
 # Preamble for the slides layout. Reuses the same block helpers as the article preamble but on a
-# landscape slide page with bigger type. It defines `SLIDE_W` (the page width), `#let fit(body)` (draws
-# its body vertically centered, auto-shrunk down to a 0.5× floor so a tall slide still fits),
-# `#let slidecols(widths, ..cols)` (a row of columns, see its comment) and
-# `#let slide(body, layout: none, title: none, n: none)`: one page per slide, the body inside `fit`.
-# `layout` is the slide's layout tag and `title` its heading (a `heading` element), both `none` when
-# unset; `n` is the slide number on a notes page. A template that is added after this preamble can
-# redefine `slide` or `slidecols` to draw each layout its own way. It must draw the body through
-# `fit`, because `fit` sizes the figures. Outside `fit`, a figure only fills the width of its column.
+# landscape slide page with bigger type. It defines `SLIDE_W` and `SLIDE_H` (the page size), `u` (the
+# slide unit: 1/1920 of the page width at 16:9 and 16:10, 1/1440 at 4:3, as the live canvas), `FIT`
+# (the fit parameters), `#let fit(body)` (see its comment), `#let slidecols(widths, ..cols)` (a row of
+# columns, see its comment) and `#let slide(body, layout: none, title: none, n: none)`: one page per
+# slide, the body inside `fit`. `layout` is the slide's layout tag and `title` its heading (a
+# `heading` element), both `none` when unset; `n` is the slide number on a notes page. A template that
+# is added after this preamble can redefine `slide` or `slidecols` to draw each layout its own way. It
+# must draw the body through `fit`, because `fit` sizes the figures and records the fit.
+# Lengths in the body follow the live deck: text sizes and spacing in `em` (they follow the text
+# scale of `fit`), geometry in `u` (fixed).
 function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "dark",
                                 ratio::AbstractString = "16:9", code::AbstractString = "small")
     pre = _typ_str(strip(replace(_MITEX_SHIMS, r"\s+" => " ")))
     p = _palette(theme)
-    csize = _code_size(code == "normal" ? "small" : code)   # listings are tighter on slides
     w, h = _slide_geom(ratio)
-    vmargin = "12mm"
+    W = first(deck_canvas(ratio))
     rawtheme = isempty(p.codetheme) ? "" : "\n    #set raw(theme: \"$(p.codetheme)\")"
     return """
     #import "@preview/cmarker:$(_CMARKER_VER)"
     #import "@preview/mitex:$(_MITEX_VER)": mitex, mi
+    #let SLIDE_W = $w
+    #let SLIDE_H = $h
+    #let u = SLIDE_W / $W
+    #let FIT = $_FIT_TYPST
     #set document(title: "$(_typ_str(title))")
-    #set page(width: $w, height: $h, margin: (x: 16mm, y: $vmargin), fill: $(p.page))
-    #set text(font: "New Computer Modern", size: 19pt, fill: $(p.text))$(rawtheme)
+    #set page(width: SLIDE_W, height: SLIDE_H, margin: (x: 121 * u, y: 91 * u), fill: $(p.page))
+    // 50.67 u is 19 pt on a 16:9 page.
+    #set text(font: "New Computer Modern", size: 50.67 * u, fill: $(p.text))$(rawtheme)
     #set par(justify: false, leading: 0.7em, spacing: 1.1em)
     #show heading: set text(fill: $(p.title))
     #show heading.where(level: 1): set text(size: 1.7em)
@@ -350,15 +364,15 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
     // tall, and LaTeX's own spacing tricks for them (struts, row gaps) don't survive mitex.
     #show math.mat: set math.mat(row-gap: 0.6em)
     #show math.equation.where(block: true): set par(leading: 1.1em)
-    // A display formula wider than its column is scaled down to fit (on screen it scrolls; on a
-    // page it would run into the margin). In a table cell, math sits at the start of the cell.
+    // A display formula wider than its column is set smaller until it fits, down to `FIT.math-floor`
+    // (on screen it would run off the slide). In a table cell, math sits at the start of the cell.
     #show math.equation.where(block: true): it => layout(size => {
       let w = measure(it).width
-      if w > size.width { scale(size.width / w * 100%, reflow: true, it) } else { it }
+      if w > size.width { scale(calc.max(FIT.math-floor, size.width / w) * 100%, reflow: true, it) } else { it }
     })
     #show table.cell: it => { show math.equation.where(block: true): set align(left); it }
     // Markdown tables take the theme's thin rule colour rather than cmarker's heavy black lines.
-    #set table(stroke: 0.5pt + $(p.rule), inset: (x: 7pt, y: 5pt))
+    #set table(stroke: 1.33 * u + $(p.rule), inset: (x: 0.37em, y: 0.26em))
     // Author-embedded markdown images stage into the doc root; resolve them relative to THIS file
     // (not cmarker's package dir, where its built-in image() looks) — passed to cmarker as scope.image.
     // `media.json` carries any `{width=…}` block the author wrote (see `_stage_typst_md_media`), as
@@ -382,73 +396,85 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
     $(_CITE_SHOW)
     #let metablock(title, subtitle, byline, abstract) = align(center + horizon)[
       #text(size: 2.4em, weight: "bold", fill: $(p.title))[#title]
-      #if subtitle != none { v(8pt); text(size: 1.4em, fill: $(p.title))[#subtitle] }
-      #if byline != none { v(14pt); text(size: 0.9em, fill: $(p.parlabel))[#byline] }
-      #if abstract != none { v(16pt); block(width: 80%, text(size: 0.8em, style: "italic")[#abstract]) }
+      #if subtitle != none { v(0.42em); text(size: 1.4em, fill: $(p.title))[#subtitle] }
+      #if byline != none { v(0.74em); text(size: 0.9em, fill: $(p.parlabel))[#byline] }
+      #if abstract != none { v(0.84em); block(width: 80%, text(size: 0.8em, style: "italic")[#abstract]) }
     ]
-    #let codeblock(s) = block(width: 100%, fill: $(p.codebg), inset: 8pt, radius: 4pt, text(size: $(csize), raw(block: true, lang: "julia", s)))
-    #let outblock(s) = block(width: 100%, inset: 7pt, fill: $(p.outbg), radius: 3pt, text(size: 0.7em, fill: $(p.outfg), raw(s)))
-    #let valblock(s) = block(width: 100%, inset: 7pt, fill: $(p.valbg), radius: 3pt, text(size: 0.7em, fill: $(p.valfg), raw(s)))
-    #let errblock(s) = block(width: 100%, inset: 7pt, fill: $(p.errbg), radius: 3pt, text(size: 0.7em, fill: $(p.errfg), raw(s)))
-    // A figure is a marker that `fit` sizes for the slide; see `fit`. `width` is an upper bound on its
-    // drawn width: a ratio of the column, or a length. Outside `fit` the figure takes that width, or
-    // the width of its column when `width` is `none`.
+    #let codeblock(s) = block(width: 100%, fill: $(p.codebg), inset: 21 * u, radius: 11 * u, text(size: $(_slide_code_size(code)), raw(block: true, lang: "julia", s)))
+    #let outblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.outbg), radius: 8 * u, text(size: 0.7em, fill: $(p.outfg), raw(s)))
+    #let valblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.valbg), radius: 8 * u, text(size: 0.7em, fill: $(p.valfg), raw(s)))
+    #let errblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.errbg), radius: 8 * u, text(size: 0.7em, fill: $(p.errfg), raw(s)))
+    // A figure is a marker that `fit` sizes for the slide. `width` is an upper bound on its drawn
+    // width: a ratio of the column, or a length. At figure scale `f`, a figure is `f` of the size that
+    // fills its column (or its `width`), and at most `FIT.fig-cap` of the slide height. Outside `fit`
+    // it is drawn at `f = 1`.
     #let figureimg(p, width: none) = [#metadata((p: p, w: width)) <slate-fig>]
-    #show <slate-fig>: it => align(center, image(it.value.p, width: if it.value.w == none { 100% } else { it.value.w }))
-    #let notefig(s) = block(width: 100%, inset: 7pt, text(size: 0.7em, style: "italic", fill: $(p.parlabel), s))
-    #let figcaption(lbl, body) = block(width: 100%, inset: (x: 24pt, y: 4pt), text(size: 0.7em, fill: $(p.parlabel))[#text(weight: "bold")[#lbl.] #body])
-    #let paramblock(items) = block(width: 100%, inset: (x: 8pt, y: 5pt), fill: $(p.parbg), radius: 3pt, stroke: 0.5pt + $(p.parborder),
-      text(size: 0.7em)[#text(fill: $(p.parlabel), weight: "bold")[parameters] #h(6pt) #items.map(it => [#raw(it.at(0)) = #text(weight: "bold", it.at(1))]).join([#h(10pt)])])
-    // `SLIDE_W` is the slide page width. `fit(body)` draws `body` at full content width so that it
-    // fits the page, as the live deck does:
-    // 1. At full size, each figure takes the width of its column (or its `width`, if that is
-    //    smaller), and at most the page height. `f` scales every figure down from its full size.
-    // 2. `s` scales the text down, as the live deck sets a smaller font: the body is laid out at
-    //    width `sz.width / s` and drawn scaled by `s`, so it keeps the full width and its text wraps
-    //    again. `draw` divides the figure sizes by `s`, so `s` does not change the drawn size of a
-    //    figure.
-    // The figures give up height at half the rate of the text: at text scale `s`, `f` is at least
-    // `(1 + s) / 2`. `fit` takes the largest `s` (floor 0.5) that fits, then the largest `f`. At the
-    // floor of `s`, `f` can go down to 0.25. A figure beside a taller column of text does not set the
-    // height of the slide, so a smaller `f` gains nothing and it keeps `f = 1`.
-    // The body is drawn in a box as tall as its measured height, so a tall body does not break
-    // inside the box.
+    #let drawfig(v, f) = layout(c => {
+      let n = measure(image(v.p))
+      let cw = if v.w == none { c.width } else if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) }
+      align(center, image(v.p, height: calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))))
+    })
+    #show <slate-fig>: it => drawfig(it.value, 1)
+    #let notefig(s) = block(width: 100%, inset: 19 * u, text(size: 0.7em, style: "italic", fill: $(p.parlabel), s))
+    #let figcaption(lbl, body) = block(width: 100%, inset: (x: 64 * u, y: 11 * u), text(size: 0.7em, fill: $(p.parlabel))[#text(weight: "bold")[#lbl.] #body])
+    #let paramblock(items) = block(width: 100%, inset: (x: 21 * u, y: 13 * u), fill: $(p.parbg), radius: 8 * u, stroke: 1.33 * u + $(p.parborder),
+      text(size: 0.7em)[#text(fill: $(p.parlabel), weight: "bold")[parameters] #h(0.45em) #items.map(it => [#raw(it.at(0)) = #text(weight: "bold", it.at(1))]).join([#h(0.75em)])])
+    // `fit(body)` draws `body` at the full content width so that it fits the page, as the live deck
+    // does (`slides.js` `_fitSearch`). It changes only the font size: text scale `s` sets
+    // `text(size: s * 1em)`, so every em length follows the text and every `u` length stays fixed.
+    // Figure scale `f` sizes the figures (see `drawfig`); all figures share one `f`.
+    // 1. Try `s = 1`, `f = 1`.
+    // 2. Bisect `s` over [`FIT.text-floor`, 1] in 6 steps, each at `f = (1 + s) / 2`: the figures
+    //    give up height at half the rate of the text.
+    // 3. At that `s`, take the largest `f` in [(1 + s) / 2, 1].
+    // 4. When the slide does not fit at the text floor, keep the floor and take `f` down to
+    //    `FIT.fig-floor`. When it does not fit there either, the slide is at the floor: it is drawn
+    //    from the top and runs past the page bottom. Its figures keep `f = 1` if a smaller `f` gains
+    //    no height (a figure beside a taller column of text).
+    // Each slide records `(kind: "fit", slide, s, f, at_floor, size)` under the label `<slate>`;
+    // `slide` is the page number and `size` the body text size at `s = 1`, in `u`.
     // Typst cannot measure a cite() in isolation ("cannot format citation in isolation", it needs
     // document context to resolve), so the MEASURED copy renders citation sentinels as a fixed
     // stand-in of comparable width; the real body still renders true citations.
-    #let SLIDE_W = $w
     #let fit(body) = layout(sz => {
-      let draw(f, s) = {
-        show <slate-fig>: it => layout(c => {
-          let (p, w) = (it.value.p, it.value.w)
-          let n = measure(image(p))
-          let cw = if w == none { c.width } else if type(w) == ratio { c.width * w } else { calc.min(c.width, w / s) }
-          align(center, image(p, height: calc.max(1pt, f * calc.min(sz.height / s, cw * (n.height / n.width)))))
-        })
+      let draw(s, f) = {
+        set text(size: s * 1em)
+        show <slate-fig>: it => drawfig(it.value, f)
         body
       }
-      let tall(f, s) = measure(box(width: sz.width / s, { show regex("§c§[^§]*§[^§]+§[^§]*§"): it => [[0]]; draw(f, s) })).height
-      let fits(f, s) = s * tall(f, s) <= sz.height
+      let tall(s, f) = measure(block(width: sz.width, { show regex("§c§[^§]*§[^§]+§[^§]*§"): it => [[0]]; draw(s, f) })).height
+      let fits(s, f) = tall(s, f) <= sz.height
+      let tie(s) = (1 + s) / 2
       // The largest `f` in [lo, 1] that fits at text scale `s`, or `lo` when none does.
-      let best-f(s, lo) = if fits(1.0, s) { 1.0 } else {
+      let best-f(s, lo) = if fits(s, 1.0) { 1.0 } else {
         let (a, b) = (lo, 1.0)
-        for _ in range(6) { let m = (a + b) / 2; if fits(m, s) { a = m } else { b = m } }
+        for _ in range(6) { let m = (a + b) / 2; if fits(s, m) { a = m } else { b = m } }
         a
       }
-      let (s, f) = if fits(1.0, 1.0) { (1.0, 1.0) } else if not fits(0.75, 0.5) { (0.5, best-f(0.5, 0.25)) } else {
-        let (lo, hi) = (0.5, 1.0)
-        for _ in range(6) { let m = (lo + hi) / 2; if fits((1 + m) / 2, m) { lo = m } else { hi = m } }
-        (lo, best-f(lo, (1 + lo) / 2))
+      let lo = FIT.text-floor
+      let (s, f, at-floor) = if fits(1.0, 1.0) { (1.0, 1.0, false) } else if not fits(lo, tie(lo)) {
+        let f = best-f(lo, FIT.fig-floor)
+        if fits(lo, f) { (lo, f, false) } else if tall(lo, f) < tall(lo, 1.0) - u { (lo, f, true) } else { (lo, 1.0, true) }
+      } else {
+        let hi = 1.0
+        for _ in range(6) { let m = (lo + hi) / 2; if fits(m, tie(m)) { lo = m } else { hi = m } }
+        (lo, best-f(lo, tie(lo)), false)
       }
-      scale(origin: top + left, x: s * 100%, y: s * 100%, reflow: true, box(width: sz.width / s, height: tall(f, s), draw(f, s)))
+      context [#metadata((kind: "fit", slide: here().page(), s: s, f: f, at_floor: at-floor, size: text.size / u)) <slate>]
+      // A slide at the floor is taller than the page: a box as tall as the body keeps its items apart
+      // (in a shorter one they break and pile up at its end), and a block as tall as the page puts its
+      // top at the top of the page.
+      if at-floor { block(height: sz.height, align(top, box(width: sz.width, height: tall(s, f), draw(s, f)))) }
+      else { block(width: sz.width, breakable: false, draw(s, f)) }
     })
     // Side-by-side columns, top aligned. `widths` holds one entry per column: a ratio or a length, or
     // `none` for a column that shares the rest equally. The other arguments are the column bodies.
     // Ratios that fill the row or more shrink in proportion, as the flex columns of the live deck do.
+    // The gap is 56 u, as on the live deck.
     #let slidecols(widths, ..cols) = {
       let shrink = widths.all(w => type(w) == ratio) and widths.map(w => w / 1%).sum() >= 100
       grid(columns: widths.map(w => if w == none { 1fr } else if shrink { w / 1% * 1fr } else { w }),
-        column-gutter: 1.2em, align: top, ..cols.pos())
+        column-gutter: 56 * u, align: top, ..cols.pos())
     }
     // One slide = one page, vertically centered. The title goes at the top of the body, inside `fit`;
     // a notes page gets a "Notes · slide N" label in its place. Two layouts follow the live deck:
@@ -456,11 +482,11 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
     // with a dimmed level-3 heading.
     #let slide(body, layout: none, title: none, n: none) = page[
       #align(horizon)[
-        #pad(left: if layout == "section" { 8mm } else { 0mm })[
+        #pad(left: (if layout == "section" { 30 } else { 0 }) * u)[
           #fit({
             set align(center) if layout == "center"
             show heading.where(level: 3): it => if layout == "section" { text(fill: $(p.text).transparentize(40%), it) } else { it }
-            if layout == "notes" { text(fill: luma(130))[Notes · slide #n]; v(6pt) } else if title != none {
+            if layout == "notes" { text(fill: luma(130))[Notes · slide #n]; v(0.32em) } else if title != none {
               if layout == "section" { text(size: 1.6em, title) } else { title }
             }
             body
@@ -1215,24 +1241,26 @@ function _bind_text(b)::String
     return v isa AbstractVector ? join(map(label, v), ", ") : label(v)
 end
 
-# Compile a .typ to PDF, preferring a system `typst`, else the bundled Typst_jll. `--root`
-# is the project dir so read()/image() of the per-cell aux files resolve (Typst sandboxes IO).
-# A `fonts` subdirectory of it (a deck template may ship fonts there) is added as a font path.
+# Run the Typst command `sub` (`compile`, `query`) on a .typ, preferring a system `typst`, else the
+# bundled Typst_jll. `--root` is the project dir so read()/image() of the per-cell aux files resolve
+# (Typst sandboxes IO). A `fonts` subdirectory of it (a deck template may ship fonts there) is added
+# as a font path. `rest` follows the input file; the command's stdout goes to `out`.
 # Every stream is given explicitly: a detached host process can have its stdin/stdout closed, and
 # a child that inherits a closed descriptor fails to spawn (EBADF).
-function _typst_compile(typ::String, pdf::String)
+function _typst_run(sub::String, typ::String, rest::Vector{String}; out::Union{IO,Nothing} = nothing)
     root = dirname(typ)
     fonts = joinpath(root, "fonts")
     fontflags = isdir(fonts) ? ["--font-path", fonts] : String[]
     sys = Sys.which("typst")
     err = IOBuffer()
-    compile(exe) = run(pipeline(`$exe compile --root $root $fontflags $typ $pdf`; stdin = devnull, stdout = err, stderr = err))
+    go(exe) = run(pipeline(`$exe $sub --root $root $fontflags $typ $rest`; stdin = devnull,
+                           stdout = something(out, err), stderr = err))
     try
         if sys !== nothing
-            compile(sys)
+            go(sys)
         else
             Typst_jll.typst() do exe
-                compile(exe)
+                go(exe)
             end
         end
     catch e
@@ -1240,10 +1268,24 @@ function _typst_compile(typ::String, pdf::String)
         # (the source line + reason) so an export failure is debuggable instead of opaque.
         msg = strip(String(take!(err)))
         isempty(msg) && rethrow()
-        error("typst compile failed:\n" * first(msg, 4000))
+        error("typst $sub failed:\n" * first(msg, 4000))
     end
     return
 end
+
+_typst_compile(typ::String, pdf::String) = _typst_run("compile", typ, [pdf])
+
+# The values of the metadata elements that `selector` (for example "<slate>") finds in the document.
+# `typst query` compiles the document again.
+function _typst_query(typ::String, selector::AbstractString)
+    out = IOBuffer()
+    _typst_run("query", typ, [String(selector), "--field", "value"]; out)
+    return JSON.parse(String(take!(out)))
+end
+
+# An export warning for each slide that the slides preamble `fit` records at the floor.
+_fit_warnings(records) = ["Slide $(r["slide"]) does not fit at the smallest text size: its end runs past the page bottom."
+                          for r in records if r isa AbstractDict && get(r, "kind", "") == "fit" && get(r, "at_floor", false) === true]
 
 """
     export_pdf(nb; include_source=true, style="article", columns=1,
@@ -1263,12 +1305,16 @@ Document metadata is authored as role-tagged cells (`#%% md id=… title` / `abs
 `bibliography`): the title/abstract are hoisted into an academic title block. With no `title`
 cell the document title falls back to the first markdown H1 (then the notebook filename).
 """
-function export_pdf(nb::LiveNotebook; kwargs...)
+export_pdf(nb::LiveNotebook; kwargs...) = first(_export_pdf_report(nb; kwargs...))
+
+# `export_pdf` and the export warnings of the PDF: the slides at the fit floor of a slides layout.
+function _export_pdf_report(nb::LiveNotebook; kwargs...)
     dir = _build_typst_project(nb; kwargs...)
     try
         typ = joinpath(dir, "doc.typ"); pdf = joinpath(dir, "out.pdf")
         _typst_compile(typ, pdf)
-        return read(pdf)
+        warns = get(kwargs, :layout, "") == "slides" ? _fit_warnings(_typst_query(typ, "<slate>")) : String[]
+        return read(pdf), warns
     finally
         rm(dir; recursive = true, force = true)
     end

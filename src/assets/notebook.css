@@ -3142,9 +3142,10 @@ body.presenting { overflow: hidden; }
    below the heading and above the next block collapsed into one. */
 .slide-title.md { padding-bottom: 0; }
 .deck-slide .slide-title.md.role-title { padding-bottom: 0; }
+.slide-title + .slide-body > .cell:first-child .md { padding-top: 0; }
 .slide-title + .slide-body > .cell:first-child .md > :first-child,
 .slide-title + .slide-body > .cell:first-child .md > :first-child > :first-child { margin-top: 0; }
-.slide-title.role-title + .slide-body > .cell:first-child .md > :is(h2, h3):first-child { margin-top: 4px; }
+.slide-title.role-title + .slide-body > .cell:first-child .md > :is(h2, h3):first-child { margin-top: .08em; }
 .slide-body { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: flex-start;
   gap: calc(var(--u) * 18); overflow: hidden; }
 .slide-body.scroll { overflow-y: auto; }
@@ -3210,17 +3211,18 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide .output { max-height: none !important; font-size: .7em; }
 /* A markdown output is prose: body size, as in the PDF deck. */
 .deck-slide .output:has(> .dispwrap > .disp > .markdown) { font-size: 1em; }
+/* A cell that held only the slide's heading is empty once the heading is in `.slide-title`. */
+.deck-slide .slide-body > .cell.md:not(:has(> .md > *)) { display: none; }
 .deck-slide .output > .out, .deck-slide .output > .val, .deck-slide .output > .dispwrap { border-top: none; }
 /* The gap between the cells of a slide is the body's `gap`: an output adds no space above or below. */
 .deck-slide .output > .dispwrap { padding-block: 0; }
-/* A cell that held only the slide's heading is empty once the heading is in `.slide-title`. */
-.deck-slide .slide-body > .cell.md:not(:has(> .md > *)) { display: none; }
 .deck-slide .cell > .output, .deck-slide .cell > .echarts, .deck-slide .cell > .tables,
 .deck-slide .cell > .controls, .deck-slide .cell > .anim { border: none !important; }
+/* `--figcap` is the figure cap (a share of the slide height, slides.js `FIT`); `--fitw` is the width
+   the fit pass (slides.js `_fitBody`) gives a picture so that the slide fits. */
 .deck-slide .output img, .deck-slide .md img, .deck-slide .md video {
-  max-height: calc(var(--u) * 760); height: auto; border-radius: calc(var(--u) * 10); }
-/* `--fitw` is the width the fit pass (slides.js `_fitFigures`) gives a picture so that the slide fits. */
-.deck-slide :is(.output, .md) :is(img, video) { max-width: min(100%, var(--fitw, 100%)) !important; }
+  max-height: var(--figcap); height: auto; border-radius: calc(var(--u) * 10); }
+.deck-slide :is(.output, .md, .snap) :is(img, video) { max-width: min(100%, var(--fitw, 100%)) !important; }
 
 /* Typography: one scale, in `em` of the body size, so `--shrink` scales all of it together. A markdown
    output (`.markdown`) is prose and takes the same rhythm as a markdown cell. The body's `gap` is the
@@ -3252,7 +3254,7 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide .md h2 { font-size: 1.85em; font-weight: 750; }
 .deck-slide .md h3 { font-size: 1.2em; font-weight: 650; color: var(--deck-accent); }
 .deck-slide .md h2::after { content: ""; display: block; width: 2.2em; height: calc(var(--u) * 6); margin-top: .32em;
-  border-radius: 99px; background: linear-gradient(90deg, var(--deck-accent), var(--deck-accent2)); }
+  border-radius: calc(var(--u) * 99); background: linear-gradient(90deg, var(--deck-accent), var(--deck-accent2)); }
 .deck-slide .md strong { color: var(--deck-strong); }
 .deck-slide .md code { font-size: .85em; }
 .deck-slide .md pre { font-size: .62em; }
@@ -3311,7 +3313,7 @@ body.zen #nb .md .step, body.zen #nb .md .incremental { box-shadow: none; paddin
 .deck-slide.bg-media, .deck-slide.bg-preset:not(.bgp-paper) {
   --deck-fg: #e9ebf3; --deck-strong: #fff; --deck-dim: #aab0c6; --deck-accent: #8ab4ff; --deck-accent2: #d0a2ff; }
 .deck-slide.bgp-paper { --deck-fg: #2a2724; --deck-strong: #111; --deck-dim: #6d665c; --deck-accent: #b4532a; --deck-accent2: #d08a3a; }
-.deck-slide.bg-media .md { text-shadow: 0 1px calc(var(--u) * 14) #0009; }
+.deck-slide.bg-media .md { text-shadow: 0 var(--u) calc(var(--u) * 14) #0009; }
 
 /* Builds. A step keeps its space while hidden, so the slide does not reflow as it builds.
    An entering step starts from `--step-from` (each effect sets only that) and settles to its place.
@@ -3394,7 +3396,7 @@ body.zen #nb .md .step, body.zen #nb .md .incremental { box-shadow: none; paddin
 .deck-slide .slidefig > .sf-layer.step.on:has(~ .sf-layer.on) {
   opacity: 0; visibility: hidden; transition: opacity .2s ease .5s, visibility 0s linear .7s; }
 .deck-slide .slidefig > .sf-base { transition: opacity .2s ease; }
-.deck-slide .slidefig { max-width: min(100%, calc(var(--u) * 760 * var(--sf-ar)), var(--fitw, 100%)) !important; }
+.deck-slide .slidefig { max-width: min(100%, calc(var(--figcap) * var(--sf-ar)), var(--fitw, 100%)) !important; }
 .deck-slide .slidefig > .sf-layer.step { transition-duration: .55s; }
 /* `::: derive`: equations stacked in one place, one shown; stepping turns it into the next. */
 .deck-slide .derive { display: grid; justify-items: center; }
@@ -3512,7 +3514,7 @@ body.is-presenter > .page { position: absolute !important; left: -20000px; top: 
 .deck-preview, .deck-preview * { transition: none !important; animation: none !important; }
 .deck-preview { view-transition-name: none; }
 .deck-preview .snap { width: 100% !important; height: auto !important; }
-.deck-preview .snap img { display: block; width: 100%; height: auto; max-height: calc(var(--u) * 700); object-fit: contain; }
+.deck-preview .snap img { display: block; width: 100%; height: auto; max-height: var(--figcap); object-fit: contain; }
 .pp-left .pp-cur { width: 100%; aspect-ratio: 16 / 9; }
 .pp-side .pp-next { width: 100%; aspect-ratio: 16 / 9; flex: none; opacity: .9; }
 .pp-pace { font-size: .9rem; color: var(--dim); min-height: 1.2em; font-variant-numeric: tabular-nums; }
@@ -3544,9 +3546,12 @@ body.is-presenter > .page { position: absolute !important; left: -20000px; top: 
 /* ── Document-metadata role cells (title / abstract / bibliography) ─────────────
    Authored as ordinary cells in natural flow; styled in place so what you see is what
    exports produce. The `.md` body holds rendered markdown. Reuses theme vars. */
-.cell.role-title .md, .deck-slide .slide-title.role-title { text-align: center; padding: 6px 0 2px; }
-.cell.role-title .md h1, .deck-slide .slide-title.role-title h1 { font-size: 2rem; margin: 0; color: var(--strong); }
-.cell.role-title .md h2, .cell.role-title .md h3, .deck-slide .slide-title.role-title :is(h2, h3) { font-weight: 400; color: var(--dim); margin: 4px 0 0; }
+.cell.role-title .md { text-align: center; padding: 6px 0 2px; }
+.cell.role-title .md h1 { font-size: 2rem; margin: 0; color: var(--strong); }
+.cell.role-title .md h2, .cell.role-title .md h3 { font-weight: 400; color: var(--dim); margin: 4px 0 0; }
+.deck-slide .slide-title.role-title { text-align: center; padding: .18em 0 .06em; }
+.deck-slide .slide-title.role-title h1 { font-size: .94em; margin: 0; color: var(--strong); }
+.deck-slide .slide-title.role-title :is(h2, h3) { font-weight: 400; color: var(--dim); margin: .12em 0 0; }
 .cell.role-abstract .md { position: relative; margin: 2px 0 2px 14px; padding: 8px 14px;
   border-left: 3px solid var(--accent); background: var(--ovl); border-radius: 0 8px 8px 0;
   font-size: .94em; font-style: italic; color: var(--text); }
