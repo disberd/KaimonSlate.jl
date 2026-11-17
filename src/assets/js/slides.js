@@ -1309,6 +1309,8 @@
     deck.dataset.style = _deckStyle();
     _mountSlide(D.idx);
     if (window._syncChartPalette) window._syncChartPalette();   // the charts take the deck's figure palette
+    // The deck font can come in after the first fit (`font-display: swap`): fit again once it is in.
+    document.fonts.ready.then(() => { if (D.open) _relayout(); });
     _emit('enter');
     _broadcast();
   }
