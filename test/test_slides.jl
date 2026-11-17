@@ -460,18 +460,11 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         todo_live = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
                      "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
                      "code.fill", "code.font", "key-message.bar-color", "key-message.bar-width", "key-message.fill",
-                     "key-message.pad-x", "key-message.pad-y", "key-message.text-color", "rhythm.after-table",
-                     "rhythm.heading-above", "rhythm.nested-list", "table.body-pad-y", "table.full-width",
-                     "table.header-color", "table.header-fill", "table.header-pad-y", "table.line-height", "table.pad-x",
-                     "table.rule-color", "table.stripe-fill", "table.text-size")
+                     "key-message.pad-x", "key-message.pad-y", "key-message.text-color")
         todo_typst = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
                       "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
-                      "figures.radius", "heading.h1", "heading.h2", "heading.h3", "key-message.bar-color",
-                      "key-message.bar-width", "key-message.fill", "key-message.pad-x", "key-message.pad-y",
-                      "key-message.text-color", "rhythm.after-table", "rhythm.cell-gap", "rhythm.heading-above",
-                      "rhythm.heading-below", "rhythm.nested-list", "roles.accent2", "table.full-width",
-                      "table.header-color", "table.line-height", "text.line-height", "text.list-indent",
-                      "text.list-item-after", "text.paragraph-after")
+                      "figures.radius", "key-message.bar-color", "key-message.bar-width", "key-message.fill",
+                      "key-message.pad-x", "key-message.pad-y", "key-message.text-color")
         keys_ = ["$g.$k" for (g, d) in NS.deck_settings("", "").values for (k, v) in d if g != "palette" && !(v isa AbstractDict)]
         @test length(keys_) > 50
         reads_live(key) = occursin(Regex(NS._deck_css_name(split(key, '.')...) * "(?![\\w-])"), live)
