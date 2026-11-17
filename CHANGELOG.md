@@ -70,8 +70,10 @@ were written when they went out. They are marked.
   charts on the live deck, and 0.62 of the page body in the PDF deck. A chart on a slide that fits
   at full size is about 15 % smaller.
 - On the live deck, the markdown output of a code cell (for example a `Markdown.parse` value) is set
-  at the body size, as in the PDF deck, not at 0.7 of it. A cell that held only the slide heading is
-  not drawn once the heading is in the slide title.
+  at the body size, as in the PDF deck, not at 0.7 of it, and takes the paragraph and list spacing
+  of a markdown cell. A markdown cell and an output add no space above or below them: the gap
+  between the cells of a slide is the only space between them. A cell that held only the slide
+  heading is not drawn once the heading is in the slide title.
 - The export dialog shows a warning for each slide of a PDF deck that does not fit at the smallest
   text size. The PDF is written all the same.
 - In the PDF deck, the slide unit `u` is 1/1920 of the page width at 16:9 and 16:10 and 1/1440 at
