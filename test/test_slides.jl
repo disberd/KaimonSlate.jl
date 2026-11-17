@@ -343,9 +343,10 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test isempty(NS.deck_settings("[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\nstrong = \"#003247\"\n" *
                                        "dim = \"#8197a6\"\n", "").warnings)
 
-        # Text that is not TOML: one warning, and the layer is not used.
+        # Text that is not TOML: one warning that gives the line and the reason, and the layer is not used.
         r = NS.deck_settings("[text\n", "")
         @test length(r.warnings) == 1 && r.values == base.values
+        @test occursin(r"\(line \d+: \S", r.warnings[1])
 
         # An admonition category takes the default for the keys it does not set; any word is a category.
         r = NS.deck_settings("[admonition.aside]\naccent = \"#123456\"\n", "")
@@ -353,6 +354,52 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         d = NS.deck_settings_dict(r.values; palette = "daylight")
         @test d["admonition"]["aside"]["accent"] == "#123456"
         @test d["admonition"]["aside"]["radius"] == d["admonition"]["radius"]
+
+        # A category with the name of a default key: a warning, and the notebook page still loads.
+        wpath(r, p) = count(w -> occursin("`$p`", w), r.warnings)
+        r = NS.deck_settings("", "[admonition.fill]\naccent = \"#ffffff\"\n")
+        @test wpath(r, "admonition.fill") == 1 && r.values == base.values
+        nb = _mknb("#%% md id=a\n## A\n")
+        nb.report.meta["decksettings"] = "[admonition.fill]\naccent = \"#ffffff\"\n"
+        @test NS.state_json(nb)["deckCss"] isa String
+
+        # A number out of its range: a warning, and the value below stays. A large number never reaches
+        # the CSS or the Typst text.
+        for (g, k, v) in (("text", "size", "\"100000000000000000000u\""), ("text", "size", "\"0u\""),
+                          ("text", "size", "\"-5u\""), ("columns", "gap", "\"-100u\""),
+                          ("text", "line-height", "1e25"), ("text", "line-height", "-1"),
+                          ("fit", "text-floor", "2"), ("fit", "text-floor", "-1"), ("fit", "figure-cap", "0"))
+            r = NS.deck_settings("", "[$g]\n$k = $v\n")
+            @test wpath(r, "$g.$k") == 1 && r.values == base.values
+        end
+        r = NS.deck_settings("", "[fit]\ntext-floor = 1\n[columns]\ngap = \"0u\"\n")
+        @test isempty(r.warnings)
+
+        # A wrong colour word from the notebook keeps the template's value.
+        r = NS.deck_settings("[caption]\ncolor = \"#123456\"\n", "[caption]\ncolor = \"typo\"\n")
+        @test wpath(r, "caption.color") == 1 && r.values["caption"]["color"] == "#123456"
+        # A palette name of the same layer is found, whatever the order of the groups.
+        @test isempty(NS.deck_settings("[caption]\ncolor = \"navy\"\n[palette]\nnavy = \"#003247\"\n", "").warnings)
+
+        # "none" is a paint only: a text colour or a role must have a colour.
+        r = NS.deck_settings("[caption]\ncolor = \"none\"\n[roles]\nfg = \"none\"\n[table]\nstripe-fill = \"none\"\nheader-fill = \"none\"\n", "")
+        @test wpath(r, "caption.color") == 1 && wpath(r, "roles.fg") == 1 && length(r.warnings) == 2
+        @test r.values["table"]["header-fill"] == "none"
+
+        # At most 64 palette names and 32 admonition categories: one warning for the rest.
+        many = "[palette]\n" * join(("c$i = \"#000000\"" for i in 1:100), "\n") * "\n" *
+               join(("[admonition.k$i]\naccent = \"#000000\"" for i in 1:40), "\n") * "\n"
+        r = NS.deck_settings("", many)
+        @test length(r.warnings) == 1 && length(r.values["palette"]) == 64
+        @test count(v -> v isa AbstractDict, values(r.values["admonition"])) == 32
+
+        # The export picker changes no colour only when no value follows the Slate palette and the
+        # figures have a palette of their own.
+        @test !NS.deck_fixes_colours(base.values)
+        fixed = replace(read(NS._DECK_BASE_PATH, String), r"\"slate\.\w+\"" => "\"#123456\"",
+                        "slate-palette = \"\"" => "slate-palette = \"daylight\"")
+        @test NS.deck_fixes_colours(NS.deck_settings("", fixed).values)
+        @test !NS.deck_fixes_colours(NS.deck_settings("", replace(fixed, "\"daylight\"" => "\"\"")).values)
     end
 
     # A `slate.` colour is a CSS reference on the live deck and a hex value of the export's Slate

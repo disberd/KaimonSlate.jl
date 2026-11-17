@@ -43,6 +43,19 @@ const _DECK_FONT_RE = r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,63}$"
 const _DECK_ROLES = ("fg", "strong", "dim", "accent", "accent2", "surface", "ink")
 _deck_slate_names() = String.(fieldnames(typeof(ReportEngine.SLATE_PALETTES["midnight"])))
 
+# The colour keys that take "none" (no paint). A text colour or a role always has a colour.
+const _DECK_PAINTS = ("fill", "stripe-fill", "header-fill", "rule-color")
+# The most palette names and admonition categories that the merged settings hold: every one is a
+# custom property in each `state_json`.
+const _DECK_MAX_PALETTE = 64
+const _DECK_MAX_CATEGORIES = 32
+
+# The range of a number (a length in its own unit) as `(low, high, low included)`. The bound of 10000
+# keeps each value a plain number in CSS and Typst.
+_deck_range(g, k) = g == "fit" ? (0.0, 1.0, false) :
+                    endswith(k, "line-height") ? (0.5, 4.0, true) :
+                    g == "text" && k == "size" ? (0.0, 10000.0, false) : (0.0, 10000.0, true)
+
 # The kind of a key, from its base value.
 function _deck_kind(g, k, v)
     _deck_choices(g, k) === nothing || return :choice
@@ -95,6 +108,28 @@ function _deck_parse(kind::Symbol, v, unit::Symbol, choices)
     end
 end
 
+# Check the value `v` of the key `g.k` (base value `bv`) from a deck template or a notebook: its form,
+# its range, and a colour word against `pal`, the palette of the layers merged so far. Returns the typed
+# value, or a `_DeckReject`.
+function _deck_check(g, k, bv, v, pal)
+    kind = _deck_kind_of(g, k, bv)
+    p = _deck_parse(kind, v, _deck_unit(bv), _deck_choices(g, k))
+    p isa _DeckReject && return p
+    if kind === :length || kind === :ratio
+        x = kind === :length ? p.value : p
+        lo, hi, incl = _deck_range(g, k)
+        ((incl ? x >= lo : x > lo) && x <= hi) ||
+            return _DeckReject("must be in $(incl ? '[' : '(')$(_deck_num(lo)), $(_deck_num(hi))]")
+    elseif kind === :colour && !startswith(p, "#") && !startswith(p, "slate.")
+        if p == "none"
+            k in _DECK_PAINTS || return _DeckReject("cannot be \"none\": only a paint (" * join(_DECK_PAINTS, ", ") * ") can")
+        elseif !(haskey(pal, p) || (g != "roles" && p in _DECK_ROLES))
+            return _DeckReject("names \"$p\", which is not in [palette]" * (g == "roles" ? "" : " or [roles]"))
+        end
+    end
+    return p
+end
+
 # The base settings as typed values: group → key → value, with each admonition category a Dict under
 # its name in `admonition`. Read again when the file changes.
 const _DECK_BASE = Ref{Any}(nothing)
@@ -136,87 +171,73 @@ _deck_kind_of(g, k, basev) = _deck_choices(g, k) !== nothing ? :choice :
     basev isa Vector{String} ? :font : :colour
 
 # Merge one partial file (`text`, TOML) into `s`. `from` names the layer in the warnings: "deck template"
-# or "notebook".
+# or "notebook". A value that fails a check is not used, so the value of the layer below it stays.
 function _deck_merge!(s, base, text::AbstractString, from::AbstractString, warns::Vector{String})
     isempty(strip(text)) && return
     layer = try
         TOML.parse(text)
     catch e
-        msg = e isa TOML.ParserError ? sprint(showerror, e) : string(e)
-        push!(warns, "Deck settings of the $from: not valid TOML, so they are not used ($(first(split(msg, '\n'))))")
+        why = e isa TOML.ParserError ?
+              (m = match(r"error: (.*)", sprint(showerror, e)); "line $(e.line): $(m === nothing ? e.type : m[1])") :
+              sprint(showerror, e)
+        push!(warns, "Deck settings of the $from: not valid TOML, so they are not used ($why)")
         return
     end
     warn(path, why) = push!(warns, "Deck settings of the $from: `$path` $why. The value is not used.")
+    over = String[]                                  # names past a count limit
+    # [palette] first, so that a colour word of this layer can name a palette colour of this layer.
+    pal = get(layer, "palette", nothing)
+    if pal isa AbstractDict
+        for (name, v) in pal
+            match(_DECK_NAME_RE, name) === nothing && (warn("palette.$name", "is not a valid name"); continue)
+            v isa AbstractString && match(_DECK_HEX_RE, v) !== nothing || (warn("palette.$name", "must be a hex colour"); continue)
+            haskey(s["palette"], name) || length(s["palette"]) < _DECK_MAX_PALETTE || (push!(over, "palette.$name"); continue)
+            s["palette"][name] = lowercase(v)
+        end
+    end
     for (g, tbl) in layer
-        if !(tbl isa AbstractDict)
-            warn(g, "is not a group of the deck settings")
-            continue
-        end
-        if g == "palette"
-            for (name, v) in tbl
-                match(_DECK_NAME_RE, name) === nothing && (warn("palette.$name", "is not a valid name"); continue)
-                p = v isa AbstractString && match(_DECK_HEX_RE, v) !== nothing ? lowercase(v) : nothing
-                p === nothing ? warn("palette.$name", "must be a hex colour") : (s["palette"][name] = p)
-            end
-            continue
-        end
-        haskey(base, g) || (warn(g, "is not a group of the deck settings"); continue)
+        g == "palette" && tbl isa AbstractDict && continue
+        (tbl isa AbstractDict && haskey(base, g)) || (warn(g, "is not a group of the deck settings"); continue)
         for (k, v) in tbl
             if g == "admonition" && v isa AbstractDict           # [admonition.<category>]
                 match(_DECK_NAME_RE, k) === nothing && (warn("admonition.$k", "is not a valid category name"); continue)
-                cat = get!(() -> Dict{String,Any}(), s["admonition"], k)
+                cat = get(s["admonition"], k, nothing)
+                if cat === nothing
+                    count(x -> x isa AbstractDict, values(s["admonition"])) < _DECK_MAX_CATEGORIES ||
+                        (push!(over, "admonition.$k"); continue)
+                    cat = s["admonition"][k] = Dict{String,Any}()
+                elseif !(cat isa AbstractDict)
+                    warn("admonition.$k", "is a key, not a category"); continue
+                end
                 for (ck, cv) in v
                     bv = get(base["admonition"], ck, nothing)
                     (bv === nothing || bv isa AbstractDict) && (warn("admonition.$k.$ck", "is not a key of the deck settings"); continue)
-                    p = _deck_parse(_deck_kind_of(g, ck, bv), cv, _deck_unit(bv), nothing)
+                    p = _deck_check(g, ck, bv, cv, s["palette"])
                     p isa _DeckReject ? warn("admonition.$k.$ck", p.why) : (cat[ck] = p)
                 end
                 continue
             end
             bv = get(base[g], k, nothing)
             (bv === nothing || bv isa AbstractDict) && (warn("$g.$k", "is not a key of the deck settings"); continue)
-            p = _deck_parse(_deck_kind_of(g, k, bv), v, _deck_unit(bv), _deck_choices(g, k))
+            p = _deck_check(g, k, bv, v, s["palette"])
             p isa _DeckReject && (warn("$g.$k", p.why); continue)
             from == "deck template" && _deck_base_owned(g, k) &&
                 push!(warns, "Deck settings of the deck template: `$g.$k` is a base key, which a deck template should not set.")
             s[g][k] = p
         end
     end
+    isempty(over) || push!(warns, "Deck settings of the $from: [palette] holds at most $_DECK_MAX_PALETTE names and " *
+        "[admonition] at most $_DECK_MAX_CATEGORIES categories, so $(length(over)) are not used: " *
+        join(first(over, 3), ", ") * (length(over) > 3 ? ", …" : "") * ".")
 end
 
-# A colour value given as a word must find it in [palette] or [roles]: else the base value comes back.
-function _deck_check_refs!(s, base, warns)
-    pal = s["palette"]
-    function check(path, d, k, bd, roles_ok)
-        v = d[k]
-        (v isa String && match(_DECK_NAME_RE, v) !== nothing && v != "none") || return
-        (haskey(pal, v) || (roles_ok && v in _DECK_ROLES)) && return
-        push!(warns, "Deck settings: `$path` names \"$v\", which is not in [palette]" *
-                     (roles_ok ? " or [roles]" : "") * ". The value below it is used.")
-        d[k] = bd[k]
-    end
-    for (g, d) in s, k in collect(keys(d))
-        g == "palette" && continue
-        if d[k] isa AbstractDict
-            bcat = get(base[g], k, base[g])
-            for ck in collect(keys(d[k]))
-                check("$g.$k.$ck", d[k], ck, haskey(bcat, ck) ? bcat : base[g], true)
-            end
-        elseif _deck_kind_of(g, k, base[g][k]) === :colour
-            check("$g.$k", d, k, base[g], g != "roles")
-        end
-    end
+# Text roles that follow the Slate palette on a fixed surface can be hard to read: a warning.
+function _deck_check_surface!(s, warns)
     r = s["roles"]
-    for k in _DECK_ROLES                       # text and page colours: "none" paints nothing
-        r[k] == "none" || continue
-        push!(warns, "Deck settings: `roles.$k` cannot be \"none\". The value below it is used.")
-        r[k] = base["roles"][k]
-    end
-    if !startswith(r["surface"], "slate.")
-        left = [k for k in ("fg", "strong", "dim") if startswith(r[k], "slate.")]
-        isempty(left) || push!(warns, "Deck settings: `roles.surface` is a fixed colour, but " *
-            join(("`roles.$k`" for k in left), ", ") * " follow the Slate palette, so the text can be hard to read on some palettes.")
-    end
+    startswith(r["surface"], "slate.") && return
+    left = [k for k in ("fg", "strong", "dim") if startswith(r[k], "slate.")]
+    isempty(left) || push!(warns, "Deck settings: `roles.surface` is a fixed colour, but " *
+        join(("`roles.$k`" for k in left), ", ") * " follow the Slate palette, so the text can be hard to read on some palettes.")
 end
 
 """
@@ -231,7 +252,7 @@ value that fails a check gives one line in `warnings` and is not used.
 """
 function deck_settings(template::AbstractString, notebook::AbstractString)
     base = _deck_base()
-    key = hash((template, notebook))
+    key = (String(template), String(notebook))
     cached = lock(() -> get(_DECK_CACHE, key, nothing), _DECK_LOCK)
     cached === nothing || return cached
     s = Dict{String,Dict{String,Any}}(g => Dict{String,Any}(k => v isa AbstractDict ? copy(v) : v for (k, v) in d)
@@ -239,7 +260,7 @@ function deck_settings(template::AbstractString, notebook::AbstractString)
     warns = String[]
     _deck_merge!(s, base, template, "deck template", warns)
     _deck_merge!(s, base, notebook, "notebook", warns)
-    _deck_check_refs!(s, base, warns)
+    _deck_check_surface!(s, warns)
     r = (; values = s, warnings = warns)
     lock(_DECK_LOCK) do
         length(_DECK_CACHE) > 64 && empty!(_DECK_CACHE)
@@ -247,7 +268,7 @@ function deck_settings(template::AbstractString, notebook::AbstractString)
     end
     return r
 end
-const _DECK_CACHE = Dict{UInt64,Any}()
+const _DECK_CACHE = Dict{Tuple{String,String},Any}()
 
 # The deck settings of a notebook: its deck template's file and its `decksettings` setting.
 function notebook_deck_settings(nb)
@@ -276,18 +297,15 @@ function _deck_colour(s, v::AbstractString, slate)
     return _deck_colour(s, s["roles"][v], slate)
 end
 
-_deck_num(x::Real) = isinteger(x) ? string(Int(x)) : string(round(Float64(x); digits = 4))
+_deck_num(x::Real) = replace(string(round(Float64(x); digits = 4)), r"\.0$" => "")
 
 # The figures' Slate palette: `figures.slate-palette`, else `palette` (the export picker or the UI theme).
 _deck_figure_palette(s, palette::AbstractString) =
     (fp = s["figures"]["slate-palette"]; isempty(fp) ? String(palette) : fp)
 
-# True when the export picker changes no colour of the deck: no value refers to the Slate palette and
-# `figures.slate-palette` names one.
-function deck_fixes_colours(s)
-    slate(v) = v isa AbstractString && startswith(v, "slate.") || v isa AbstractDict && any(slate, values(v))
-    return !isempty(s["figures"]["slate-palette"]) && !any(d -> any(slate, values(d)), values(s))
-end
+# True when the export picker changes no colour of the deck: the exporter's settings are the same for a
+# light and a dark Slate palette.
+deck_fixes_colours(s) = deck_settings_dict(s; palette = "daylight") == deck_settings_dict(s; palette = "midnight")
 
 # True when a hex colour is light (the luminance rule of `_export_is_light`).
 function _hex_is_light(hex::AbstractString)

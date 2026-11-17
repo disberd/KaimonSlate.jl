@@ -8,11 +8,12 @@
 # Value forms:
 # - A length is a string with a unit: "18u" (slide unit, 1/1920 of the slide width at 16:9) or
 #   "0.55em" (of the body text). This file fixes the unit of each key. A value with another unit is
-#   dropped with a warning.
-# - A ratio is a plain number.
-# - A colour is a hex value ("#003247"), a name from [palette], a role name from [roles], "none", or
+#   dropped with a warning. A length is from 0 to 10000; `text.size` is more than 0.
+# - A ratio is a plain number. A line height is from 0.5 to 4; a `fit` value is more than 0 and at most 1.
+# - A colour is a hex value ("#003247"), a name from [palette], a role name from [roles], or
 #   "slate.<name>": a colour of the Slate palette in force (bg, bg2, bg3, border, text, strong, dim,
 #   accent, green, red, gold, orange, purple, teal). A role is a hex value, a palette name or a "slate." name.
+#   A paint (fill, stripe-fill, header-fill, rule-color) can also be "none".
 # - A font is a list of font family names.
 #
 # The groups rhythm, fit and columns, and the structure keys of [table], are base keys: Slate warns
