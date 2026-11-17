@@ -27,6 +27,24 @@ were written when they went out. They are marked.
   `typst compile --font-path fonts doc.typ`. A notebook without a template exports the same `doc.typ`
   as before. The export pulls the extension manifest first, so a template whose source is a
   `PkgAsset` exports as it is on disk now, with no run and no worker restart in between.
+- Deck settings: one set of content values for the live deck, the PDF deck and later an exporter.
+  Slate ships the base file `src/assets/deck-settings.toml` with every key and its base value: text,
+  headings, rhythm, colour roles, key message, caption, table, admonition, code, figures, fit and
+  columns. A length takes a unit, `u` or `em`, that the base file fixes for each key. A deck template
+  gives a partial file with `provide_deck_template!(source; settings = @pkg_asset("deck.toml"))`, and
+  the notebook setting **Deck settings (TOML)** (Settings → This notebook, key `decksettings`) gives a
+  second one. The hub merges them key by key in that order. An unknown key, a wrong unit, a value
+  that does not match its pattern, or a base key that a deck template sets gives a warning and is
+  not used; the export goes on. A colour role is a hex value, a name of `[palette]`, or
+  `slate.<name>`, a colour of the Slate palette in force. The warnings show under the setting and in
+  the export dialog.
+- The hub writes each deck setting as a `--deck-*` custom property in `:where(…)` rules and sends
+  them to the page, so a package stylesheet can read and override them. A slides export writes
+  `deck-settings.typ` into the Typst project with `SLIDE_W`, `SLIDE_H`, `u` and `settings`, which the
+  deck preamble imports.
+- A deck template's settings and files can be `PkgAsset`s. An edit to one of them reaches the next
+  export with no run and no worker restart, as an edit to the template source does.
+- The `export_pdf` tool lists the export warnings of a deck in its answer.
 
 ### Changed
 
@@ -83,6 +101,21 @@ were written when they went out. They are marked.
   0.62 em of the body text, as on the live deck (they were 8.5 pt), and the `code` option scales
   them. The column gap is 56 u, as on the live deck. Display math that is wider than its column is
   set smaller down to 0.4 of its size, as on the live deck.
+- The base font of the deck is Inter, on the live deck and in the PDF deck. Slate ships the Inter 4.1
+  font files (SIL Open Font License). The PDF deck used New Computer Modern; it now embeds Inter. The
+  live deck uses an Inter that the machine has, and else the shipped one.
+- The PDF deck sets the body text at the size of the live deck, 34 u (12.75 pt on a 16:9 page), not
+  at 50.67 u (19 pt), and the gap between the cells of a row is 48 u, as on the live deck.
+- The slides PDF takes its colours from the Slate palette that the export dialog's Theme picker
+  chooses (`charttheme`). When no palette is given, `theme="light"` gives Daylight and `theme="dark"`
+  Midnight, so the default slides PDF stays light. The base colours of the PDF deck change a little:
+  the text is the palette's text colour, not black or `#d6dae8`. Bold text and headings of the base
+  live deck take the theme's text colour, not its brighter `--strong` colour.
+- On a deck template that sets `figures.slate-palette` (a deck with fixed colours), figures in the PDF
+  deck and in the deck print take that palette and no longer follow the Theme picker. The export
+  dialog says when the deck template fixes the colours.
+- The deck print ("as presented") warns about each slide that does not fit at the smallest text
+  size, as the PDF deck does.
 
 ## [2.2.0] - 2026-11-16
 
