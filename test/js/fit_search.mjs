@@ -1,7 +1,8 @@
 // The live deck and the PDF deck fit a slide with one search: the text scale `s` first, then the
 // figure scale `f`, with `f >= (1 + s) / 2` above the text floor. The real `FIT` and `_fitSearch`
-// are extracted from slides.js and run on a model slide, and `FIT` is compared with the numbers of
-// the Typst `fit` (export_typst.jl `_FIT_TYPST`).
+// are extracted from slides.js and run on a model slide. The text floor and the figure cap are deck
+// settings on both targets; the other numbers of `FIT` are compared with the Typst `fit`
+// (export_typst.jl `_FIT_TYPST`).
 //
 //   node test/js/fit_search.mjs      # exit 0 = pass, 1 = mismatch, 2 = extraction failure
 import { readFileSync } from 'node:fs';
@@ -11,6 +12,7 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '..', '..', 'src', 'assets', 'js', 'slides.js'), 'utf8');
 const typ = readFileSync(join(here, '..', '..', 'src', 'export_typst.jl'), 'utf8');
+const toml = readFileSync(join(here, '..', '..', 'src', 'assets', 'deck-settings.toml'), 'utf8');
 
 let bad = 0;
 const ok = (cond, m) => { if (!cond) { console.error('fit_search: ' + m); bad++; } };
@@ -20,8 +22,13 @@ const code = grab(src, /\n  const FIT = [^\n]*/, 'slides.js')[0] + grab(src, /\n
 const { FIT, _fitSearch } = (0, eval)('(function () {' + code + '\nreturn { FIT, _fitSearch }; })')();
 
 // ── the same numbers as the PDF deck ──
-const t = grab(typ, /_FIT_TYPST = "\(text-floor: ([\d.]+), fig-floor: ([\d.]+), fig-cap: ([\d.]+), math-floor: ([\d.]+)\)"/, 'export_typst.jl');
-ok(+t[1] === FIT.textFloor && +t[2] === FIT.figFloor && +t[3] === FIT.figCap && +t[4] === FIT.mathFloor,
+// Both targets read the text floor and the figure cap from the deck settings.
+const fit = grab(toml, /\n\[fit\]\ntext-floor = ([\d.]+)\nfigure-cap = ([\d.]+)\n/, 'deck-settings.toml');
+FIT.textFloor = +fit[1]; FIT.figCap = +fit[2];
+ok(/getPropertyValue\('--deck-fit-text-floor'\)/.test(src) && /getPropertyValue\('--deck-fit-figure-cap'\)/.test(src),
+   'slides.js does not read the fit settings');
+const t = grab(typ, /_FIT_TYPST = "\(text-floor: settings\.fit\.text-floor, fig-floor: ([\d.]+), fig-cap: settings\.fit\.figure-cap, math-floor: ([\d.]+)\)"/, 'export_typst.jl');
+ok(+t[1] === FIT.figFloor && +t[2] === FIT.mathFloor,
    'FIT differs from _FIT_TYPST: ' + JSON.stringify(FIT) + ' vs ' + t.slice(1).join(', '));
 
 // A model slide: text `T` tall at s = 1 and figures `F` tall at f = 1, stacked (or side by side) in

@@ -392,6 +392,23 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
     end
 
+    # The Typst preamble reads the deck settings: a template's `text.size` moves the body text size that
+    # the fit record measures, in `u`.
+    @testset "a deck setting moves the measured text size in the PDF" begin
+        sizes = map(("", "[text]\nsize = \"40u\"\n")) do set
+            nb = _mknb("#%% md id=a\n## A\n\nbody text\n")
+            nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}())
+            dir = NS._build_slides_project(nb)
+            try
+                recs = NS._typst_query(joinpath(dir, "doc.typ"), "<slate>")
+                only(r["size"] for r in recs if r isa AbstractDict && r["kind"] == "fit")
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+        @test sizes[1] ≈ 34 && sizes[2] ≈ 40
+    end
+
     @testset "cell_json exposes slide/notes flags" begin
         r = RE.parse_report("#%% code id=a slide\nx=1\n\n#%% md id=b notes\nhi\n")
         j1 = NS.cell_json(r.cells[1]); j2 = NS.cell_json(r.cells[2])
@@ -519,9 +536,10 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
     end
 
     @testset "the PDF deck fits each slide and records the fit" begin
-        # The fixture deck at 16:9 and at 4:3, with two slides added: a figure that shares a tall
-        # slide with text, and a portrait figure alone whose drawn height is measured. One
-        # `typst query` per ratio reads the fit records of `fit` (label `<slate>`).
+        # The fixture deck at 16:9 and at 4:3, with three slides added: a figure that shares a tall
+        # slide with text, a portrait figure alone whose drawn height is measured, and a slide of text
+        # that is taller than the page at full size. One `typst query` per ratio reads the fit records
+        # of `fit` (label `<slate>`).
         fixture = read(joinpath(@__DIR__, "fixtures", "deck_fixture.jl"), String)
         svg(w, h) = """<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h"><rect width="$w" height="$h" fill="#38c"/></svg>"""
         extra = """
@@ -532,6 +550,9 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         #figureimg("wide.svg")
         ]
         #slide[#layout(sz => [#metadata(measure(block(width: sz.width, figureimg("tall.svg"))).height / SLIDE_H) <figcap>])]
+        #slide(title: heading(level: 2)[A tall slide of text])[
+        #for i in range(20) [Line #i of a slide that is a little taller than the page at full size.\\ ]
+        ]
         """
         function query(ratio)
             dir = NS._build_slides_project(_mknb(fixture); ratio)
@@ -548,8 +569,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
         tie(r) = (1 + r["s"]) / 2
         fit, cap, recs = query("16:9")
-        @test sort(collect(keys(fit))) == 1:16              # one page per slide: no slide breaks
-        tall, atfloor, fig = fit[12], fit[13], fit[15]      # fixture "A tall slide…", "…at the floor"
+        @test sort(collect(keys(fit))) == 1:17              # one page per slide: no slide breaks
+        tall, atfloor, fig = fit[17], fit[13], fit[15]      # the added tall slide, fixture "…at the floor"
         @test 0.62 <= tall["s"] < 1 && tall["f"] >= tie(tall) && !tall["at_floor"]
         @test atfloor["at_floor"] && atfloor["s"] == 0.62
         @test count(r -> r["at_floor"], recs) == 1

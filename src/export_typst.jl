@@ -177,7 +177,17 @@ const _PALETTES = Dict(
                 parbg = "rgb(\"#1a2233\")", parborder = "rgb(\"#2c3a57\")", parlabel = "rgb(\"#8ab4f8\")",
                 tablestroke = "luma(90)",  tableheadbg = "rgb(\"#1b1f2b\")", tablestripe = "rgb(\"#171b25\")"),
 )
-_palette(theme) = get(_PALETTES, theme, _PALETTES["light"])
+# The colours of the slides layout, as Typst expressions that read the deck settings (`settings`,
+# deck_settings.jl): the slides preamble and the tables of a slide (`_typst_table`) take no
+# `_PALETTES` entry. `deckpaint` (slides preamble) turns a `none` paint into a transparent colour.
+const _DECK_PALETTE = (page = "settings.roles.surface", text = "settings.roles.fg",
+    rule = "deckpaint(settings.table.rule-color)", title = "settings.roles.strong", codebg = "settings.code.fill",
+    codetheme = "", outbg = "settings.code.fill", outfg = "settings.roles.dim",
+    valbg = "settings.code.fill", valfg = "settings.roles.accent", errbg = "settings.code.fill",
+    errfg = "settings.roles.ink", parbg = "settings.code.fill", parborder = "deckpaint(settings.table.rule-color)",
+    parlabel = "settings.roles.dim", tablestroke = "deckpaint(settings.table.rule-color)",
+    tableheadbg = "settings.table.header-fill", tablestripe = "settings.table.stripe-fill")
+_palette(theme) = theme == "deck" ? _DECK_PALETTE : get(_PALETTES, theme, _PALETTES["light"])
 
 # A compact Tokyo-Night-style dark syntax theme for Typst `raw` (written to the export
 # dir when `theme=dark`; its background matches `codebg` so the block reads uniformly).
@@ -316,13 +326,15 @@ end
 _slide_geom(ratio) = ratio == "4:3" ? ("254mm", "190.5mm") :
                      ratio == "16:10" ? ("254mm", "158.75mm") : ("254mm", "142.875mm")
 
-# The size of a code listing on a slide, in em of the body text. The base size is 0.62 em, as on the
-# live deck; the `code` option scales it as its point size scales the 8.5 pt of "small".
+# The size of a code listing on a slide: the deck setting `code.size`, times the factor of the `code`
+# option (its point size over the 8.5 pt of "small"; "normal" is "small").
 _slide_code_size(code) =
-    string(round(0.62 * parse(Float64, chop(_code_size(code == "normal" ? "small" : code); tail = 2)) / 8.5; digits = 3), "em")
+    string(round(parse(Float64, chop(_code_size(code == "normal" ? "small" : code); tail = 2)) / 8.5; digits = 4),
+           " * settings.code.size")
 
-# The fit parameters of a slide. `slides.js` holds the same numbers in `FIT`.
-const _FIT_TYPST = "(text-floor: 0.62, fig-floor: 0.25, fig-cap: 0.7, math-floor: 0.4)"
+# The fit parameters of a slide. The text floor and the figure cap are deck settings; `slides.js`
+# holds the same figure floor and math floor in `FIT`.
+const _FIT_TYPST = "(text-floor: settings.fit.text-floor, fig-floor: 0.25, fig-cap: settings.fit.figure-cap, math-floor: 0.4)"
 
 # Preamble for the slides layout. Reuses the same block helpers as the article preamble but on a
 # landscape slide page with bigger type. It imports `deck-settings.typ` (`deck_settings_typ`):
@@ -336,19 +348,22 @@ const _FIT_TYPST = "(text-floor: 0.62, fig-floor: 0.25, fig-cap: 0.7, math-floor
 # must draw the body through `fit`, because `fit` sizes the figures and records the fit.
 # Lengths in the body follow the live deck: text sizes and spacing in `em` (they follow the text
 # scale of `fit`), geometry in `u` (fixed).
-function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "dark", code::AbstractString = "small")
+# `syntax` is the colour scheme of code, "light" or "dark" (the deck setting `code.syntax`, resolved):
+# "dark" needs `code-dark.tmTheme` in the project.
+function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = "light", code::AbstractString = "small")
     pre = _typ_str(strip(replace(_MITEX_SHIMS, r"\s+" => " ")))
-    p = _palette(theme)
-    rawtheme = isempty(p.codetheme) ? "" : "\n    #set raw(theme: \"$(p.codetheme)\")"
+    p = _DECK_PALETTE
+    rawtheme = syntax == "dark" ? "\n    #set raw(theme: \"code-dark.tmTheme\")" : ""
     return """
     #import "@preview/cmarker:$(_CMARKER_VER)"
     #import "@preview/mitex:$(_MITEX_VER)": mitex, mi
     #import "deck-settings.typ": SLIDE_W, SLIDE_H, u, settings
+    #let deckpaint(c) = if c == none { rgb(0, 0, 0, 0) } else { c }
     #let FIT = $_FIT_TYPST
     #set document(title: "$(_typ_str(title))")
     #set page(width: SLIDE_W, height: SLIDE_H, margin: (x: 121 * u, y: 91 * u), fill: $(p.page))
-    // 50.67 u is 19 pt on a 16:9 page.
-    #set text(font: "New Computer Modern", size: 50.67 * u, fill: $(p.text))$(rawtheme)
+    #set text(font: settings.text.font, size: settings.text.size, fill: $(p.text))$(rawtheme)
+    #show raw: set text(font: settings.code.font)
     #set par(justify: false, leading: 0.7em, spacing: 1.1em)
     #show heading: set text(fill: $(p.title))
     #show heading.where(level: 1): set text(size: 1.7em)
@@ -466,11 +481,12 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
     // Side-by-side columns, top aligned. `widths` holds one entry per column: a ratio or a length, or
     // `none` for a column that shares the rest equally. The other arguments are the column bodies.
     // Ratios that fill the row or more shrink in proportion, as the flex columns of the live deck do.
-    // The gap is 56 u, as on the live deck.
-    #let slidecols(widths, ..cols) = {
+    // The gap is the deck setting `columns.gap`; a row of cells gives `columns.row-gap`, as on the
+    // live deck.
+    #let slidecols(widths, gap: settings.columns.gap, ..cols) = {
       let shrink = widths.all(w => type(w) == ratio) and widths.map(w => w / 1%).sum() >= 100
       grid(columns: widths.map(w => if w == none { 1fr } else if shrink { w / 1% * 1fr } else { w }),
-        column-gutter: 56 * u, align: top, ..cols.pos())
+        column-gutter: gap, align: top, ..cols.pos())
     }
     // One slide = one page, vertically centered. The title goes at the top of the body, inside `fit`;
     // a notes page gets a "Notes · slide N" label in its place. Two layouts follow the live deck:
@@ -2058,9 +2074,10 @@ function _split_columns(src::AbstractString)
     return isempty(pieces) ? Any[String(src)] : pieces
 end
 
-# One `slidecols` call: `body(j)` prints the j-th column of the row.
-function _print_slidecols(body, io::IO, widths)
-    print(io, "#slidecols((", join(widths, ", "), ",),\n")
+# One `slidecols` call: `body(j)` prints the j-th column of the row. `gap` is a Typst length expression,
+# or `nothing` for the default of `slidecols`.
+function _print_slidecols(body, io::IO, widths; gap = nothing)
+    print(io, "#slidecols((", join(widths, ", "), ",),", gap === nothing ? "" : " gap: $gap,", "\n")
     for j in eachindex(widths)
         print(io, "[")
         body(j)
@@ -2156,10 +2173,11 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
     lock(nb.lock) do
         dir = mktempdir()
         mediasz = Dict{String,Any}()   # staged image => its `{width=…}` block, written out as media.json
-        theme == "dark" && write(joinpath(dir, "code-dark.tmTheme"), _CODE_DARK_TMTHEME)
+        syntax = _deck_syntax(ds.values, ReportEngine._resolve_palette(palette))
+        syntax == "dark" && write(joinpath(dir, "code-dark.tmTheme"), _CODE_DARK_TMTHEME)
         write(joinpath(dir, "deck-settings.typ"), deck_settings_typ(ds.values; ratio, palette))
         io = IOBuffer()
-        print(io, _typst_preamble_slides(nb.report.title; theme = theme, code = code))
+        print(io, _typst_preamble_slides(nb.report.title; syntax, code))
         _apply_deck_template!(io, dir, notebook_deck_template(nb))
         cells = filter(c -> renders(c.kind), nb.report.cells)
         # Role-tagged metadata → a dedicated title slide (metablock); hoisted title/abstract cells
@@ -2200,11 +2218,12 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                         body, off = _body_after_hoisted_h1(f.cell)
                         f = (cell = f.cell, src = body, interpbase = off)
                     end
-                    _emit_slide_frag!(io, dir, "s$(si)f$(fi)", nb, f; theme = theme, charttheme = ct, override = override,
+                    _emit_slide_frag!(io, dir, "s$(si)f$(fi)", nb, f; theme = "deck", charttheme = ct, override = override,
                                       show_source = show_source, include_params = include_params, citekeys = citekeys,
                                       outputs = outputs, sizes = mediasz, compfigs = compfigs)
                 end
-                length(fis) == 1 ? emit(fis[1]) : _print_slidecols(j -> emit(fis[j]), io, fill("none", length(fis)))
+                length(fis) == 1 ? emit(fis[1]) :
+                    _print_slidecols(j -> emit(fis[j]), io, fill("none", length(fis)); gap = "settings.columns.row-gap")
             end
             print(io, "]\n\n")
         end

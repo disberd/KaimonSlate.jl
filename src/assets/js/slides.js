@@ -701,9 +701,16 @@
     _fitMath(body);
     if (_fitBody(body, charts)) body.classList.add('scroll');
   }
-  // The fit parameters of a slide. The PDF deck holds the same numbers (export_typst.jl `_FIT_TYPST`).
+  // The fit parameters of a slide. `textFloor` and `figCap` are the deck settings `fit.text-floor` and
+  // `fit.figure-cap` (`_fitSettings` reads them from the slide's custom properties); the PDF deck reads
+  // the same settings. `figFloor` and `mathFloor` are code, as in export_typst.jl `_FIT_TYPST`.
   // `figCap` is a share of the slide height; `_sizeCanvas` writes it to `--figcap` for notebook.css.
-  const FIT = { textFloor: 0.62, figFloor: 0.25, figCap: 0.7, mathFloor: 0.4 };
+  const FIT = { textFloor: NaN, figFloor: 0.25, figCap: NaN, mathFloor: 0.4 };
+  function _fitSettings(slide) {
+    const cs = getComputedStyle(slide);
+    FIT.textFloor = parseFloat(cs.getPropertyValue('--deck-fit-text-floor'));
+    FIT.figCap = parseFloat(cs.getPropertyValue('--deck-fit-figure-cap'));
+  }
   // The fit search, the same as the PDF deck's `fit`. `over(s, f)` lays the slide out at text scale
   // `s` and figure scale `f` (all figures share it) and returns how far it overflows, in px.
   // 1. Try `s = 1`, `f = 1`.
@@ -737,7 +744,9 @@
   // the slide height; a picture keeps its aspect, so `--fitw` (notebook.css) caps its width. True when
   // the slide is at the floor.
   function _fitBody(body, charts) {
-    const slide = body.parentNode, capH = FIT.figCap * slide.clientHeight;
+    const slide = body.parentNode;
+    _fitSettings(slide);
+    const capH = FIT.figCap * slide.clientHeight;
     const figs = [...body.querySelectorAll('.slidefig, :is(.output, .md, .snap) :is(img, video)')]
       .filter(e => !e.closest('.slidefig > *') && getComputedStyle(e).position !== 'absolute');
     const over = (s, f) => {
@@ -797,6 +806,7 @@
   }
   function _sizeCanvas(slide, vw, vh) {
     const [W, H] = _canvasSize();
+    _fitSettings(slide);
     const s = Math.min(vw / W, vh / H);
     slide.style.width = Math.round(W * s) + 'px';
     slide.style.height = Math.round(H * s) + 'px';

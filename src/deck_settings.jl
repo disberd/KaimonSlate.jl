@@ -191,6 +191,11 @@ function _deck_check_refs!(s, base, warns)
         end
     end
     r = s["roles"]
+    for k in _DECK_ROLES                       # text and page colours: "none" paints nothing
+        r[k] == "none" || continue
+        push!(warns, "Deck settings: `roles.$k` cannot be \"none\". The value below it is used.")
+        r[k] = base["roles"][k]
+    end
     if !startswith(r["surface"], "slate.")
         left = [k for k in ("fg", "strong", "dim") if startswith(r[k], "slate.")]
         isempty(left) || push!(warns, "Deck settings: `roles.surface` is a fixed colour, but " *
