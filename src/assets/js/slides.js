@@ -284,7 +284,7 @@
       r.el.style.removeProperty('view-transition-name');
       r.el.querySelectorAll('[style*="view-transition-name"]').forEach(n => n.style.removeProperty('view-transition-name'));
       r.el.querySelectorAll('.deck-ctl-hidden').forEach(n => n.classList.remove('deck-ctl-hidden'));
-      r.el.querySelectorAll('.slidefig').forEach(n => n.style.removeProperty('max-width'));
+      r.el.querySelectorAll('[style*="--fitw"]').forEach(n => n.style.removeProperty('--fitw'));
       r.el.querySelectorAll('[data-deck-title]').forEach(m => { m.title = m.dataset.deckTitle; delete m.dataset.deckTitle; });
       _restoreCellCharts(r.el);
       if (r.slot.isConnected) r.slot.appendChild(r.el);
@@ -678,17 +678,15 @@
   }
   // A chart mid-morph is left alone: any other update to it ends the animation where it stands.
   function _morphing(inst) { return inst.__morphUntil && performance.now() < inst.__morphUntil; }
+  // Box a chart at `w` × `h`; `_fitBody` draws it at its final size once the search ends.
   function _sizeChart(c, w, h) {
     if (_morphing(c.inst)) return;
     w = Math.max(80, Math.round(w)); h = Math.max(60, Math.round(h));
     if (!_origStyle.has(c.dom)) _origStyle.set(c.dom, [c.dom.style.width, c.dom.style.height]);
-    if (c.dom.style.width === w + 'px' && c.dom.style.height === h + 'px') return;
     c.dom.style.width = w + 'px'; c.dom.style.height = h + 'px';
-    try { c.inst.resize({ width: w, height: h }); } catch (e) {}
   }
-  // Size the canvas to the stage, then fit the content to the canvas: charts take the width they are
-  // given (keeping their aspect), and give up height first when the slide overflows; text shrinks
-  // only after that, and below a legible floor the body scrolls instead.
+  // Size the canvas to the stage, then fit the content to the canvas (`_fitBody`). Below the text
+  // floor the body scrolls.
   function _fit() {
     const stage = document.getElementById('deckstage');
     const slide = stage && stage.querySelector('.deck-slide');
@@ -700,53 +698,76 @@
     const charts = _slideCharts();
     const u = parseFloat(slide.style.getPropertyValue('--u')) || 1;
     for (const c of charts) { _presentChart(c.inst, u); _ghostStart(c.inst); }
-    // The room a chart may fill is the slide's height: a centred slide's body is only as tall as its
-    // content. The overflow pass below gives back what the chart takes from the title and the body.
-    const availH = slide.clientHeight;
-    for (const c of charts) {
-      const host = c.dom.parentElement;
-      const hw = (host && host.clientWidth) || c.natW;
-      const k = Math.min(hw / c.natW, (availH * 0.82) / c.natH);
-      _sizeChart(c, c.natW * k, c.natH * k);
-    }
-    let over = body.scrollHeight - body.clientHeight;
-    if (over > 1 && charts.length) {
-      const tot = charts.reduce((a, c) => a + c.dom.clientHeight, 0);
-      const k = Math.max(0.5, 1 - over / Math.max(1, tot));
-      for (const c of charts) _sizeChart(c, c.dom.clientWidth * k, c.dom.clientHeight * k);
-      over = body.scrollHeight - body.clientHeight;
-    }
-    over = _fitFigures(body, over);
     _fitMath(body);
-    if (over > 1 && _shrinkText(body)) body.classList.add('scroll');
+    if (_fitBody(body, charts)) body.classList.add('scroll');
   }
-  // Slide figures (`slide_figure`) give up height the way charts do; they keep their aspect, so a
-  // narrower box is a shorter one. Returns what still overflows.
-  function _fitFigures(body, over) {
-    const figs = [...body.querySelectorAll('.slidefig')];
-    if (!figs.length) return over;
-    figs.forEach(f => f.style.removeProperty('max-width'));
-    over = body.scrollHeight - body.clientHeight;
-    for (let pass = 0; pass < 3 && over > 1; pass++) {
-      const before = over;
-      const prev = figs.map(f => f.style.getPropertyValue('max-width'));
-      const tot = figs.reduce((a, f) => a + f.clientHeight, 0);
-      const k = Math.max(0.6, 1 - over / Math.max(1, tot));
-      for (const f of figs) f.style.setProperty('max-width', (f.clientWidth * k) + 'px', 'important');
-      over = body.scrollHeight - body.clientHeight;
-      // A figure beside a taller column of text does not set the slide's height: shrinking it gains
-      // nothing, so it keeps its size and the text gives way instead.
-      if (over > before - 1) {
-        figs.forEach((f, i) => prev[i] ? f.style.setProperty('max-width', prev[i], 'important') : f.style.removeProperty('max-width'));
-        over = body.scrollHeight - body.clientHeight;
-        break;
+  // The fit parameters of a slide. The PDF deck holds the same numbers (export_typst.jl `_FIT_TYPST`).
+  // `figCap` is a share of the slide height; `_sizeCanvas` writes it to `--figcap` for notebook.css.
+  const FIT = { textFloor: 0.62, figFloor: 0.25, figCap: 0.7, mathFloor: 0.4 };
+  // The fit search, the same as the PDF deck's `fit`. `over(s, f)` lays the slide out at text scale
+  // `s` and figure scale `f` (all figures share it) and returns how far it overflows, in px.
+  // 1. Try `s = 1`, `f = 1`.
+  // 2. Bisect `s` over [textFloor, 1] in 6 steps, each at `f = (1 + s) / 2`: the figures give up
+  //    height at half the rate of the text.
+  // 3. At that `s`, take the largest `f` in [(1 + s) / 2, 1].
+  // 4. When the slide does not fit at the text floor, keep the floor and take `f` down to figFloor.
+  //    When it does not fit there either, it is at the floor (`atFloor`). Its figures keep `f = 1` if
+  //    a smaller `f` gains no height (a figure beside a taller column of text).
+  function _fitSearch(over) {
+    const fits = (s, f) => over(s, f) <= 1, tie = s => (1 + s) / 2;
+    const bestF = (s, lo) => {
+      if (fits(s, 1)) return 1;
+      let a = lo, b = 1;
+      for (let i = 0; i < 6; i++) { const m = (a + b) / 2; if (fits(s, m)) a = m; else b = m; }
+      return a;
+    };
+    if (fits(1, 1)) return { s: 1, f: 1, atFloor: false };
+    let lo = FIT.textFloor, hi = 1;
+    if (!fits(lo, tie(lo))) {
+      const f = bestF(lo, FIT.figFloor);
+      if (fits(lo, f)) return { s: lo, f, atFloor: false };
+      return { s: lo, f: over(lo, f) < over(lo, 1) - 1 ? f : 1, atFloor: true };
+    }
+    for (let i = 0; i < 6; i++) { const m = (lo + hi) / 2; if (fits(m, tie(m))) lo = m; else hi = m; }
+    return { s: lo, f: bestF(lo, tie(lo)), atFloor: false };
+  }
+  // Fit a slide body: set the text scale (`--shrink`) and the figure scale of its pictures (slide
+  // figures, image outputs, markdown images, the chart snapshots of a preview) and of its `charts`.
+  // At figure scale `f` a figure is `f` of the size that fills its column, capped at `FIT.figCap` of
+  // the slide height; a picture keeps its aspect, so `--fitw` (notebook.css) caps its width. True when
+  // the slide is at the floor.
+  function _fitBody(body, charts) {
+    const slide = body.parentNode, capH = FIT.figCap * slide.clientHeight;
+    const figs = [...body.querySelectorAll('.slidefig, :is(.output, .md, .snap) :is(img, video)')]
+      .filter(e => !e.closest('.slidefig > *') && getComputedStyle(e).position !== 'absolute');
+    const over = (s, f) => {
+      slide.style.setProperty('--shrink', s);
+      figs.forEach(e => e.style.removeProperty('--fitw'));
+      for (const c of charts) {
+        const hw = (c.dom.parentElement && c.dom.parentElement.clientWidth) || c.natW;
+        const k = f * Math.min(hw / c.natW, capH / c.natH);
+        _sizeChart(c, c.natW * k, c.natH * k);
+      }
+      if (f < 1) {
+        const full = figs.map(e => e.clientWidth);
+        figs.forEach((e, i) => e.style.setProperty('--fitw', full[i] * f + 'px'));
+      }
+      return body.scrollHeight - body.clientHeight;
+    };
+    const r = _fitSearch(over);
+    over(r.s, r.f);
+    for (const c of charts) {
+      const w = parseFloat(c.dom.style.width), h = parseFloat(c.dom.style.height);
+      if (!_morphing(c.inst) && (c.inst.getWidth() !== w || c.inst.getHeight() !== h)) {
+        try { c.inst.resize({ width: w, height: h }); } catch (e) {}
       }
     }
-    return over;
+    return r.atFloor;
   }
   // Display math does not wrap, so an equation wider than the slide would run off its edge: set it
-  // smaller until it fits. The equations of a `::: derive` block share one size, so the sequence does
-  // not change scale as it transforms.
+  // smaller until it fits, down to `FIT.mathFloor`. The size is in `em`, so it follows `--shrink`. The
+  // equations of a `::: derive` block share one size, so the sequence does not change scale as it
+  // transforms.
   function _fitMath(body) {
     const cs = getComputedStyle(body);
     const avail = body.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
@@ -768,7 +789,10 @@
         const room = row ? row.getBoundingClientRect().width : avail;
         if (need > room && room > 0) f = Math.min(f, room / need);
       }
-      if (f < 1) for (const k of ks) k.style.fontSize = (parseFloat(getComputedStyle(k).fontSize) * Math.max(0.4, f * 0.98)) + 'px';
+      if (f < 1) for (const k of ks) {
+        const em = parseFloat(getComputedStyle(k).fontSize) / parseFloat(getComputedStyle(k.parentNode).fontSize);
+        k.style.fontSize = (em * Math.max(FIT.mathFloor, f * 0.98)) + 'em';
+      }
     }
   }
   function _sizeCanvas(slide, vw, vh) {
@@ -777,21 +801,7 @@
     slide.style.width = Math.round(W * s) + 'px';
     slide.style.height = Math.round(H * s) + 'px';
     slide.style.setProperty('--u', s + 'px');
-  }
-  // Scale the body text down until it fits, to a legible floor. True when it still overflows.
-  function _shrinkText(body) {
-    // The title scales with the body, so the room is the slide's inner height and the need is the title
-    // plus the body's content.
-    const slide = body.parentNode, title = slide.querySelector('.slide-title'), cs = getComputedStyle(slide);
-    const room = () => slide.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    let shrink = 1, over = body.scrollHeight - body.clientHeight;
-    for (let pass = 0; pass < 3 && over > 1; pass++) {
-      shrink = Math.max(0.62, shrink * room() / ((title ? title.offsetHeight : 0) + body.scrollHeight));
-      slide.style.setProperty('--shrink', shrink);
-      over = body.scrollHeight - body.clientHeight;
-      if (shrink <= 0.62) break;
-    }
-    return over > 1;
+    slide.style.setProperty('--figcap', FIT.figCap * H * s + 'px');
   }
   function _relayout(slide) {
     slide = slide || document.querySelector('#deckstage .deck-slide');
@@ -1529,9 +1539,8 @@
     // The same fitting and lighting as the deck, so the preview is what the audience sees.
     const body = slide.querySelector('.slide-body');
     _lightTerms(body);
-    _fitFigures(body, body.scrollHeight - body.clientHeight);
     _fitMath(body);
-    _shrinkText(body);
+    _fitBody(body, []);
     return total;
   }
   // ── Rendering the deck to a video ───────────────────────────────────────────
