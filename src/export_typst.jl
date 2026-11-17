@@ -1423,13 +1423,13 @@ Each entry has these fields:
   first cell of the slide that has it, as a string, or `nothing`.
 - `title`: `nothing`, or `(text, depth, cell, interpbase)` when the first block of the slide is a
   markdown heading. `text` is the heading without its `#` marks, `depth` is 1 to 6, `cell` is the id of
-  the cell that holds it. The heading is not in `blocks`.
-- `blocks`: the body, in order. Each block is `(cell, src, interpbase, row, column)`: the cell id,
+  the cell that holds it. The heading is not in `frags`.
+- `frags`: the body, in order. Each fragment is `(cell, src, interpbase, row, column)`: the cell id,
   the markdown to draw (`nothing` is the whole cell), the number of `{{ }}` interpolations before it in
   its cell, the side-by-side row that it belongs to, and its `column=` value.
 - `notes`: the ids of the `notes` cells that belong to the slide.
 
-`drop(cell)` removes a cell from the blocks, and so from the title search; the entry stays in the deck
+`drop(cell)` removes a cell from the fragments, and so from the title search; the entry stays in the deck
 so that slide numbers stay stable.
 """
 function slide_deck(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slidelevel", 2), drop = Returns(false))
@@ -1456,14 +1456,14 @@ function slide_deck(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slid
                 isempty(strip(h.rest)) && popfirst!(frags)
             end
         end
-        blocks = NamedTuple[]
+        body = NamedTuple[]
         row = 0
         for f in frags
             col = _cell_column(f.cell)
             (col >= 2 && row > 0) || (row += 1)
-            push!(blocks, (cell = f.cell.id, src = f.src, interpbase = f.interpbase, row = row, column = col))
+            push!(body, (cell = f.cell.id, src = f.src, interpbase = f.interpbase, row = row, column = col))
         end
-        push!(deck, (layout = tag("layout"), title = title, blocks = blocks, transition = tag("transition"),
+        push!(deck, (layout = tag("layout"), title = title, frags = body, transition = tag("transition"),
                      auto = tag("auto"), notes = [n.id for n in seg.notes]))
     end
     return deck
@@ -2184,13 +2184,13 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                          "math: mathfn, scope: (image: mdimage)))"
         end
         for (si, sl) in enumerate(deck)
-            frags = [(cell = bycell[b.cell], src = b.src, interpbase = b.interpbase) for b in sl.blocks]
+            frags = [(cell = bycell[b.cell], src = b.src, interpbase = b.interpbase) for b in sl.frags]
             (isempty(frags) && isempty(titles[si])) && continue
             args = filter(!isempty, [sl.layout === nothing ? "" : "layout: \"$(_typ_str(sl.layout))\"", titles[si]])
             print(io, isempty(args) ? "#slide[\n" : "#slide($(join(args, ", ")))[\n")
-            # Each side-by-side row of the model is one `slidecols` call with a column per block.
-            for row in unique(b.row for b in sl.blocks)
-                fis = findall(b -> b.row == row, sl.blocks)
+            # Each side-by-side row of the model is one `slidecols` call with a column per fragment.
+            for row in unique(b.row for b in sl.frags)
+                fis = findall(b -> b.row == row, sl.frags)
                 function emit(fi)
                     f = frags[fi]
                     # Strip the hoisted H1 from the implicit-title cell so it isn't repeated on a body

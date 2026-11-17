@@ -108,7 +108,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test occursin("hello", md) && !occursin("ACME", md)
     end
 
-    @testset "slide_deck: layout, title, blocks, transition, auto, notes" begin
+    @testset "slide_deck: layout, title, frags, transition, auto, notes" begin
         src = """
         #%% md id=a layout=title transition=zoom auto=5
         # Hello *world*
@@ -141,28 +141,28 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         # a tagged slide that starts with a heading: tag values, title out of the body
         @test deck[1].layout == "title" && deck[1].transition == "zoom" && deck[1].auto == "5"
         @test deck[1].title.text == "Hello *world*" && deck[1].title.depth == 1
-        @test [b.cell for b in deck[1].blocks] == ["a"]
-        @test strip(deck[1].blocks[1].src) == "body one"
+        @test [b.cell for b in deck[1].frags] == ["a"]
+        @test strip(deck[1].frags[1].src) == "body one"
         @test deck[1].notes == ["b"]
         # an untagged slide: no tag values
         @test deck[2].layout === nothing && deck[2].transition === nothing && deck[2].auto === nothing
         @test deck[2].title.text == "Plain" && deck[2].title.depth == 2
         @test deck[2].notes == String[]
         # column group of a body block
-        @test [(b.cell, b.row, b.column) for b in deck[2].blocks] == [("c", 1, 1), ("d", 1, 2)]
+        @test [(b.cell, b.row, b.column) for b in deck[2].frags] == [("c", 1, 1), ("d", 1, 2)]
         # a slide whose first block is not a heading has no title
-        @test deck[3].title === nothing && deck[3].blocks[1].cell == "e"
+        @test deck[3].title === nothing && deck[3].frags[1].cell == "e"
         # the first cell with a layout tag wins; a code cell first means no title
         @test deck[4].layout == "center" && deck[4].title === nothing
-        # a title-only slide stays in the deck, with no blocks
-        @test deck[5].title.depth == 4 && isempty(deck[5].blocks) && deck[5].layout == "section"
+        # a title-only slide stays in the deck, with no fragments
+        @test deck[5].title.depth == 4 && isempty(deck[5].frags) && deck[5].layout == "section"
     end
 
     @testset "slide_deck: a heading with an interpolation keeps the body's numbering" begin
         src = "#%% md id=a\n## Total {{ t }}\n\nvalue {{ v }}\n"
         deck = NS.slide_deck(_mknb(src))
         @test deck[1].title.interpbase == 0
-        @test deck[1].blocks[1].interpbase == 1
+        @test deck[1].frags[1].interpbase == 1
     end
 
     @testset "slide_deck: the title follows the CommonMark ATX rule" begin
