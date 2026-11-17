@@ -1546,11 +1546,14 @@
       for (const c of dv.children) { const it = items.find(x => x.el === c); if (it && it.idx <= step) cur = c; }
       for (const c of dv.children) c.classList.toggle('derive-cur', c === cur);
     }
-    // The same fitting and lighting as the deck, so the preview is what the audience sees.
+    // The same fitting and lighting as the deck, so the preview is what the audience sees. The host
+    // keeps the slide number and whether the slide is at the fit floor: the hub reads both from a
+    // deck print for its fit report (server_deckshot.jl `deck_pdf_report`).
     const body = slide.querySelector('.slide-body');
     _lightTerms(body);
     _fitMath(body);
-    _fitBody(body, []);
+    host.dataset.slide = i + 1;
+    if (_fitBody(body, [])) host.dataset.atFloor = '1'; else delete host.dataset.atFloor;
     return total;
   }
   // ── Rendering the deck to a video ───────────────────────────────────────────
@@ -1654,7 +1657,7 @@
     whenLoaded(grid, done);
   }
   // The deck one page per slide at the slide's own size (`--u: 1px`), for the hub's PDF of the deck
-  // as presented (server_deckshot.jl `deck_pdf`). Each slide is at its last step, or with `&steps=all`
+  // as presented (server_deckshot.jl `deck_pdf_report`). Each slide is at its last step, or with `&steps=all`
   // on a page for every step from its first, marked by a row of step dots.
   function _printDeck(done, whenLoaded) {
     _stillCharts().then(() => _drawPrint(done, whenLoaded));

@@ -2843,7 +2843,7 @@ function _make_router(h::Hub)
             # `layout=present`: the live deck printed in headless Chrome (server_deckshot.jl), not
             # Typst, in Slate palette `slatetheme` (the headless browser has no saved one).
             get(qp, "layout", "") == "present" ?
-                (deck_pdf(deck_print_url(_hub_url(h), nb.id; theme = get(qp, "slatetheme", ""), steps = get(qp, "steps", ""))), String[]) :
+                deck_print_report(nb, _hub_url(h); theme = get(qp, "slatetheme", ""), steps = get(qp, "steps", "")) :
             _export_pdf_report(nb; _pdf_export_opts(qp, nb)...)
         catch e
             return HTTP.Response(500, "PDF export failed: " * sprint(showerror, e))

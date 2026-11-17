@@ -3544,6 +3544,9 @@ function create_tools(GateTool::Type)
     ("article","report")`; `columns ∈ ("1","2")`; `code ∈ ("normal","small","smaller","tiny",
     "hidden")`; `body ∈ ("","large","normal","compact","small")`. `path` overrides the output
     file (default: a temp path). Returns the written path — pass it to `Read` to see the pages.
+    For a deck (`slides` or `present`), the answer also lists the export warnings of the export
+    dialog: a deck setting that failed its check, and each slide that does not fit at the smallest
+    text size.
 
     Set `layout="slides"` to render a 16:9 (or the notebook's `slideratio`, 16:10 or 4:3) presentation DECK — one slide
     per page, segmented by markdown headings + `slide`/`notes` cell tags (see the live "Present"
@@ -3575,10 +3578,10 @@ function create_tools(GateTool::Type)
         # Deck defaults: code hidden unless the caller explicitly opts in.
         slides = layout == "slides"
         slide_source = slides ? (source == "1") : (source != "0")
-        pdf = try
+        pdf, warns = try
             layout == "present" ?
-                NotebookServer.deck_pdf(NotebookServer.deck_print_url(_base(), nb.id; theme = charttheme, steps)) :
-            export_pdf(nb; include_source = slide_source, style = style,
+                NotebookServer.deck_print_report(nb, _base(); theme = charttheme, steps) :
+            NotebookServer._export_pdf_report(nb; include_source = slide_source, style = style,
                        columns = something(tryparse(Int, columns), 1), theme = theme,
                        charttheme = charttheme, override = override == "1",
                        code = code, body = body, include_params = params == "1",
@@ -3601,6 +3604,8 @@ function create_tools(GateTool::Type)
                        "browser tab is open, so they fell back to plain text — the PDF is complete " *
                        "but those cells are not what the page shows. Open the notebook in a browser " *
                        "and re-export to capture them." : ""
+        # The export warnings of the dialog: deck settings checks and slides at the fit floor.
+        isempty(warns) || (warn *= "\nExport warnings (the PDF is complete):" * join(("\n⚠ " * w for w in warns)))
         return "Wrote $(length(pdf)) bytes → $out\n(open it with Read to view the pages)" * warn
     end
 
