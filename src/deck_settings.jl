@@ -261,6 +261,13 @@ _deck_num(x::Real) = isinteger(x) ? string(Int(x)) : string(round(Float64(x); di
 _deck_figure_palette(s, palette::AbstractString) =
     (fp = s["figures"]["slate-palette"]; isempty(fp) ? String(palette) : fp)
 
+# True when the export picker changes no colour of the deck: no value refers to the Slate palette and
+# `figures.slate-palette` names one.
+function deck_fixes_colours(s)
+    slate(v) = v isa AbstractString && startswith(v, "slate.") || v isa AbstractDict && any(slate, values(v))
+    return !isempty(s["figures"]["slate-palette"]) && !any(d -> any(slate, values(d)), values(s))
+end
+
 # True when a hex colour is light (the luminance rule of `_export_is_light`).
 function _hex_is_light(hex::AbstractString)
     h = lstrip(hex, '#')

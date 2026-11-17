@@ -1788,6 +1788,13 @@ function state_json(nb::LiveNotebook)
     meta["slideTimings"] = get(nb.report.meta, "slidetimings", "")           # rehearsed seconds, `<slide>:<step>=<s>,…`
     meta["slideTheme"] = get(nb.report.meta, "slidetheme", "")               # "" = follow the editor theme
     meta["slideRatio"] = get(nb.report.meta, "slideratio", "16:9")           # PDF deck aspect ratio
+    # The merged deck settings as CSS custom properties, the warnings of their checks, and whether the
+    # export picker can change the colours of the deck (the export dialog says when it cannot).
+    let ds = notebook_deck_settings(nb)
+        meta["deckCss"] = deck_settings_css(ds.values)
+        meta["deckSettingsWarnings"] = ds.warnings
+        meta["deckFixesColours"] = deck_fixes_colours(ds.values)
+    end
     meta["deckBrowser"] = chrome_status_cached().problem                    # "" = the deck print, video and captures can run
     meta["bibStyle"] = get(nb.report.meta, "bibstyle", "ieee")               # CSL citation/reference style
     meta["agentModel"] = get(nb.report.meta, "agentmodel", "")               # per-notebook agent-model override ("" = browser global)

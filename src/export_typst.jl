@@ -325,9 +325,10 @@ _slide_code_size(code) =
 const _FIT_TYPST = "(text-floor: 0.62, fig-floor: 0.25, fig-cap: 0.7, math-floor: 0.4)"
 
 # Preamble for the slides layout. Reuses the same block helpers as the article preamble but on a
-# landscape slide page with bigger type. It defines `SLIDE_W` and `SLIDE_H` (the page size), `u` (the
-# slide unit: 1/1920 of the page width at 16:9 and 16:10, 1/1440 at 4:3, as the live canvas), `FIT`
-# (the fit parameters), `#let fit(body)` (see its comment), `#let slidecols(widths, ..cols)` (a row of
+# landscape slide page with bigger type. It imports `deck-settings.typ` (`deck_settings_typ`):
+# `SLIDE_W` and `SLIDE_H` (the page size), `u` (the slide unit: 1/1920 of the page width at 16:9 and
+# 16:10, 1/1440 at 4:3, as the live canvas) and `settings` (the deck settings). It defines `FIT` (the fit
+# parameters), `#let fit(body)` (see its comment), `#let slidecols(widths, ..cols)` (a row of
 # columns, see its comment) and `#let slide(body, layout: none, title: none, n: none)`: one page per
 # slide, the body inside `fit`. `layout` is the slide's layout tag and `title` its heading (a
 # `heading` element), both `none` when unset; `n` is the slide number on a notes page. A template that
@@ -335,19 +336,14 @@ const _FIT_TYPST = "(text-floor: 0.62, fig-floor: 0.25, fig-cap: 0.7, math-floor
 # must draw the body through `fit`, because `fit` sizes the figures and records the fit.
 # Lengths in the body follow the live deck: text sizes and spacing in `em` (they follow the text
 # scale of `fit`), geometry in `u` (fixed).
-function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "dark",
-                                ratio::AbstractString = "16:9", code::AbstractString = "small")
+function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "dark", code::AbstractString = "small")
     pre = _typ_str(strip(replace(_MITEX_SHIMS, r"\s+" => " ")))
     p = _palette(theme)
-    w, h = _slide_geom(ratio)
-    W = first(deck_canvas(ratio))
     rawtheme = isempty(p.codetheme) ? "" : "\n    #set raw(theme: \"$(p.codetheme)\")"
     return """
     #import "@preview/cmarker:$(_CMARKER_VER)"
     #import "@preview/mitex:$(_MITEX_VER)": mitex, mi
-    #let SLIDE_W = $w
-    #let SLIDE_H = $h
-    #let u = SLIDE_W / $W
+    #import "deck-settings.typ": SLIDE_W, SLIDE_H, u, settings
     #let FIT = $_FIT_TYPST
     #set document(title: "$(_typ_str(title))")
     #set page(width: SLIDE_W, height: SLIDE_H, margin: (x: 121 * u, y: 91 * u), fill: $(p.page))
@@ -1307,13 +1303,15 @@ cell the document title falls back to the first markdown H1 (then the notebook f
 """
 export_pdf(nb::LiveNotebook; kwargs...) = first(_export_pdf_report(nb; kwargs...))
 
-# `export_pdf` and the export warnings of the PDF: the slides at the fit floor of a slides layout.
+# `export_pdf` and the export warnings of the PDF. A slides layout warns about the checks of its deck
+# settings and about the slides at the fit floor.
 function _export_pdf_report(nb::LiveNotebook; kwargs...)
     dir = _build_typst_project(nb; kwargs...)
     try
         typ = joinpath(dir, "doc.typ"); pdf = joinpath(dir, "out.pdf")
         _typst_compile(typ, pdf)
-        warns = get(kwargs, :layout, "") == "slides" ? _fit_warnings(_typst_query(typ, "<slate>")) : String[]
+        warns = get(kwargs, :layout, "") == "slides" ?
+            vcat(notebook_deck_settings(nb).warnings, _fit_warnings(_typst_query(typ, "<slate>"))) : String[]
         return read(pdf), warns
     finally
         rm(dir; recursive = true, force = true)
@@ -2144,21 +2142,24 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                                include_source::Bool = false, include_params::Bool = false,
                                notes::Bool = false, level::Integer = 2, outputs::AbstractString = "all")
     show_source = include_source && code != "hidden"
-    ct = _chart_theme(charttheme, theme)                               # the Slate palette charts render in
+    # Pull the manifest now, so an edit to a file-backed template part (`@pkg_asset`) reaches this export
+    # without a run or a worker restart.
+    _refresh_extensions_for_page!(nb)
+    ds = notebook_deck_settings(nb)
+    palette = _chart_theme(charttheme, theme)       # the Slate palette of the `slate.` colours
+    ct = _deck_figure_palette(ds.values, palette)   # the Slate palette the figures render in
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_html_rasters!(nb; theme = ct)   # one round-trip, under the EXPORT's palette (see above)
     compfigs = _warm_component_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_vector_figs!(nb, compfigs; progress = cid -> _export_progress(nb, cid))
-    # Pull the manifest now, so an edit to a file-backed template source (`@pkg_asset`) reaches this
-    # export without a run or a worker restart.
-    _refresh_extensions_for_page!(nb)
     lock(nb.lock) do
         dir = mktempdir()
         mediasz = Dict{String,Any}()   # staged image => its `{width=…}` block, written out as media.json
         theme == "dark" && write(joinpath(dir, "code-dark.tmTheme"), _CODE_DARK_TMTHEME)
+        write(joinpath(dir, "deck-settings.typ"), deck_settings_typ(ds.values; ratio, palette))
         io = IOBuffer()
-        print(io, _typst_preamble_slides(nb.report.title; theme = theme, ratio = ratio, code = code))
+        print(io, _typst_preamble_slides(nb.report.title; theme = theme, code = code))
         _apply_deck_template!(io, dir, notebook_deck_template(nb))
         cells = filter(c -> renders(c.kind), nb.report.cells)
         # Role-tagged metadata → a dedicated title slide (metablock); hoisted title/abstract cells

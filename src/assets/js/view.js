@@ -155,6 +155,17 @@ function applyPackageImports(state) {
   } catch (e) { console.error('import map append failed', e); }
 }
 
+// The deck settings as custom properties (`deckCss`, written by the hub in `:where(…)` rules): one
+// `<style>` element, replaced when the text changes. The base CSS of the deck reads these values, and a
+// package CSS can override them.
+function applyDeckSettings(state) {
+  const css = state && state.deckCss;
+  if (typeof css !== 'string') return;
+  let el = document.getElementById('slate-deck-settings');
+  if (!el) { el = document.createElement('style'); el.id = 'slate-deck-settings'; document.head.appendChild(el); }
+  if (el.textContent !== css) el.textContent = css;
+}
+
 window._slateFEInjected = window._slateFEInjected || new Set();
 function injectFrontendScripts(state) {
   const list = (state && state.frontendScripts) || [];
@@ -1829,6 +1840,7 @@ function _publishState(state) {
   if (selectedId && !(state.cells || []).some(c => c.id === selectedId)) selectedId = null;   // dropped/renamed
   applyPackageImports(state);                   // module specifiers those scripts resolve — strictly before them
   injectFrontendScripts(state);                 // package-declared widget/editor scripts (before the re-render)
+  applyDeckSettings(state);                     // the deck settings as `--deck-*` custom properties
   window.slateStore && window.slateStore.applyState(state);   // → Preact re-renders #nb reactively
   window.onNbState && window.onNbState(state);                // graph-shaped consumers (DAG panel)
   updateChrome(state);

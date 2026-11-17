@@ -354,6 +354,44 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test d["admonition"]["aside"]["radius"] == d["admonition"]["radius"]
     end
 
+    # A `slate.` colour is a CSS reference on the live deck and a hex value of the export's Slate
+    # palette in the PDF and for an exporter.
+    @testset "deck settings: slate. colours, the live CSS and deck-settings.typ" begin
+        s = NS.deck_settings("", "").values
+        for (name, p) in RE.SLATE_PALETTES
+            d = NS.deck_settings_dict(s; palette = name)
+            @test (d["roles"]["fg"], d["roles"]["strong"], d["roles"]["dim"], d["roles"]["accent"], d["roles"]["surface"]) ==
+                  (p.text, p.text, p.dim, p.accent, p.bg)
+            @test d["slate_palette"] == name
+            typ = NS.deck_settings_typ(s; ratio = "16:9", palette = name)
+            @test occursin("\"fg\": rgb(\"$(p.text)\")", typ) && occursin("\"surface\": rgb(\"$(p.bg)\")", typ)
+        end
+        # A figure palette that the deck settings name wins over the export palette.
+        fixed = NS.deck_settings("[figures]\nslate-palette = \"daylight\"\n", "").values
+        @test NS.deck_settings_dict(fixed; palette = "midnight")["slate_palette"] == "daylight"
+
+        # Live: `slate.` names stay CSS references, and every rule is inside `:where(…)`, so that a
+        # package CSS overrides it.
+        nb = _mknb("#%% md id=a\n## A\n\nbody\n")
+        css = NS.state_json(nb)["deckCss"]
+        @test occursin("--deck-fg: var(--text);", css) && occursin("--deck-surface: var(--bg);", css)
+        @test occursin("--deck-rhythm-cell-gap: calc(18 * var(--u));", css)
+        rules = [strip(r) for r in split(css, '}') if !isempty(strip(r))]
+        @test !isempty(rules) && all(r -> startswith(r, ":where("), rules)
+
+        # The slides PDF: with no export palette, `theme = "light"` gives daylight and `"dark"` midnight.
+        for (theme, name) in (("light", "daylight"), ("dark", "midnight"))
+            dir = NS._build_slides_project(nb; theme)
+            try
+                typ = read(joinpath(dir, "deck-settings.typ"), String)
+                @test occursin("\"fg\": rgb(\"$(RE.SLATE_PALETTES[name].text)\")", typ)
+                @test occursin("#import \"deck-settings.typ\"", read(joinpath(dir, "doc.typ"), String))
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+    end
+
     @testset "cell_json exposes slide/notes flags" begin
         r = RE.parse_report("#%% code id=a slide\nx=1\n\n#%% md id=b notes\nhi\n")
         j1 = NS.cell_json(r.cells[1]); j2 = NS.cell_json(r.cells[2])
