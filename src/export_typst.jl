@@ -574,7 +574,6 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       let draw(s, f) = {
         set text(size: s * 1em)
         show <slate-fig>: it => drawfig(it.value, f)
-        show table: base-table
         body
       }
       let tall(s, f) = measure(block(width: sz.width, { show regex("§c§[^§]*§[^§]+§[^§]*§"): it => [[0]]; draw(s, f) })).height
