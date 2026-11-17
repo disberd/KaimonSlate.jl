@@ -441,6 +441,39 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
     end
 
+    # Each key of the base file reaches the live deck (`--deck-<group>-<key>` in notebook.css or
+    # slides.js) and the slides PDF (`settings.<group>.<key>` in export_typst.jl). Julia reads the keys
+    # in `julia`. The two `todo` lists hold the keys that a target does not read yet: a key must leave
+    # its list when a target starts to read it, so the lists only get shorter.
+    @testset "deck settings: each key has a reader on each target" begin
+        src = joinpath(@__DIR__, "..", "src")
+        live = read(joinpath(src, "assets", "notebook.css"), String) * read(joinpath(src, "assets", "js", "slides.js"), String)
+        typ = read(joinpath(src, "export_typst.jl"), String)
+        julia = ("code.syntax", "figures.slate-palette")
+        todo_live = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
+                     "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
+                     "code.fill", "code.font", "key-message.bar-color", "key-message.bar-width", "key-message.fill",
+                     "key-message.pad-x", "key-message.pad-y", "key-message.text-color", "rhythm.after-table",
+                     "rhythm.heading-above", "rhythm.nested-list", "table.body-pad-y", "table.full-width",
+                     "table.header-color", "table.header-fill", "table.header-pad-y", "table.line-height", "table.pad-x",
+                     "table.rule-color", "table.stripe-fill", "table.text-size")
+        todo_typst = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
+                      "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
+                      "figures.radius", "heading.h1", "heading.h2", "heading.h3", "key-message.bar-color",
+                      "key-message.bar-width", "key-message.fill", "key-message.pad-x", "key-message.pad-y",
+                      "key-message.text-color", "rhythm.after-table", "rhythm.cell-gap", "rhythm.heading-above",
+                      "rhythm.heading-below", "rhythm.nested-list", "roles.accent2", "table.full-width",
+                      "table.header-color", "table.line-height", "text.line-height", "text.list-indent",
+                      "text.list-item-after", "text.paragraph-after")
+        keys_ = ["$g.$k" for (g, d) in NS.deck_settings("", "").values for (k, v) in d if g != "palette" && !(v isa AbstractDict)]
+        @test length(keys_) > 50
+        reads_live(key) = occursin(Regex(NS._deck_css_name(split(key, '.')...) * "(?![\\w-])"), live)
+        reads_typst(key) = occursin(Regex("settings\\." * replace(key, "." => "\\.") * "(?![\\w-])"), typ)
+        checked = filter(!in(julia), keys_)
+        @test isempty(filter(key -> reads_live(key) == (key in todo_live), checked))
+        @test isempty(filter(key -> reads_typst(key) == (key in todo_typst), checked))
+    end
+
     # The Typst preamble reads the deck settings: a template's `text.size` moves the body text size that
     # the fit record measures, in `u`.
     @testset "a deck setting moves the measured text size in the PDF" begin

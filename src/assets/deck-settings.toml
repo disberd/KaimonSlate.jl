@@ -42,7 +42,6 @@ list-indent = "1.2em"
 h1 = "2.6em"
 h2 = "1.85em"
 h3 = "1.2em"
-weight = 750
 
 # `cell-gap` is the gap between the cells of a slide and below a key message, `after-table` the space
 # below a table. `heading-above` and `heading-below` are the margins of a heading, in em of the heading.
