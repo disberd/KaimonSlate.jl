@@ -54,6 +54,34 @@ were written when they went out. They are marked.
   repeated in the body. The slide of a `title` cell has `data-role="title"`, so a stylesheet can
   match it with CSS only. The default look of the deck does not change.
 
+### Visible changes
+
+- The PDF deck fits a tall slide as the live deck does: it sets the text smaller and keeps the
+  geometry (margins, gaps, insets) at its size. The smallest text scale in the PDF is now 0.62, as on
+  the live deck; it was 0.5. A shrunk slide is centred at the height it is drawn at, so its title no
+  longer goes above the top margin. A slide that does not fit at 0.62 starts at the top of the page
+  and runs past its bottom.
+- When a slide is too tall, its text and its figures share the shrink, on the live deck and in the
+  PDF deck: at text scale `s` a figure keeps at least `(1 + s) / 2` of its full size. Only at the text
+  floor do the figures go down further, to 0.25. On the live deck, charts now shrink with the other
+  figures; they used to shrink to half their size before the text did.
+- One figure cap for every figure, charts included: 0.7 of the slide height, on the live deck and in
+  the PDF deck, at each slide ratio. It replaces 760 u for pictures and 0.82 of the slide height for
+  charts on the live deck, and 0.62 of the page body in the PDF deck. A chart on a slide that fits
+  at full size is about 15 % smaller.
+- On the live deck, the markdown output of a code cell (for example a `Markdown.parse` value) is set
+  at the body size, as in the PDF deck, not at 0.7 of it. A cell that held only the slide heading is
+  not drawn once the heading is in the slide title.
+- The export dialog shows a warning for each slide of a PDF deck that does not fit at the smallest
+  text size. The PDF is written all the same.
+- In the PDF deck, the slide unit `u` is 1/1920 of the page width at 16:9 and 16:10 and 1/1440 at
+  4:3, as on the live canvas, so a 4:3 PDF has the text size of the live 4:3 deck; it was 0.75 of
+  it. The deck preamble defines `u` and `SLIDE_H` next to `SLIDE_W`, and records the fit of each
+  slide as `(kind: "fit", slide, s, f, at_floor, size)` under the label `<slate>`. Code listings are
+  0.62 em of the body text, as on the live deck (they were 8.5 pt), and the `code` option scales
+  them. The column gap is 56 u, as on the live deck. Display math that is wider than its column is
+  set smaller down to 0.4 of its size, as on the live deck.
+
 ## [2.2.0] - 2026-11-16
 
 ### Added
