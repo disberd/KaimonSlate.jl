@@ -109,8 +109,7 @@ were written when they went out. They are marked.
 - The slides PDF takes its colours from the Slate palette that the export dialog's Theme picker
   chooses (`charttheme`). When no palette is given, `theme="light"` gives Daylight and `theme="dark"`
   Midnight, so the default slides PDF stays light. The base colours of the PDF deck change a little:
-  the text is the palette's text colour, not black or `#d6dae8`. Bold text and headings of the base
-  live deck take the theme's text colour, not its brighter `--strong` colour.
+  the text is the palette's text colour, not black or `#d6dae8`.
 - On a deck template that sets `figures.slate-palette` (a deck with fixed colours), figures in the PDF
   deck and in the deck print take that palette and no longer follow the Theme picker. The export
   dialog says when the deck template fixes the colours.

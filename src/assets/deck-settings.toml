@@ -11,8 +11,8 @@
 #   dropped with a warning.
 # - A ratio is a plain number.
 # - A colour is a hex value ("#003247"), a name from [palette], a role name from [roles], "none", or
-#   "slate.<name>": a colour of the Slate palette in force (bg, bg2, bg3, border, text, dim, accent,
-#   green, red, gold, orange, purple, teal). A role is a hex value, a palette name or a "slate." name.
+#   "slate.<name>": a colour of the Slate palette in force (bg, bg2, bg3, border, text, strong, dim,
+#   accent, green, red, gold, orange, purple, teal). A role is a hex value, a palette name or a "slate." name.
 # - A font is a list of font family names.
 #
 # The groups rhythm, fit and columns, and the structure keys of [table], are base keys: Slate warns
@@ -22,7 +22,7 @@
 
 [roles]
 fg = "slate.text"
-strong = "slate.text"
+strong = "slate.strong"
 dim = "slate.dim"
 accent = "slate.accent"
 accent2 = "#b392f0"

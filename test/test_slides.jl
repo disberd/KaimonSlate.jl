@@ -362,7 +362,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         for (name, p) in RE.SLATE_PALETTES
             d = NS.deck_settings_dict(s; palette = name)
             @test (d["roles"]["fg"], d["roles"]["strong"], d["roles"]["dim"], d["roles"]["accent"], d["roles"]["surface"]) ==
-                  (p.text, p.text, p.dim, p.accent, p.bg)
+                  (p.text, p.strong, p.dim, p.accent, p.bg)
             @test d["slate_palette"] == name
             typ = NS.deck_settings_typ(s; ratio = "16:9", palette = name)
             @test occursin("\"fg\": rgb(\"$(p.text)\")", typ) && occursin("\"surface\": rgb(\"$(p.bg)\")", typ)
@@ -376,6 +376,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         nb = _mknb("#%% md id=a\n## A\n\nbody\n")
         css = NS.state_json(nb)["deckCss"]
         @test occursin("--deck-fg: var(--text);", css) && occursin("--deck-surface: var(--bg);", css)
+        @test occursin("--deck-strong: var(--strong);", css)    # bold text and headings keep the theme's --strong
         @test occursin("--deck-rhythm-cell-gap: calc(18 * var(--u));", css)
         rules = [strip(r) for r in split(css, '}') if !isempty(strip(r))]
         @test !isempty(rules) && all(r -> startswith(r, ":where("), rules)

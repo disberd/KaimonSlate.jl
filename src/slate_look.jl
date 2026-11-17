@@ -15,20 +15,21 @@
 # notebook.css (kept in sync by the golden test). Makie runs SERVER-side and can't read the CSS, so
 # this is the server-side mirror: `slate_theme(theme=…)` / `use_slate_theme!(theme=…)` selects one so a
 # rendered plot matches the ACTIVE UI theme (or an explicitly named one), not just the dark default.
+# `strong` is the high-emphasis text colour (headings, bold text), the CSS `--strong`.
 const SLATE_PALETTES = Dict{String,NamedTuple}(
-    "midnight"        => (bg="#0d1120", bg2="#141828", bg3="#1a1e2e", border="#2a2e40", text="#d4d8e8", dim="#6a7090",
+    "midnight"        => (bg="#0d1120", bg2="#141828", bg3="#1a1e2e", border="#2a2e40", text="#d4d8e8", strong="#fff", dim="#6a7090",
                           accent="#569cd6", green="#56d364", red="#e57575", gold="#ffd700", orange="#ce9178", purple="#c586c0", teal="#4ec9b0"),
-    "graphite"        => (bg="#15171c", bg2="#1c1f26", bg3="#23262e", border="#33373f", text="#d7dae1", dim="#828b9c",
+    "graphite"        => (bg="#15171c", bg2="#1c1f26", bg3="#23262e", border="#33373f", text="#d7dae1", strong="#fff", dim="#828b9c",
                           accent="#6cb6ff", green="#57d364", red="#e5797b", gold="#e3b341", orange="#e0a071", purple="#c89be8", teal="#54c7b8"),
-    "nord"            => (bg="#2e3440", bg2="#3b4252", bg3="#434c5e", border="#4c566a", text="#e5e9f0", dim="#8893a8",
+    "nord"            => (bg="#2e3440", bg2="#3b4252", bg3="#434c5e", border="#4c566a", text="#e5e9f0", strong="#eceff4", dim="#8893a8",
                           accent="#88c0d0", green="#a3be8c", red="#bf616a", gold="#ebcb8b", orange="#d08770", purple="#b48ead", teal="#8fbcbb"),
-    "dracula"         => (bg="#282a36", bg2="#2f3242", bg3="#383b4d", border="#44475a", text="#f8f8f2", dim="#7081ad",
+    "dracula"         => (bg="#282a36", bg2="#2f3242", bg3="#383b4d", border="#44475a", text="#f8f8f2", strong="#fff", dim="#7081ad",
                           accent="#bd93f9", green="#50fa7b", red="#ff5555", gold="#f1fa8c", orange="#ffb86c", purple="#ff79c6", teal="#8be9fd"),
-    "solarized-dark"  => (bg="#002b36", bg2="#073642", bg3="#0a4250", border="#13515f", text="#93a1a1", dim="#5d737e",
+    "solarized-dark"  => (bg="#002b36", bg2="#073642", bg3="#0a4250", border="#13515f", text="#93a1a1", strong="#eee8d5", dim="#5d737e",
                           accent="#268bd2", green="#859900", red="#dc322f", gold="#b58900", orange="#cb4b16", purple="#6c71c4", teal="#2aa198"),
-    "daylight"        => (bg="#ffffff", bg2="#f5f7fa", bg3="#eaeef3", border="#d5dbe3", text="#222730", dim="#6b7480",
+    "daylight"        => (bg="#ffffff", bg2="#f5f7fa", bg3="#eaeef3", border="#d5dbe3", text="#222730", strong="#0a0d12", dim="#6b7480",
                           accent="#0969da", green="#1a7f37", red="#cf222e", gold="#9a6700", orange="#bc4c00", purple="#8250df", teal="#0a7b83"),
-    "solarized-light" => (bg="#fdf6e3", bg2="#eee8d5", bg3="#e4ddc8", border="#d3cbb0", text="#586e75", dim="#93a1a1",
+    "solarized-light" => (bg="#fdf6e3", bg2="#eee8d5", bg3="#e4ddc8", border="#d3cbb0", text="#586e75", strong="#073642", dim="#93a1a1",
                           accent="#268bd2", green="#859900", red="#dc322f", gold="#b58900", orange="#cb4b16", purple="#6c71c4", teal="#2aa198"),
 )
 # The default ("Midnight") palette — back-compat alias; the golden test pins this to notebook.css `:root`.
