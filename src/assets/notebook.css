@@ -3146,8 +3146,9 @@ body.presenting { overflow: hidden; }
 .slide-title, .slide-body { position: relative; z-index: 1; min-height: 0; }
 .slide-title { flex: none; }
 /* The heading and the block after it were one markdown cell: no padding between them, and the margins
-   below the heading and above the next block collapsed into one. */
-.slide-title.md { padding-bottom: 0; }
+   below the heading and above the next block collapsed into one. A markdown cell of a slide keeps the
+   padding of a notebook cell, 12 by 16 at the 1920 canvas, in slide units; the slides PDF copies it. */
+.slide-title.md { padding: calc(var(--u) * 12) calc(var(--u) * 16) 0; }
 .deck-slide .slide-title.md.role-title { padding-bottom: 0; }
 .slide-title + .slide-body > .cell:first-child .md { padding-top: 0; }
 .slide-title + .slide-body > .cell:first-child .md > :first-child,
@@ -3235,16 +3236,20 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
    output (`.markdown`) is prose and takes the same rhythm as a markdown cell. The body's `gap` is the
    space between cells, so a markdown cell adds no padding above or below. */
 .deck-slide .md { font-size: 1em; color: var(--deck-fg); max-width: none; }
-.deck-slide .slide-body .md { padding-block: 0; }
+.deck-slide .slide-body .md { padding: 0 calc(var(--u) * 16); }
 .deck-slide :is(.md, .markdown) :is(p, li) { font-size: 1em; }
 .deck-slide :is(.md, .markdown) p { margin: 0 0 var(--deck-text-paragraph-after); }
 .deck-slide :is(.md, .markdown) :is(ul, ol) { margin: .2em 0 .6em; padding-left: var(--deck-text-list-indent); }
 .deck-slide :is(.md, .markdown) li { margin: var(--deck-text-list-item-after) 0; }
+/* A nested list has the item spacing above and below it, as in the slides PDF. */
+.deck-slide :is(.md, .markdown) li > :is(ul, ol) { margin: 0; }
 /* A loose list puts each item in a paragraph: the item margin is the spacing, as in a tight list. */
 .deck-slide :is(.md, .markdown) li > p { margin: 0; }
 .deck-slide .md li::marker { color: var(--deck-accent); }
 .deck-slide .md h1, .deck-slide .md h2, .deck-slide .md h3 { font-family: var(--deck-font); color: var(--deck-strong);
-  letter-spacing: -.02em; line-height: 1.1; border: none; margin: 0 0 var(--deck-rhythm-heading-below); }
+  letter-spacing: -.02em; line-height: 1.1; border: none;
+  margin: var(--deck-rhythm-heading-above) 0 var(--deck-rhythm-heading-below); }
+.deck-slide .md :is(h1, h2, h3):first-child { margin-top: 0; }
 /* Headings are as wide as their text: a heading that morphs between slides is animated as a box, and
    a full-width box on one slide against a text-width one on the next stretches the text. */
 .deck-slide .md h1, .deck-slide .md h2, .deck-slide .md h3 { width: fit-content; max-width: 100%; }
@@ -3257,14 +3262,27 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 /* `class=serif`: a book face for the slide's headings, for a title or a quieter section. */
 .deck-slide.serif .md :is(h1, h2, h3) { font-family: "Iowan Old Style", "Charter", "Source Serif 4", Georgia, serif;
   font-weight: 600; letter-spacing: -.01em; }
-.deck-slide .md h1 { font-size: var(--deck-heading-h1); font-weight: 800; }
-.deck-slide .md h2 { font-size: var(--deck-heading-h2); font-weight: 750; }
-.deck-slide .md h3 { font-size: var(--deck-heading-h3); font-weight: 650; color: var(--deck-accent); }
+.deck-slide .md h1 { font-size: var(--deck-heading-h1); font-weight: var(--deck-heading-weight); }
+.deck-slide .md h2 { font-size: var(--deck-heading-h2); font-weight: var(--deck-heading-weight); }
+.deck-slide .md h3 { font-size: var(--deck-heading-h3); font-weight: var(--deck-heading-weight); color: var(--deck-accent); }
 .deck-slide .md h2::after { content: ""; display: block; width: 2.2em; height: calc(var(--u) * 6); margin-top: .32em;
   border-radius: calc(var(--u) * 99); background: linear-gradient(90deg, var(--deck-accent), var(--deck-accent2)); }
 .deck-slide .md strong { color: var(--deck-strong); }
 .deck-slide .md code { font-size: .85em; }
 .deck-slide .md pre { font-size: var(--deck-code-size); }
+/* A key message (a blockquote) has the gap between cells below it. `:where` keeps the rule below a
+   deck template's own. */
+.deck-slide :where(.md, .markdown) blockquote { margin: 0 0 var(--deck-rhythm-cell-gap); }
+.deck-slide :where(.md, .markdown) blockquote > :last-child { margin-bottom: 0; }
+/* Base tables: the structure and paint keys of `[table]`. The table is as wide as its column when
+   `full-width` is on. */
+.deck-slide :is(.md, .markdown) table { font-size: var(--deck-table-text-size); line-height: var(--deck-table-line-height);
+  min-width: calc(var(--deck-table-full-width) * 100%); margin-bottom: var(--deck-rhythm-after-table); }
+.deck-slide :is(.md, .markdown) :is(th, td) { border: none; border-bottom: calc(var(--u) * 2) solid var(--deck-table-rule-color);
+  padding: var(--deck-table-body-pad-y) var(--deck-table-pad-x); }
+.deck-slide :is(.md, .markdown) th { padding-block: var(--deck-table-header-pad-y); background: var(--deck-table-header-fill);
+  color: var(--deck-table-header-color); }
+.deck-slide :is(.md, .markdown) tbody tr:nth-child(even) td { background: var(--deck-table-stripe-fill); }
 .deck-slide .md .columns { display: flex; gap: var(--deck-columns-gap); align-items: flex-start; }
 .deck-slide .md .columns > .column { flex: 1 1 0; min-width: 0; }
 #nb .md .columns { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
