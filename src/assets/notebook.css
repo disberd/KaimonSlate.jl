@@ -3227,10 +3227,12 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide .cell > .output, .deck-slide .cell > .echarts, .deck-slide .cell > .tables,
 .deck-slide .cell > .controls, .deck-slide .cell > .anim { border: none !important; }
 /* `--figcap` is the figure cap (a share of the slide height, slides.js `FIT`); `--fitw` is the width
-   the fit pass (slides.js `_fitBody`) gives a picture so that the slide fits. */
+   the fit pass (slides.js `_fitBody`) gives a picture so that the slide fits. Only a picture that has
+   `--fitw` takes `!important`, so an inline or package `max-width` applies to the others. */
 .deck-slide .output img, .deck-slide .md img, .deck-slide .md video {
   max-height: var(--figcap); height: auto; border-radius: var(--deck-figures-radius); }
-.deck-slide :is(.output, .md, .snap) :is(img, video) { max-width: min(100%, var(--fitw, 100%)) !important; }
+.deck-slide :is(.output, .md, .snap) :is(img, video) { max-width: 100%; }
+.deck-slide :is(.output, .md, .snap) :is(img, video)[style*="--fitw"] { max-width: min(100%, var(--fitw)) !important; }
 
 /* Typography: one scale, in `em` of the body size, so `--shrink` scales all of it together. A markdown
    output (`.markdown`) is prose and takes the same rhythm as a markdown cell. The body's `gap` is the

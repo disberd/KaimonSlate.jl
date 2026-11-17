@@ -795,6 +795,10 @@ end
         occursin(abslen, d) && push!(bad, "$(m[1]) { $d }")
     end
     @test isempty(bad)
+    # An inline `max-width` of a deck image keeps its effect: only a picture that the fit gave `--fitw`
+    # takes an `!important` width.
+    img = [m for m in rules if occursin(":is(img, video)", m[1])]
+    @test !isempty(img) && all(m -> !occursin(r"max-width[^;]*!important", m[2]) || occursin("[style*=\"--fitw\"]", m[1]), img)
     pre = split(NS._typst_preamble_slides("T"), '\n')
     @test isempty(filter(l -> occursin(abslen, l) && !occursin(r"#let (SLIDE_[WH]|mdlen)\b", l), pre))
     spec = Dict("columns" => [Dict("name" => "a")], "rows" => [[1], [2]],
