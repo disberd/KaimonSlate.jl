@@ -119,14 +119,16 @@ were written when they went out. They are marked.
 - The PDF deck has the geometry of the live base deck: a body padding of 84, 120 and 72 u, the body at
   the top of the slide (the `center`, `title` and `section` layouts stay centred), the slide number at
   the bottom right, and the title below the 12 u padding of the live title. Headings take the sizes
-  and the weight of the deck settings, as on the live deck, and a level-2 heading has the accent bar
-  of the live deck under it.
+  of the deck settings and the weights of the live deck, and a level-2 heading has the accent bar of
+  the live deck under it.
 - The PDF deck spaces lines and blocks as the live deck does. Each line has the line box of CSS: the
   ascender to the descender of the font, as Typst measures it, with half of the rest of the line
   height above and below. Paragraphs, lists and headings take the spacing of the deck settings, the
   cells of a slide and a key message have 18 u below them, a table has no space below it, and display
   math, inline math and code in markdown have the sizes of the live deck. A row of cells that holds a
-  markdown cell centres its cells, as on the live deck.
+  markdown cell centres its cells, as on the live deck. The default `slide` draws its body in the new
+  `base-rhythm(body)`; a deck template that draws its own pages keeps its own rules, or calls
+  `base-rhythm` around its `fit`.
 - Base tables, on the live deck and in the PDF deck, take the `[table]` deck settings: the full width
   of their column, text at 0.8 em, a line height of 1.2, padding in em, a bold header row on a fill
   and a rule under each row. In the PDF deck the column widths follow the automatic table layout of
@@ -134,12 +136,10 @@ were written when they went out. They are marked.
 - In the PDF deck a figure with no width of its own is drawn at its natural size (1 px of the picture
   is 1 u of the slide), at most as wide as its column, as on the live deck. It used to fill its
   column.
-- On the live deck, all heading levels take the weight `heading.weight` (750; a level-1 heading was
-  800 and a level-3 heading 650; the shipped Inter draws all three in bold), and a heading that is not
-  the first block of its cell has `rhythm.heading-above` above it. A block quote has no indent and the
-  gap between cells below it. A nested list has the item spacing above and below it; it had 0.6 em
-  below it. The padding of a markdown cell is in slide units, 12 by 16 u, so it no longer changes with
-  the size of the screen.
+- On the live deck, a heading that is not the first block of its cell has `rhythm.heading-above`
+  above it. A block quote has no indent and the gap between cells below it. A nested list has the item
+  spacing above and below it; it had 0.6 em below it. The padding of a markdown cell is in slide units,
+  12 by 16 u, so it no longer changes with the size of the screen.
 
 ## [2.2.0] - 2026-11-16
 

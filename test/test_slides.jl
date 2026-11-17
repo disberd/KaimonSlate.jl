@@ -412,13 +412,16 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
 
     # The base preamble copies the rhythm and the geometry of the live base deck: two paragraphs are
     # `text.line-height` + `text.paragraph-after` apart, and a content slide shows its number at the
-    # bottom right.
+    # bottom right. A second slide holds a table wider than its column, which takes the other branch of
+    # the column widths.
     @testset "the base PDF: the paragraph gap of the settings, the slide number" begin
         # A mark inside the first line of each paragraph (at the start of a line, the comment would be
         # an HTML block that joins the two paragraphs).
         mark(k) = "<!--raw-typst #context [#metadata(here().position().y.pt()) <$k>]-->"
         set = "[text]\nparagraph-after = \"1em\"\n"
-        nb = _mknb("#%% md id=a\n## A\n\nOne$(mark("p1")) line.\n\nThe$(mark("p2")) next line.\n")
+        long = join(fill("word", 30), " ")
+        wide = "| $long | $long | x |\n|---|---|---|\n| a | b | c |\n"
+        nb = _mknb("#%% md id=a\n## A\n\nOne$(mark("p1")) line.\n\nThe$(mark("p2")) next line.\n\n#%% md id=b\n## B\n\n$wide")
         nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}())
         dir = NS._build_slides_project(nb)
         try

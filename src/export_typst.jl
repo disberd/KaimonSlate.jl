@@ -341,18 +341,18 @@ const _FIT_TYPST = "(text-floor: settings.fit.text-floor, fig-floor: 0.25, fig-c
 # landscape slide page with bigger type. It imports `deck-settings.typ` (`deck_settings_typ`):
 # `SLIDE_W` and `SLIDE_H` (the page size), `u` (the slide unit: 1/1920 of the page width at 16:9 and
 # 16:10, 1/1440 at 4:3, as the live canvas) and `settings` (the deck settings). It defines `FIT` (the fit
-# parameters), `mdscope` (the scope of each `cmarker.render`), `#let fit(body)` (see its comment),
+# parameters), `mdscope` (the scope of each `cmarker.render`), `mdcell` (a markdown cell),
+# `#let base-rhythm(body)` and `#let fit(body)` (see their comments),
 # `#let slidecols(widths, ..cols)` (a row of columns, see its comment) and
 # `#let slide(body, layout: none, title: none, n: none)`: one page per slide, the body inside `fit`.
 # `layout` is the slide's layout tag and `title` its heading (a `heading` element), both `none` when
 # unset; `n` is the slide number on a notes page. A template that is added after this preamble can
 # redefine `slide` or `slidecols` to draw each layout its own way. It must draw the body through `fit`,
-# because `fit` sizes the figures and tables and records the fit.
+# because `fit` sizes the figures and records the fit.
 # The page copies the geometry of the live base deck (notebook.css `.deck-slide`, `.slide-title`,
 # `.slide-num`): the body padding, the body at the top of the slide, the slide number, the title. The
-# vertical rhythm copies the CSS of the live deck from the deck settings, with the line boxes of CSS
-# (see the rule at the `show: body => context` below). A template sets its own rhythm with set rules in
-# its page, which come after these.
+# base `slide` draws the body in `base-rhythm`, the vertical rhythm of the live deck from the deck
+# settings, with the line boxes of CSS.
 # Lengths in the body follow the live deck: text sizes and spacing in `em` (they follow the text
 # scale of `fit`), geometry in `u` (fixed).
 # `syntax` is the colour scheme of code, "light" or "dark" (the deck setting `code.syntax`, resolved):
@@ -371,62 +371,15 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #set page(width: SLIDE_W, height: SLIDE_H, margin: (top: 84 * u, x: 120 * u, bottom: 72 * u), fill: $(p.page))
     #set text(font: settings.text.font, size: settings.text.size, fill: $(p.text))$(rawtheme)
     #show raw: set text(font: settings.code.font)
-    // Line boxes as in CSS: a line of line height `L` (a ratio of the text size) is the line box of the
-    // font, from its ascender `A` to its descender `D`, with `(L - (A + D)) / 2` above and below it.
-    // `A` and `D` are measured on the deck font, so the rule holds for any font. Headings have the
-    // line height of the live headings (`HEAD-LH`); the lines of a code block are `text.line-height`
-    // of `code.size` apart, as the live `pre` puts them.
-    #let HEAD-LH = 1.1
-    #let CODE-INLINE = 0.85
-    #show: body => context {
-      let m(t, b) = measure(text(top-edge: t, bottom-edge: b, "x")).height / text.size
-      let (A, D) = (m("ascender", "baseline"), m("baseline", "descender"))
-      let edges(L) = (top-edge: (A + (L - A - D) / 2) * 1em, bottom-edge: -(D + (L - A - D) / 2) * 1em)
-      set text(..edges(settings.text.line-height))
-      show heading: set text(..edges(HEAD-LH))
-      show raw.where(block: true): set text(..edges(settings.text.line-height / CODE-INLINE))
-      body
-    }
-    // The space between blocks follows the CSS margins of the live deck. Typst puts only the `above`
-    // of a block between a paragraph and the block, and only its `below` between the block and a
-    // paragraph; two blocks take the larger of the two, as CSS margins collapse. A block has no space
-    // of its own, as a `div`; the blocks of markdown set theirs. A list has `text.paragraph-after`
-    // above it and `.6em` below it, as a live `ul`. A nested list has the item spacing above and below
-    // it: Typst spaces a tight list so, and the live deck does the same.
-    #set par(justify: false, leading: 0em, spacing: settings.text.paragraph-after)
-    #set block(spacing: 0em)
-    #set list(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
-      marker: depth => box(width: settings.text.list-indent - 0.5em, align(right, text(fill: settings.roles.accent, ("•", "◦", "▪").at(calc.rem(depth - 1, 3))))))
-    #set enum(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
-      numbering: n => box(width: settings.text.list-indent - 0.5em, align(right, [#n.])))
-    #show list: set block(above: settings.text.paragraph-after, below: 0.6em)
-    #show enum: set block(above: settings.text.paragraph-after, below: 0.6em)
-    // Headings: the sizes, the weight and the margins of the deck settings. Typst sets a level-1
-    // heading at 1.4em and a level-2 heading at 1.2em of the text around it, below any show rule, so
-    // those sizes divide by these factors. A level-2 heading has the accent bar of the live deck under it.
-    #show heading: set text(fill: $(p.title), weight: settings.heading.weight)
-    #show heading.where(level: 1): set text(size: settings.heading.h1 / 1.4)
-    #show heading.where(level: 2): set text(size: settings.heading.h2 / 1.2)
-    #show heading.where(level: 3): set text(size: settings.heading.h3)
-    #show heading: set block(above: settings.rhythm.heading-above, below: settings.rhythm.heading-below)
-    #show heading.where(level: 2): it => block(it.body + block(above: 0.32em, box(width: 2.2em, height: 6 * u,
-      radius: 99 * u, fill: gradient.linear(settings.roles.accent, settings.roles.accent2))))
+    #set par(justify: false)
+    #show heading: set text(fill: $(p.title))
     #set heading(numbering: none)
-    // A key message (a block quote) has the gap between cells below it.
-    #show quote.where(block: true): it => block(above: settings.text.paragraph-after, below: settings.rhythm.cell-gap, it.body)
-    // A code block has `code.size` above and below it, as the margin of a live `pre`.
-    #show raw.where(block: true): set block(above: settings.code.size / CODE-INLINE, below: settings.code.size / CODE-INLINE)
     #let PRE = "$pre "
     #let mathfn = (s, block: false) => if block { mitex(PRE + s) } else { mi(PRE + s) }
     // Room between the rows of matrices and of multi-line display math: fractions and roots are
     // tall, and LaTeX's own spacing tricks for them (struts, row gaps) don't survive mitex.
     #show math.mat: set math.mat(row-gap: 0.6em)
     #show math.equation.where(block: true): set par(leading: 1.1em)
-    // Math as on the live deck: display math at 1.4em with .8em above and 1em below it (the margin and
-    // the padding of a live `.katex-display`), inline math at 1.1em.
-    #show math.equation.where(block: true): set text(size: 1.4em)
-    #show math.equation.where(block: true): set block(above: 0.8em / 1.4, below: 1em / 1.4)
-    #show math.equation.where(block: false): set text(size: 1.1em)
     // A display formula wider than its column is set smaller until it fits, down to `FIT.math-floor`
     // (on screen it would run off the slide). In a table cell, math sits at the start of the cell.
     #show math.equation.where(block: true): it => layout(size => {
@@ -434,21 +387,18 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       if w > size.width { scale(calc.max(FIT.math-floor, size.width / w) * 100%, reflow: true, it) } else { it }
     })
     #show table.cell: it => { show math.equation.where(block: true): set align(left); it }
-    // Tables: the structure and paint keys of the deck settings; `fit` sets the text size and the
-    // column widths (`base-table`). A row of `table.line-height` sits in the line boxes of the body
-    // text: the leading takes the difference, and the inset half of it on each side. A rule of `TRULE`
-    // under each row adds its width to the row, as a CSS border does.
+    // Headings have the line height of the live headings (`HEAD-LH`). Code in markdown is at
+    // `CODE-INLINE` of its text, as the live `code`.
+    #let HEAD-LH = 1.1
+    #let CODE-INLINE = 0.85
+    // A row of a table has `table.line-height` in the line boxes of the body text: the leading takes
+    // the difference, and the inset half of it on each side. A rule of `TRULE` under each row adds its
+    // width to the row, as a CSS border does.
     #let TL = settings.table.line-height
     #let TRULE = 2 * u
     #let tinset(pad) = pad - (settings.text.line-height - TL) / 2 * 1em
-    #set table(stroke: (x, y) => (bottom: TRULE + $(p.rule)),
-      inset: (x, y) => { let p = tinset(if y == 0 { settings.table.header-pad-y } else { settings.table.body-pad-y }); (x: settings.table.pad-x, top: p, bottom: p + TRULE) },
-      fill: (x, y) => if y == 0 { settings.table.header-fill } else if calc.even(y) { settings.table.stripe-fill })
-    #show table: set par(leading: (TL - settings.text.line-height) * 1em)
-    #show table.cell.where(y: 0): set text(fill: settings.table.header-color, weight: "bold")
-    #show table.cell: set align(horizon)
     // The plain text of a table cell, for its widest word.
-    #let plaintext(c) = if type(c) == str { c } else if c.has("text") { c.text } else if c.has("children") { c.children.map(plaintext).join("") } else if c.has("body") { plaintext(c.body) } else if c.has("child") { plaintext(c.child) } else { " " }
+    #let plaintext(c) = if type(c) == str { c } else if c.has("text") and type(c.text) == str { c.text } else if c.has("children") { c.children.map(plaintext).sum(default: "") } else if c.has("body") { plaintext(c.body) } else if c.has("child") { plaintext(c.child) } else { " " }
     // A markdown table at `table.text-size`, with the column widths that CSS auto table layout gives
     // it in its column: each column gets at least its widest word (min) and at most its widest line
     // (max), and the room between the sums of min and max goes to the columns in proportion to
@@ -470,13 +420,74 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
           mx.map(x => x / mx.sum() * sz.width)
         } else if mn.sum() >= sz.width { mn } else {
           let d = range(n).map(i => mx.at(i) - mn.at(i))
-          range(n).map(i => mn.at(i) + (sz.width - mn.sum()) * d.at(i) / d.sum())
+          range(n).map(i => mn.at(i) + (sz.width - mn.sum()) * (d.at(i) / d.sum()))
         }
         let f = it.fields()
         let children = f.remove("children")
         table(..f, columns: w.map(x => x / u * 1fr), ..children)
       }))
     }
+    // `base-rhythm(body)` draws `body` with the vertical rhythm of the live base deck, from the deck
+    // settings. The base `slide` puts it around `fit`; a template that draws its own pages can put it
+    // around its `fit` too, or keep its own rules. Inside it, `mdcell` and `cellgap` (`RHYTHM`) draw
+    // the padding of a markdown cell and the gap between cells; outside it they add nothing.
+    // - Line boxes as in CSS: a line of line height `L` (a ratio of the text size) is the line box of
+    //   the font, from its ascender `A` to its descender `D`, with `(L - (A + D)) / 2` above and below
+    //   it. `A` and `D` are measured on the font in use, so the rule holds for any font. The lines of a
+    //   code block are `text.line-height` of `code.size` apart, as the live `pre` puts them.
+    // - The space between blocks follows the CSS margins of the live deck. Typst puts only the
+    //   `above` of a block between a paragraph and the block, and only its `below` between the block
+    //   and a paragraph; two blocks take the larger of the two, as CSS margins collapse. A block has no
+    //   space of its own, as a `div`; the blocks of markdown set theirs. A list has
+    //   `text.paragraph-after` above it and `.6em` below it, as a live `ul`. A nested list has the item
+    //   spacing above and below it: Typst spaces a tight list so, and the live deck does the same.
+    // - Headings take the sizes and the margins of the deck settings and the weights of the live deck
+    //   (800, 750, 650). Typst sets a level-1 heading at 1.4em and a level-2 heading at 1.2em of the
+    //   text around it, below any show rule, so those sizes divide by these factors. A level-2
+    //   heading has the accent bar of the live deck.
+    // - A key message (a block quote) has the gap between cells below it. A code block has
+    //   `code.size` above and below it, as the margin of a live `pre`. Display math is at 1.4em with
+    //   .8em above and 1em below it (the margin and the padding of a live `.katex-display`), inline
+    //   math at 1.1em.
+    // - Tables take the structure and paint keys of `[table]`, and `base-table` sets their text size
+    //   and column widths.
+    #let RHYTHM = state("slate-rhythm", false)
+    #let base-rhythm(body) = { RHYTHM.update(true); context {
+      let m(t, b) = measure(text(top-edge: t, bottom-edge: b, "x")).height / text.size
+      let (A, D) = (m("ascender", "baseline"), m("baseline", "descender"))
+      let edges(L) = (top-edge: (A + (L - A - D) / 2) * 1em, bottom-edge: -(D + (L - A - D) / 2) * 1em)
+      set text(..edges(settings.text.line-height))
+      show heading: set text(..edges(HEAD-LH))
+      show raw.where(block: true): set text(..edges(settings.text.line-height / CODE-INLINE))
+      set par(leading: 0em, spacing: settings.text.paragraph-after)
+      set block(spacing: 0em)
+      set list(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
+        marker: depth => box(width: settings.text.list-indent - 0.5em, align(right, text(fill: settings.roles.accent, ("•", "◦", "▪").at(calc.rem(depth - 1, 3))))))
+      set enum(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
+        numbering: n => box(width: settings.text.list-indent - 0.5em, align(right, [#n.])))
+      show list: set block(above: settings.text.paragraph-after, below: 0.6em)
+      show enum: set block(above: settings.text.paragraph-after, below: 0.6em)
+      show grid: set block(above: settings.text.paragraph-after, below: settings.text.paragraph-after)
+      show heading.where(level: 1): set text(size: settings.heading.h1 / 1.4, weight: 800)
+      show heading.where(level: 2): set text(size: settings.heading.h2 / 1.2, weight: 750)
+      show heading.where(level: 3): set text(size: settings.heading.h3, weight: 650)
+      show heading: set block(above: settings.rhythm.heading-above, below: settings.rhythm.heading-below)
+      show heading.where(level: 2): it => block(it.body + block(above: 0.32em, box(width: 2.2em, height: 6 * u,
+        radius: 99 * u, fill: gradient.linear(settings.roles.accent, settings.roles.accent2))))
+      show quote.where(block: true): it => block(above: settings.text.paragraph-after, below: settings.rhythm.cell-gap, it.body)
+      show raw.where(block: true): set block(above: settings.code.size / CODE-INLINE, below: settings.code.size / CODE-INLINE)
+      show math.equation.where(block: true): set text(size: 1.4em)
+      show math.equation.where(block: true): set block(above: 0.8em / 1.4, below: 1em / 1.4)
+      show math.equation.where(block: false): set text(size: 1.1em)
+      set table(stroke: (x, y) => (bottom: TRULE + $(p.rule)),
+        inset: (x, y) => { let p = tinset(if y == 0 { settings.table.header-pad-y } else { settings.table.body-pad-y }); (x: settings.table.pad-x, top: p, bottom: p + TRULE) },
+        fill: (x, y) => if y == 0 { settings.table.header-fill } else if calc.even(y) { settings.table.stripe-fill })
+      show table: set par(leading: (TL - settings.text.line-height) * 1em)
+      show table.cell.where(y: 0): set text(fill: settings.table.header-color, weight: "bold")
+      show table.cell: set align(horizon)
+      show table: base-table
+      body
+    }; RHYTHM.update(false) }
     // Author-embedded markdown images stage into the doc root; resolve them relative to THIS file
     // (not cmarker's package dir, where its built-in image() looks) — passed to cmarker as scope.image.
     // `media.json` carries any `{width=…}` block the author wrote (see `_stage_typst_md_media`), as
@@ -504,8 +515,9 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #let mdscope = (image: mdimage, raw: mdraw)
     // A markdown cell has the padding of a live markdown cell, 16 u on each side; the slide title has it
     // too. It keeps the space below its last block, as a live cell does; the empty block at its end
-    // holds that space.
-    #let mdcell(body) = pad(x: 16 * u, { body; block(height: 0em, above: settings.text.paragraph-after) })
+    // holds that space. `cellgap` is the gap between the cells of a slide.
+    #let mdcell(body) = context if RHYTHM.get() { pad(x: 16 * u, { body; block(height: 0em, above: settings.text.paragraph-after) }) } else { body }
+    #let cellgap = context if RHYTHM.get() { v(settings.rhythm.cell-gap) }
     $(_CITE_SHOW)
     #let metablock(title, subtitle, byline, abstract) = align(center + horizon)[
       #text(size: 2.4em, weight: "bold", fill: $(p.title))[#title]
@@ -518,20 +530,22 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #let valblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.valbg), radius: 8 * u, text(size: 0.7em, fill: $(p.valfg), raw(s)))
     #let errblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.errbg), radius: 8 * u, text(size: 0.7em, fill: $(p.errfg), raw(s)))
     // A figure is a marker that `fit` sizes for the slide. `width` is an upper bound on its drawn
-    // width: a ratio of the column, or a length. With no `width`, the full size of a figure is its
-    // natural size (`natural-w`), at most its column, as the live deck draws it. At figure scale `f`, a
-    // figure is `f` of its full size, and at most `FIT.fig-cap` of the slide height. Outside `fit` it is
-    // drawn at `f = 1`.
+    // width: a ratio of the column, or a length. With no `width`, the full size of a figure is the
+    // natural size of the picture that the live deck shows (`natural-w`), at most its column. At
+    // figure scale `f`, a figure is `f` of its full size, and at most `FIT.fig-cap` of the slide
+    // height. Outside `fit` it is drawn at `f = 1`.
     #let figureimg(p, width: none) = [#metadata((p: p, w: width)) <slate-fig>]
-    // The natural width of a picture in CSS px (1/96 in), which is `u` on the slide: the pixel width of
-    // a PNG (a browser does not read its density), else the size that Typst gives.
+    // The natural width in CSS px (1/96 in), which is `u` on the slide, of a PNG (its pixel width: a
+    // browser does not read its density) or an SVG. A PDF figure (a Makie figure) shows on the live
+    // deck as a PNG at twice its size, so it fills its column: `none`.
     #let natural-w(p, n) = if lower(p).ends-with(".png") {
       let b = read(p, encoding: none)
       b.at(16) * 16777216 + b.at(17) * 65536 + b.at(18) * 256 + b.at(19)
-    } else { n.width / (1in / 96) }
+    } else if lower(p).ends-with(".svg") { n.width / (1in / 96) }
     #let drawfig(v, f) = layout(c => {
       let n = measure(image(v.p))
-      let cw = if v.w == none { calc.min(c.width, natural-w(v.p, n) * u) } else if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) }
+      let nw = natural-w(v.p, n)
+      let cw = if v.w != none { if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) } } else if nw == none { c.width } else { calc.min(c.width, nw * u) }
       align(center, image(v.p, height: calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))))
     })
     #show <slate-fig>: it => drawfig(it.value, 1)
@@ -552,8 +566,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     //    from the top and runs past the page bottom. Its figures keep `f = 1` if a smaller `f` gains
     //    no height (a figure beside a taller column of text).
     // Each slide records `(kind: "fit", slide, s, f, at_floor, size)` under the label `<slate>`;
-    // `slide` is the page number and `size` the body text size at `s = 1`, in `u`. The tables of the
-    // body go through `base-table`, before the show rules of a template see them.
+    // `slide` is the page number and `size` the body text size at `s = 1`, in `u`.
     // Typst cannot measure a cite() in isolation ("cannot format citation in isolation", it needs
     // document context to resolve), so the MEASURED copy renders citation sentinels as a fixed
     // stand-in of comparable width; the real body still renders true citations.
@@ -592,14 +605,14 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // Side-by-side columns. `widths` holds one entry per column: a ratio or a length, or `none` for a
     // column that shares the rest equally. The other arguments are the column bodies. Ratios that fill
     // the row or more shrink in proportion, as the flex columns of the live deck do. The gap is the
-    // deck setting `columns.gap`, and the group has the spacing of a block of markdown (`spacing`) above
-    // and below it. A row of cells gives `columns.row-gap`, no spacing (the gap between cells is around
-    // it), and `align: horizon` when it holds a markdown cell, as on the live deck.
-    #let slidecols(widths, gap: settings.columns.gap, align: top, spacing: settings.text.paragraph-after, ..cols) = {
+    // deck setting `columns.gap`. A row of cells (`row: true`) gives `columns.row-gap`, no spacing of
+    // its own in `base-rhythm` (the gap between cells is around it) and `align: horizon` when it holds
+    // a markdown cell, as on the live deck.
+    #let slidecols(widths, gap: settings.columns.gap, align: top, row: false, ..cols) = {
       let shrink = widths.all(w => type(w) == ratio) and widths.map(w => w / 1%).sum() >= 100
-      block(above: spacing, below: spacing,
-        grid(columns: widths.map(w => if w == none { 1fr } else if shrink { w / 1% * 1fr } else { w }),
-          column-gutter: gap, align: align, ..cols.pos()))
+      let g = grid(columns: widths.map(w => if w == none { 1fr } else if shrink { w / 1% * 1fr } else { w }),
+        column-gutter: gap, align: align, ..cols.pos())
+      if row { context if RHYTHM.get() { block(above: 0em, below: 0em, g) } else { g } } else { g }
     }
     // One slide = one page, with the body at the top. The title goes at the top of the body, inside
     // `fit`, with the padding of the live title cell (12 u above, 16 u at the sides); a notes page gets
@@ -617,7 +630,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
             text(size: 20 * u, fill: settings.roles.dim.transparentize(30%), context slidenum.display()))
         })[
         #set std.align(horizon) if layout in ("center", "title", "section")
-        #fit({
+        #base-rhythm(fit({
           set std.align(center) if layout == "center"
           show heading.where(level: 3): it => if layout == "section" { text(fill: $(p.text).transparentize(40%), it) } else { it }
           if layout == "notes" { text(fill: luma(130))[Notes · slide #n]; v(0.32em) } else if title != none {
@@ -625,7 +638,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
             pad(x: 16 * u, { if layout == "section" { text(size: 1.6em, title) } else { title }; block(height: 0em) })
           }
           body
-        })
+        }))
       ]
     }
 
@@ -2196,11 +2209,11 @@ function _split_columns(src::AbstractString)
     return isempty(pieces) ? Any[String(src)] : pieces
 end
 
-# One `slidecols` call: `body(j)` prints the j-th column of the row. `gap`, `align` and `spacing` are
-# Typst expressions, or `nothing` for the defaults of `slidecols`.
-function _print_slidecols(body, io::IO, widths; gap = nothing, align = nothing, spacing = nothing)
+# One `slidecols` call: `body(j)` prints the j-th column of the row. `gap` and `align` are Typst
+# expressions, or `nothing` for the defaults of `slidecols`; `row` marks a row of cells.
+function _print_slidecols(body, io::IO, widths; gap = nothing, align = nothing, row::Bool = false)
     print(io, "#slidecols((", join(widths, ", "), ",),", gap === nothing ? "" : " gap: $gap,",
-          align === nothing ? "" : " align: $align,", spacing === nothing ? "" : " spacing: $spacing,", "\n")
+          align === nothing ? "" : " align: $align,", row ? " row: true," : "", "\n")
     for j in eachindex(widths)
         print(io, "[")
         body(j)
@@ -2361,11 +2374,12 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                 # A row that holds a markdown cell centres its cells, as on the live deck.
                 length(fis) == 1 ? emit(rio, fis[1]) :
                     _print_slidecols(j -> emit(rio, fis[j]), rio, fill("none", length(fis)); gap = "settings.columns.row-gap",
-                                     align = any(fi -> is_prose(frags[fi].cell.kind), fis) ? "horizon" : nothing, spacing = "0em")
-                position(rio) == 0 && continue
-                gap && print(io, "#v(settings.rhythm.cell-gap)\n")
+                                     align = any(fi -> is_prose(frags[fi].cell.kind), fis) ? "horizon" : nothing, row = true)
+                out = String(take!(rio))
+                isempty(strip(out)) && continue       # a cell that draws nothing (no output) has no gap
+                gap && print(io, "#cellgap\n")
                 gap = true
-                write(io, take!(rio))
+                print(io, out)
             end
             print(io, "]\n\n")
         end

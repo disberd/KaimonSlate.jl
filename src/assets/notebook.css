@@ -3262,9 +3262,9 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 /* `class=serif`: a book face for the slide's headings, for a title or a quieter section. */
 .deck-slide.serif .md :is(h1, h2, h3) { font-family: "Iowan Old Style", "Charter", "Source Serif 4", Georgia, serif;
   font-weight: 600; letter-spacing: -.01em; }
-.deck-slide .md h1 { font-size: var(--deck-heading-h1); font-weight: var(--deck-heading-weight); }
-.deck-slide .md h2 { font-size: var(--deck-heading-h2); font-weight: var(--deck-heading-weight); }
-.deck-slide .md h3 { font-size: var(--deck-heading-h3); font-weight: var(--deck-heading-weight); color: var(--deck-accent); }
+.deck-slide .md h1 { font-size: var(--deck-heading-h1); font-weight: 800; }
+.deck-slide .md h2 { font-size: var(--deck-heading-h2); font-weight: 750; }
+.deck-slide .md h3 { font-size: var(--deck-heading-h3); font-weight: 650; color: var(--deck-accent); }
 .deck-slide .md h2::after { content: ""; display: block; width: 2.2em; height: calc(var(--u) * 6); margin-top: .32em;
   border-radius: calc(var(--u) * 99); background: linear-gradient(90deg, var(--deck-accent), var(--deck-accent2)); }
 .deck-slide .md strong { color: var(--deck-strong); }
