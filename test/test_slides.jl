@@ -1188,7 +1188,8 @@ struct Boom end
 Base.show(io::IO, ::MIME"text/html", ::Svg) = print(io, "<div>live plot</div>")
 SEB.slate_export_figure(io::IO, ::MIME"image/svg+xml", ::Svg, ctx) =
     (print(io, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"", ctx.width, "\" height=\"100\" data-cap=\"",
-           ctx.max_height, "\" data-palette=\"", ctx.slate_palette, "\"/>"); true)
+           ctx.max_height, "\" data-palette=\"", ctx.slate_palette, "\" data-text=\"", ctx.text_size,
+           "\" data-fg=\"", ctx.roles["fg"], "\" data-accent=\"", ctx.roles["accent"], "\"/>"); true)
 const STATIC = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"300\" height=\"100\" id=\"static\"/>"
 Base.show(io::IO, ::MIME"image/svg+xml", ::Union{Decline,Boom}) = print(io, STATIC)
 SEB.slate_export_figure(::IO, ::MIME"image/svg+xml", ::Decline, _) = false
@@ -1216,6 +1217,10 @@ _svg_width(t) = parse(Float64, match(r"width=\"([\d.]+)\"", t)[1])
         @test length(figs) == 1 && endswith(figs[1][1], ".svg")
         @test _svg_width(figs[1][2]) == 1680                      # the base body: 1920 u less 240 u
         @test occursin("data-cap=\"756.0\"", figs[1][2]) && occursin("data-palette=\"midnight\"", figs[1][2])
+        # The body text size of the deck in u, and the colour roles as hex in the palette of the export.
+        @test occursin("data-text=\"34.0\"", figs[1][2])
+        @test occursin("data-fg=\"$(RE.SLATE_PALETTES["midnight"].text)\"", figs[1][2])
+        @test occursin("data-accent=\"$(RE.SLATE_PALETTES["midnight"].accent)\"", figs[1][2])
         comp = filter(f -> occursin(r"_comp\d+\.svg$", f), readdir(dir))   # the `{{ }}` value
         @test length(comp) == 1 && _svg_width(read(joinpath(dir, comp[1]), String)) == 1680 - 32
         @test isempty(w)
@@ -1279,6 +1284,35 @@ end
         @test occursin("Run it with its ▶ button (`POST /api/<notebook>/cell/<cell>` with `force: true`)", w[1])
         @test occursin("#notefig(\"[figure not captured — run this cell with its ▶ button, then re-export]\")",
                        read(joinpath(dir, "doc.typ"), String))
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+    # Two cells: the warning names both, once each.
+    nb = _hooknb("#%% code id=fs2\nFigHook.Svg()\n\n#%% md id=fs3\n{{ FigHook.Svg() }} {{ FigHook.Svg() }}\n")
+    RE._figure_forget!("fs2"); RE._figure_forget!("fs3")
+    w = String[]
+    rm(NS._build_slides_project(nb; warnings = w); recursive = true, force = true)
+    @test length(w) == 1 && startswith(w[1], "Cells fs2, fs3: ") && occursin("Run each of them", w[1])
+end
+
+# The roles follow the deck settings of the notebook on a slide; a document gives the body text size in
+# px at 96 dpi.
+@testset "figure hook: text_size and roles follow the deck settings and the document" begin
+    nb = _hooknb("#%% code id=ft1\nFigHook.Svg()\n")
+    nb.report.meta["decksettings"] = "[text]\nsize = \"40u\"\n[roles]\nfg = \"#003247\"\n"
+    dir = NS._build_slides_project(nb)
+    try
+        t = only(t for (_, t) in _drawn_figs(dir))
+        @test occursin("data-text=\"40.0\"", t) && occursin("data-fg=\"#003247\"", t)
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+    dir = NS._build_typst_project(_hooknb("#%% code id=ft2\nFigHook.Svg()\n"))
+    try
+        t = only(t for (_, t) in _drawn_figs(dir))
+        pal = match(r"data-palette=\"(\w+)\"", t)[1]
+        @test occursin("data-text=\"14.0\"", t)                    # 10.5 pt of the normal body
+        @test occursin("data-fg=\"$(RE.SLATE_PALETTES[pal].text)\"", t)
     finally
         rm(dir; recursive = true, force = true)
     end
