@@ -1388,6 +1388,21 @@ end
     @test all(s -> occursin(s, t), ("The wide clip", "std.mp4", "nosize.mp4", "The sound"))
 end
 
+# The figure record of a picture narrower than its column has the top left corner of the drawn picture,
+# which the live deck puts in the centre of the column: for a picture that `fit` sizes and for one with
+# a height of its own. It had the x of the column, and the y of the bottom for a picture with a height.
+@testset "slides PDF: the box of a picture is the drawn picture" begin
+    root = mktempdir()
+    write(joinpath(root, "pic.svg"), """<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="red"/></svg>""")
+    nb = _hooknb("#%% md id=f\n## F\n\n![](pic.svg)\n\n#%% md id=h\n## H\n\n![](pic.svg){height=150}\n")
+    nb.report.meta["assetbase"] = root
+    boxes = [only(b.box for b in s.blocks if b.kind == "figure") for s in NS.slide_layout(nb)]
+    # The column of a markdown cell of the base deck at 16:9 is 1648 u wide, from x = 136.
+    @test boxes[1].x ≈ 136 + (1648 - 400) / 2 && boxes[1].w ≈ 400 && boxes[1].h ≈ 200
+    @test boxes[2].x ≈ 136 + (1648 - boxes[2].w) / 2 && boxes[2].w ≈ 2 * boxes[2].h
+    @test boxes[2].y ≈ boxes[1].y
+end
+
 # The base slides PDF marks list items as the live deck does: `•`, then `◦`, then `▪`.
 @testset "slides PDF: the list markers of the live deck" begin
     f = tempname() * ".pdf"

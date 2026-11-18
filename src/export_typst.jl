@@ -763,7 +763,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
         return [#metadata((p: src, w: if w == none { none } else { mdlen(w) })) <slate-fig>]
       }
       let im = image(src, alt: alt, width: mdlen(w), height: mdlen(h))
-      if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), [#box(im) <slate-figure>]) } else { im }
+      if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), figrec(box(im))) } else { im }
     }
     // Code in markdown as on the live deck: inline code at `CODE-INLINE` of its text, a code block at
     // `code.size` with its code at `CODE-INLINE` of that. Typst sets raw text at 0.8em of the text
@@ -936,7 +936,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       let nw = if clip == none { natural-w(v.p, n) } else { clip.w }
       let cw = if v.w != none { if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) } } else if nw == none { c.width } else { calc.min(c.width, nw * u) }
       let h = calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))
-      align(center, if clip == none { [#box(image(v.p, height: h)) <slate-figure>] } else { figrec(clipframe(h * (n.width / n.height), h, clip.label)) })
+      align(center, figrec(if clip == none { box(image(v.p, height: h)) } else { clipframe(h * (n.width / n.height), h, clip.label) }))
     })
     #show <slate-fig>: it => drawfig(it.value, 1)
     #let clipfig(kind, w, h, label) = if kind == "audio" { align(center, figrec(clipframe(300 * u, 54 * u, label))) } else {

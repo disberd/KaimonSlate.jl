@@ -275,6 +275,11 @@ were written when they went out. They are marked.
   warning with the slide, the cell and the first line of the error, in the PDF deck and for an
   exporter. The export left the value of the `{{ }}` out with no message before, so a slide could
   lose its text silently.
+- The box of a picture that is narrower than its column, in the layout of the slides PDF and in the deck
+  value of an exporter, is the drawn picture. It had the x of the left edge of the column, and a
+  picture with a height of its own (`{height=…}`) had the y of its bottom edge. An exporter now puts
+  such a picture in the centre of its column, where the live deck and the PDF draw it. The PDF does
+  not change.
 
 ## [2.2.0] - 2026-11-16
 
