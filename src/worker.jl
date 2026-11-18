@@ -2970,10 +2970,11 @@ end
 `mime` is empty when the hook declines or throws (`error` then holds the first line of the error)."""
 function __slate_export_figure(; cell::String = "", slot::Int = 0, mimes::Vector = Any[], width::Float64 = 0.0,
                                max_height::Float64 = 0.0, scale::Float64 = 2.0, slate_palette::String = "",
-                               dark::Bool = false)
+                               dark::Bool = false, text_size::Real = 0.0, roles = Dict{String,String}())
     _FIGURE_HOOK_OK || return (; held = false, mime = "", b64 = "", error = "", type = "")
     ctx = SlateExtensionsBase.FigureContext(; width, max_height = max_height > 0 ? max_height : nothing, scale,
-                                            slate_palette, dark)
+                                            slate_palette, dark, text_size = Float64(text_size),
+                                            roles = Dict{String,String}(String(k) => String(v) for (k, v) in roles))
     r = figure_export(cell, slot, String[String(m) for m in mimes], ctx)
     return (; held = r.held, mime = get(r, :mime, ""), b64 = haskey(r, :bytes) ? Base64.base64encode(r.bytes) : "",
             error = get(r, :error, ""), type = get(r, :type, ""))

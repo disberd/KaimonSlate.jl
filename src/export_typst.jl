@@ -113,7 +113,8 @@ function _warm_component_figs!(nb::LiveNotebook, figs::_CompFigs, geo; theme::Ab
         progress === nothing || (try; progress(cid); catch; end)
         ctx = _figure_ctx(geo, cid, i)
         got = try
-            request_live_compfig(nb, cid, slot, theme; width = ctx.width, max_height = ctx.max_height, scale = ctx.scale)
+            request_live_compfig(nb, cid, slot, theme; width = ctx.width, max_height = ctx.max_height, scale = ctx.scale,
+                                 text_size = ctx.text_size, roles = ctx.roles)
         catch
             nothing
         end
@@ -152,11 +153,17 @@ _hook_output(o) = o !== nothing && any(ch -> ch.mime == ReportEngine._FIGURE_HOO
 
 # The size of a figure for an export: `width` maps `(cell id, slot)` to the width of the column of the
 # figure in px, `body` is the width of a figure that is not in it, `max_height` the figure cap (`nothing`
-# in a document) and `palette` the Slate palette of the figures.
+# in a document), `palette` the Slate palette of the figures, `text_size` the body text size in px and
+# `roles` the colour roles as hex.
 _figure_ctx(geo, cid::AbstractString, slot::Integer) =
     SlateExtensionsBase.FigureContext(; width = get(geo.width, (String(cid), Int(slot)), geo.body),
                                       max_height = geo.max_height, scale = 2.0, slate_palette = geo.palette,
-                                      dark = !_export_is_light(geo.palette))
+                                      dark = !_export_is_light(geo.palette), text_size = geo.text_size,
+                                      roles = geo.roles)
+
+# The colour roles of the settings `s` as hex, in the Slate palette `palette` (`deck_settings_dict`).
+_figure_roles(s, palette::AbstractString) =
+    Dict{String,String}(k => String(v) for (k, v) in deck_settings_dict(s; palette)["roles"])
 
 # Ask the figure hook for the picture of each marked output and keep it in `figs`. A hook that throws
 # adds a line to `warnings`. The outputs whose worker keeps no value add one line together: their
@@ -231,7 +238,8 @@ end
 # template, else the slide width less the base margins (240 u). A row of `n` cells shares it with
 # `columns.row-gap` between the cells. A markdown cell has the 16 u padding of `mdcell` on each side.
 # The figure cap is `fit.figure-cap` of the slide height.
-function _slide_figure_geometry(nb::LiveNotebook, ds, ratio::AbstractString, level::Integer, palette::AbstractString)
+function _slide_figure_geometry(nb::LiveNotebook, ds, ratio::AbstractString, level::Integer, palette::AbstractString;
+                                page_palette::AbstractString = palette)
     W, H = deck_canvas(ratio)
     t = notebook_deck_template(nb)
     body = something(t === nothing ? nothing : t.body_width, W - 240.0)
@@ -251,7 +259,8 @@ function _slide_figure_geometry(nb::LiveNotebook, ds, ratio::AbstractString, lev
             end
         end
     end
-    return (; width, body, max_height = ds.values["fit"]["figure-cap"] * H, palette = String(palette))
+    return (; width, body, max_height = ds.values["fit"]["figure-cap"] * H, palette = String(palette),
+            text_size = Float64(ds.values["text"]["size"].value), roles = _figure_roles(ds.values, page_palette))
 end
 
 # The figure geometry of a document (see `_figure_ctx`), in px at 96 dpi: the text width of the A4 page,
@@ -279,7 +288,9 @@ function _doc_figure_geometry(nb::LiveNotebook; style::AbstractString, cols::Int
             end
         end
     end
-    return (; width, body = colw, max_height = nothing, palette = String(palette))
+    return (; width, body = colw, max_height = nothing, palette = String(palette),
+            text_size = parse(Float64, chop(_body_size(body); tail = 2)) * 96 / 72,
+            roles = _figure_roles(deck_settings("", "").values, palette))
 end
 
 # LaTeX macro shims for commands mitex lacks. mitex honors parameterized \newcommand, so
@@ -2817,7 +2828,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
     ds = notebook_deck_settings(nb)
     palette = _chart_theme(charttheme, theme)       # the Slate palette of the `slate.` colours
     ct = _deck_figure_palette(ds.values, palette)   # the Slate palette the figures render in
-    geo = _slide_figure_geometry(nb, ds, ratio, level, ct)
+    geo = _slide_figure_geometry(nb, ds, ratio, level, ct; page_palette = palette)
     compfigs = _warm_hook_figs!(nb, _CompFigs(), warnings, geo; progress = cid -> _export_progress(nb, cid))
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))

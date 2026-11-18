@@ -27,8 +27,9 @@ Two things to know about the published GitHub releases for this package:
   does for a file-backed front-end script, so an edit reaches Slate without a worker restart.
 - **`slate_export_figure(io, mime, x, ctx)`** and **`FigureContext`**: the figure export hook. A package
   adds one method for each MIME that it can write for its type and returns `true`; the default method
-  returns `false` (decline). `FigureContext` holds `width`, `max_height`, `scale`, `slate_palette` and
-  `dark`; a later version can add fields. `provide_deck_template!` takes `body_width`, the width of the
+  returns `false` (decline). `FigureContext` holds `width`, `max_height`, `scale`, `slate_palette`,
+  `dark`, `text_size` (the body text size of the page in px) and `roles` (the colour roles as hex);
+  a later version can add fields. `provide_deck_template!` takes `body_width`, the width of the
   template's content body in slide units; `deck_template()` returns it, and it is part of the hash.
 
 ## [0.11.3] - 2026-11-05

@@ -63,9 +63,12 @@ export function registerComponent(kind, Component, mod) {
   //
   //   export async function exportFigure(el, ctx) → { svg } | { png } | null
   //
-  // to render for print instead: `el` is the live mount, `ctx` is `{ params, kind, theme, vars, dark }`
-  // — `theme` the Slate palette name the export asked for, `vars` its CSS custom properties, `dark`
-  // whether that palette's page colour is dark. Return SVG (Typst embeds it as vector) or a base64 PNG.
+  // to render for print instead: `el` is the live mount, `ctx` is `{ params, kind, theme, vars, dark,
+  // width, max_height, scale, text_size, roles }` — `theme` the Slate palette name the export asked for,
+  // `vars` its CSS custom properties, `dark` whether that palette's page colour is dark, and the other
+  // keys the fields of a Julia figure hook (SlateExtensionsBase `FigureContext`): the column width, the
+  // figure cap, the raster scale and the body text size in CSS px, and the colour roles as hex.
+  // Return SVG (Typst embeds it as vector) or a base64 PNG.
   // Worth defining whenever the on-screen render uses something print can't carry: `<foreignObject>`,
   // a canvas, `font-family: inherit`, or colours taken from the LIVE theme rather than `ctx`.
   if (mod && typeof mod.exportFigure === "function") impl.exportFigure = mod.exportFigure;

@@ -710,7 +710,8 @@ end
 @testset "the worker keeps figure-hook values by (cell, slot) until a run or a delete" begin
     RE_H = ReportEngine
     ctx = RE_H.SlateExtensionsBase.FigureContext(; width = 840.0, max_height = 756.0, scale = 2.0,
-                                                 slate_palette = "midnight", dark = true)
+                                                 slate_palette = "midnight", dark = true, text_size = 34.0,
+                                                 roles = Dict{String,String}())
     svg(cell, slot = 0) = (f = RE_H.figure_export(cell, slot, ("application/pdf", "image/svg+xml"), ctx);
                            f.held && !isempty(f.mime) ? String(f.bytes) : f.held)
     m = Module(:HookFigCell)
@@ -751,7 +752,8 @@ end
     Core.eval(m, :(const HookFig = $HookFig))
     run_capture(m, "HookFig.Plot(3)", "cell:gf")
     ctx = RE_G.SlateExtensionsBase.FigureContext(; width = 500.0, max_height = nothing, scale = 2.0,
-                                                 slate_palette = "", dark = false)
+                                                 slate_palette = "", dark = false, text_size = 14.0,
+                                                 roles = Dict{String,String}())
     f = RE_G.figure_export("gf", 0, ["image/svg+xml"], ctx)
     answer = (; held = f.held, mime = f.mime, b64 = RE_G.Base64.base64encode(f.bytes), error = "", type = "")
     r = RE_G._gate_figure(answer)

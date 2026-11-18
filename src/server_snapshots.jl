@@ -272,17 +272,18 @@ request_live_eval(nb::LiveNotebook, code::AbstractString; timeout::Real = 8.0) =
 # Ask the open tab for a picture of ONE mounted `slate_render` component, for a PDF export —
 # `slot` indexes the cell's component mounts in document order (a markdown cell can hold several,
 # one per claimed fence). `theme` is the Slate palette name the export is rendering in. `width`,
-# `max_height` and `scale` are the size fields of the figure (SlateExtensionsBase `FigureContext`), which
-# reach the component's `exportFigure` in its `ctx`; `max_height` is `nothing` in a document. Returns
-# `(bytes, ext)` with `ext ∈ ("svg","png")`, or `nothing` when no tab answers or it captured
-# nothing. Deliberately NOT routed through `request_live_eval`: an eval reply is capped at 20 KB
-# and a real SVG is bigger than that. See `_slateComponentFig` (assets/js/inspect.js).
+# `max_height`, `scale`, `text_size` and `roles` are fields of the figure (SlateExtensionsBase
+# `FigureContext`), which reach the component's `exportFigure` in its `ctx`; `max_height` is `nothing`
+# in a document. Returns `(bytes, ext)` with `ext ∈ ("svg","png")`, or `nothing` when no tab answers or
+# it captured nothing. Deliberately NOT routed through `request_live_eval`: an eval reply is capped at
+# 20 KB and a real SVG is bigger than that. See `_slateComponentFig` (assets/js/inspect.js).
 function request_live_compfig(nb::LiveNotebook, cellid::AbstractString, slot::Integer,
                               theme::AbstractString; width::Real = 0, max_height = nothing, scale::Real = 2,
-                              timeout::Real = 10.0)
+                              text_size::Real = 0, roles = Dict{String,String}(), timeout::Real = 10.0)
     res = request_live(nb, "compfig", Dict{String,Any}("cell" => String(cellid), "slot" => Int(slot),
                                                        "theme" => String(theme), "width" => width,
-                                                       "max_height" => max_height, "scale" => scale);
+                                                       "max_height" => max_height, "scale" => scale,
+                                                       "text_size" => text_size, "roles" => roles);
                        timeout = timeout)
     res isa AbstractDict || return nothing
     svg = String(get(res, "svg", ""))

@@ -1767,7 +1767,8 @@ function export_figure(k::GateKernel, cellid::AbstractString, slot::Integer, mim
         _tool(k, "__slate_export_figure", Dict{String,Any}("cell" => String(cellid), "slot" => Int(slot),
               "mimes" => String[String(m) for m in mimes], "width" => Float64(ctx.width),
               "max_height" => Float64(something(ctx.max_height, 0.0)), "scale" => Float64(ctx.scale),
-              "slate_palette" => String(ctx.slate_palette), "dark" => ctx.dark); timeout = _eval_timeout())
+              "slate_palette" => String(ctx.slate_palette), "dark" => ctx.dark, "text_size" => Float64(ctx.text_size),
+              "roles" => Dict{String,String}(ctx.roles)); timeout = _eval_timeout())
     catch
         return nothing
     end

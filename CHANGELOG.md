@@ -65,13 +65,15 @@ were written when they went out. They are marked.
   with a `SlateExtensionsBase.slate_export_figure(io, mime, x, ctx)` method for each format it can
   write. The export asks for PDF, then SVG, then PNG, on the worker that ran the cell, so it needs no
   open tab. `ctx` (`FigureContext`) gives the width of the figure's column in px (1 px = 1 u on a
-  slide, 1/96 inch in a document), the figure cap on a slide, the raster scale and the Slate palette of
-  the figures. A method that declines or throws lets the export take the figure as before; a throw
-  adds an export warning. The worker keeps the value of each output whose type has such a method,
-  until the cell runs again or is deleted. A notebook opened from its stored outputs and not run has
-  no values: the export warns "N figures from stored output". A component's `exportFigure` gets the
-  same `width`, `max_height` and `scale` in its `ctx`, beside its old keys. A deck template states
-  the width of its body with `provide_deck_template!(…; body_width)`, in `u`.
+  slide, 1/96 inch in a document), the figure cap on a slide, the raster scale, the Slate palette of
+  the figures, the body text size in the same px (`text_size`: 34 u on a base slide) and the colour
+  roles as hex (`roles`: on a slide, those of the deck settings of the notebook). A method that
+  declines or throws lets the export take the figure as before; a throw adds an export warning. The
+  worker keeps the value of each output whose type has such a method, until the cell runs again or
+  is deleted. A notebook opened from its stored outputs and not run has no values: the export warns
+  "N figures from stored output". A component's `exportFigure` gets the same `width`, `max_height`,
+  `scale`, `text_size` and `roles` in its `ctx`, beside its old keys. A deck template states the
+  width of its body with `provide_deck_template!(…; body_width)`, in `u`.
 - The deck setting `text.list-marker` sets the colour of list bullets, on the live deck and in the
   PDF deck. Its base value is the role `accent`.
 - Regions of a slide. The base Typst preamble of the PDF deck gives `region(name, body)`: a deck

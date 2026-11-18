@@ -490,7 +490,8 @@ SlateExtensionsBase.to_palette_command(c::TaggedCmd) = auto_palette_command(c)
         @test deck_template().hash == h0
 
         # The figure export hook declines by default; a method of a package writes the picture.
-        ctx = FigureContext(; width = 816.0, max_height = 756.0, scale = 2.0, slate_palette = "midnight", dark = true)
+        ctx = FigureContext(; width = 816.0, max_height = 756.0, scale = 2.0, slate_palette = "midnight", dark = true,
+                            text_size = 34.0, roles = Dict("fg" => "#d6dae8"))
         @test slate_export_figure(IOBuffer(), MIME("image/svg+xml"), 1, ctx) === false
 
         # A file-backed source, settings file or file (`PkgAsset`) follows edits to its file.
