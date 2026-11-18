@@ -74,6 +74,18 @@ were written when they went out. They are marked.
   the width of its body with `provide_deck_template!(…; body_width)`, in `u`.
 - The deck setting `text.list-marker` sets the colour of list bullets, on the live deck and in the
   PDF deck. Its base value is the role `accent`.
+- Regions of a slide. The base Typst preamble of the PDF deck gives `region(name, body)`: a deck
+  template puts each region that it draws from notebook content in it (`"title"`, `"subtitle"`,
+  `"byline"`, `"abstract"`). The base title slide and the title of each base slide use it. On the
+  live deck `.slide-title` has `data-deck-region="title"`, and the subtitle and the byline of a
+  `title` cell and the text of an `abstract` cell are in `<slate-subtitle>`, `<slate-byline>` and
+  `<slate-abstract>` elements. The elements make no box outside a slide.
+- The export dialog shows a warning for each region of a PDF deck that is out of its area, or over
+  another region or a block.
+- The PDF deck can give the box of each block and of each region. A compile of the Typst project
+  with `--input slate-marks=1` writes them as metadata under the label `<slate>`, in the slide unit
+  `u`: read them with `typst query doc.typ "<slate>" --input slate-marks=1`. A compile with no such
+  input writes none, and the pages are the same.
 
 ### Changed
 
@@ -191,6 +203,12 @@ were written when they went out. They are marked.
 - The export dialog says that the deck template fixes the colours only when no value of the merged
   deck settings, admonition category accents included, follows the Slate palette. The warning about a
   fixed `roles.surface` also names the admonition accents that follow the Slate palette.
+- The PDF deck draws the other lines of a `title` cell on the title slide, after the byline. It
+  drew only the title, the first subheading and the first paragraph. A byline of several lines is
+  one byline now, not its first line only.
+- The Typst project of a PDF deck has one markdown file for each block of a cell (`s2f1b1.md`,
+  `s2f1b2.md`), not one for each cell, and each block is in a `#blk(…)[…]` call. The pages do not
+  change.
 
 ## [2.2.0] - 2026-11-16
 

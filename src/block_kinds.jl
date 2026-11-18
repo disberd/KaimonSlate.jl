@@ -184,3 +184,58 @@ function _admonition_body(body)
     while !isempty(out) && isempty(strip(first(out))); popfirst!(out); end
     return split(_md_kinds(join(out, "\n"); plain = true, only_admonitions = true), '\n')
 end
+
+# A footnote definition at the start of a block or of a line: `[^id]: text`.
+const _FOOTNOTE_DEF_RE = r"^ {0,3}\[\^([^\]\s]+)\]:"
+
+"""
+    _md_split(src) -> Vector{(kind, text)}
+
+The blocks of the markdown `src`, in reading order, for a reader that draws each block alone (the
+slides PDF makes one `cmarker.render` call for each block). `kind` is one of `BLOCK_KINDS`. `text`
+is the source of the block and the definitions that the block needs:
+
+- Each link reference definition of `src` goes after every block. A block that does not use a
+  definition ignores it.
+- A footnote definition is not a block. It goes before the block that refers to it, because cmarker
+  reads a footnote only when its definition is in the same call, and it draws the note where the
+  definition is. A definition that no block refers to goes before the last block.
+- When two blocks refer to one footnote, `src` stays one `prose` block: two calls with the same
+  definition give the same Typst label two times, which stops the compile.
+"""
+function _md_split(src::AbstractString)
+    blocks = @NamedTuple{kind::String, text::String}[]
+    links = String[]
+    notes = Pair{String,String}[]                    # footnote id => definition
+    innote = false                                   # the last block was a footnote definition
+    for p in _md_blocks(src; plain = true)
+        if isempty(p.kind)                           # CommonMark makes no block for a definition
+            for ln in split(p.text, '\n')
+                isempty(strip(ln)) && continue
+                m = match(_FOOTNOTE_DEF_RE, ln)
+                m === nothing ? push!(links, String(ln)) : push!(notes, String(m[1]) => String(ln))
+            end
+            continue
+        end
+        m = p.kind == "prose" ? match(_FOOTNOTE_DEF_RE, p.text) : nothing
+        if m !== nothing
+            push!(notes, String(m[1]) => p.text)
+            innote = true
+        elseif innote && p.kind == "code" && occursin(r"^(?: {4}|\t)", p.text)   # a later paragraph of the note
+            notes[end] = first(notes[end]) => string(last(notes[end]), "\n\n", p.text)
+        else
+            push!(blocks, p)
+            innote = false
+        end
+    end
+    isempty(blocks) && return blocks
+    texts = [b.text for b in blocks]
+    for (id, def) in notes
+        users = findall(b -> occursin("[^$id]", b.text), blocks)
+        length(users) > 1 && return [(kind = "prose", text = String(src))]
+        k = isempty(users) ? lastindex(texts) : only(users)
+        texts[k] = string(def, "\n\n", texts[k])
+    end
+    tail = isempty(links) ? "" : "\n\n" * join(links, "\n")
+    return [(kind = b.kind, text = t * tail) for (b, t) in zip(blocks, texts)]
+end

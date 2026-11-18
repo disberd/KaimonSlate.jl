@@ -7,6 +7,8 @@ try; import KaimonSlate; catch; error("This is a Kaimon Slate notebook — runni
 ### Every block kind on the base deck
 
 Slate test suite · deck parity fixture
+
+This line is no region of the title slide: it is a body block after the byline.
 """
 
 #%% md id=prose
@@ -251,6 +253,24 @@ This paragraph is the next cell of the slide. It starts one cell gap below the t
 |:---------|:-------------|:-------|
 | Fairness-based | Gives each terminal a share of the capacity in proportion to its request, so that no terminal stays without service | Every terminal at 0.5 or more |
 | Capacity-first | Serves the cells with the highest capacity first and the low-capacity cells last, until the capacity ends | A higher total, with some terminals at zero |
+"""
+
+#%% md id=footnotes
+@md"""
+## Footnotes in a split cell
+
+The first paragraph has a footnote[^one] in its text. See also [a reference link][ref].
+
+- A list item with a second footnote[^two]
+- A list item with no footnote
+
+The last paragraph has no footnote.
+
+[^one]: The first note.
+
+[^two]: The second note.
+
+[ref]: https://example.com
 """
 
 #%% md id=thanks layout=section

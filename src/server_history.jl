@@ -1100,6 +1100,10 @@ function cell_json(c::Cell, bindref::Dict{String,Tuple{Cell,BindSpec}} = Dict{St
     # asset route (`_local_media`).
     is_prose(c.kind) && report !== nothing &&
         (_mdsrc = _local_media(_mdsrc, nbid, String(get(report.meta, "assetbase", ""))))
+    # The regions of the title slide of a deck: the subtitle and the byline of the `title` cell and the
+    # text of an `abstract` cell are each in an element (`_title_cell`).
+    is_prose(c.kind) && :title in c.flags && (_mdsrc = _title_cell(_mdsrc).marked)
+    is_prose(c.kind) && :abstract in c.flags && (_mdsrc = string("<slate-abstract>\n\n", _mdsrc, "\n\n</slate-abstract>"))
     d = Dict{String,Any}(
         "id"      => c.id,
         # How recent this payload is. The same cell reaches the browser over two transports, and

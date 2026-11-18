@@ -755,6 +755,124 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
             rm(dir; recursive = true, force = true)
         end
     end
+
+    # The layout source of an exporter (`slide_layout`): the box of each block and of each region of
+    # the slides PDF, from the marks of the slides preamble.
+    @testset "layout source: blocks in reading order, in the page, as wide as their column" begin
+        src = "#%% md id=a\n## A\n\nA paragraph.\n\n- one\n- two\n\n> A key message.\n\n" *
+              ":::: columns\n::: column\nLeft one.\n\nLeft two.\n:::\n::: column\nRight one.\n:::\n::::\n\n" *
+              "| a | b |\n|---|---|\n| 1 | 2 |\n\n```julia\nx = 1\n```\n"
+        b = only(NS.slide_layout(_mknb(src))).blocks
+        @test [x.index for x in b] == 1:8
+        @test [x.kind for x in b] == ["prose", "prose", "key-message", "prose", "prose", "prose", "table", "code"]
+        @test [x.divcolumn for x in b] == [0, 0, 0, 1, 1, 2, 0, 0]
+        @test all(x -> x.cell == "a" && x.frag == 1 && x.row == 1 && x.page == 1, b)
+        @test occursin("A key message", b[3].src)
+        inpage(q) = q.x >= 0 && q.y >= 0 && q.x + q.w <= 1920 && q.y + q.h <= 1080
+        over(p, q) = p.x < q.x + q.w - 1 && q.x < p.x + p.w - 1 && p.y < q.y + q.h - 1 && q.y < p.y + p.h - 1
+        @test all(x -> inpage(x.box), b)
+        @test !any(over(b[i].box, b[j].box) for i in eachindex(b) for j in i+1:lastindex(b))
+        # Reading order: down the page, and column 1 before column 2 at the same height.
+        flow = b[[1, 2, 3, 4, 7, 8]]
+        @test issorted([x.box.y for x in flow])
+        @test b[4].box.y < b[5].box.y && b[6].box.y ≈ b[4].box.y && b[6].box.x > b[4].box.x + b[4].box.w
+        # A block is as wide as its column: the body less the padding of a markdown cell, or its `::: column`.
+        s = NS.deck_settings("", "").values
+        body = 1920 - 2 * 120 - 2 * 16
+        @test all(x -> x.box.w ≈ body && x.box.x ≈ 120 + 16, b[[1, 2, 3, 7, 8]])
+        @test all(x -> x.box.w ≈ (body - s["columns"]["gap"].value) / 2, b[4:6])
+        # The text size of a block, and the columns and the rows of the table.
+        @test b[1].size ≈ s["text"]["size"].value
+        @test b[7].size ≈ s["text"]["size"].value * s["table"]["text-size"].value
+        @test length(b[7].cols) == 2 && length(b[7].rows) == 2
+        @test sum(b[7].cols) ≈ b[7].box.w && sum(b[7].rows) ≈ b[7].box.h
+        @test all(x -> x.cols === nothing && x.rows === nothing, b[1:6])
+    end
+
+    # The marks take no space: the pages and the fit of each page are the same with and without them.
+    @testset "layout source: the marks change no page and no fit" begin
+        list = join(("- item $i of a long list" for i in 1:18), "\n")
+        nb = _mknb("#%% md id=a\n## A\n\nText.\n\n#%% md id=b\n## B\n\n$list\n")
+        dir = NS._build_slides_project(nb)
+        try
+            doc = joinpath(dir, "doc.typ")
+            off, on = NS._typst_query(doc, "<slate>"), NS._typst_query(doc, "<slate>"; marks = true)
+            @test [r["kind"] for r in off] == ["fit", "fit"]      # no mark without the input
+            @test [r for r in on if r["kind"] == "fit"] == off
+            @test off[1]["s"] == 1 && off[2]["s"] < 1
+            @test count(r -> r["kind"] == "block", on) == 2 && count(r -> r["kind"] == "region", on) == 2
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "layout source: the regions of the title slide, the title of a slide" begin
+        tc = NS._title_cell("# The title\n\n### The subtitle\n\nThe byline\non two lines\n\nOne more line.\n")
+        @test (tc.title, tc.subtitle, tc.byline, tc.rest) == ("The title", "The subtitle", "The byline on two lines", "One more line.")
+        html = KaimonSlate.ReportRender.markdown_html(tc.marked)
+        @test occursin(r"<slate-subtitle>\s*<h3[^>]*>The subtitle</h3>\s*</slate-subtitle>", html)
+        @test occursin(r"<slate-byline>\s*<p>The byline\s+on two lines</p>\s*</slate-byline>", html)
+        src = "#%% md id=t title\n# The title\n\n### The subtitle\n\nThe byline\n\nOne more line.\n\n" *
+              "#%% md id=abs abstract\nThe abstract.\n\n#%% md id=a\n## A\n\nText.\n"
+        # The live deck gets the regions as elements.
+        cells = RE.parse_report(src).cells
+        @test occursin("<slate-byline>", NS.cell_json(cells[1])["output"]) && occursin("<slate-abstract>", NS.cell_json(cells[2])["output"])
+        L = NS.slide_layout(_mknb(src))
+        r = L[1].regions
+        @test [x.name for x in r] == ["title", "subtitle", "byline", "abstract"]
+        @test all(x -> x.page == 1, r)
+        @test all(r[i].box.y + r[i].box.h <= r[i+1].box.y + 1 for i in 1:3)
+        @test r[1].size > r[2].size > r[3].size
+        # The line of the title cell that is no region is a block of the title slide, below the regions.
+        rest = only(L[1].blocks)
+        @test (rest.cell, rest.frag, rest.page, rest.kind) == ("t", 0, 1, "prose") && occursin("One more line", rest.src)
+        @test rest.box.y >= r[4].box.y + r[4].box.h - 1
+        # A content slide: its title is a region above its blocks, at the size of its heading.
+        t = only(L[2].regions)
+        s = NS.deck_settings("", "").values
+        @test t.name == "title" && t.page == 2 && t.size ≈ s["text"]["size"].value * s["heading"]["h2"].value
+        @test t.box.y + t.box.h <= only(L[2].blocks).box.y
+    end
+
+    # cmarker reads a footnote only when its definition is in the same call, and a link reference too.
+    @testset "layout source: footnotes and link definitions in a split cell" begin
+        R = KaimonSlate.ReportRender
+        md = "One[^a] and [a link][ref].\n\n- two[^b]\n\nThree.\n\n[^a]: Note a.\n\n[^b]: Note b.\n\n[ref]: https://example.com\n"
+        parts = R._md_split(md)
+        @test [p.kind for p in parts] == ["prose", "prose", "prose"]
+        @test startswith(parts[1].text, "[^a]: Note a.\n\nOne[^a]") && !occursin("Note b", parts[1].text)
+        @test startswith(parts[2].text, "[^b]: Note b.\n\n- two[^b]")
+        @test all(p -> endswith(p.text, "[ref]: https://example.com"), parts) && !occursin("Note", parts[3].text)
+        # Two blocks that refer to one footnote stay one block.
+        two = "One[^a].\n\nTwo[^a].\n\n[^a]: Note a.\n"
+        @test R._md_split(two) == [(kind = "prose", text = two)]
+        nb = _mknb("#%% md id=a\n## A\n\n$md")
+        @test length(only(NS.slide_layout(nb)).blocks) == 3
+        dir = NS._build_slides_project(nb)
+        try
+            pdf = joinpath(dir, "out.pdf")
+            NS._typst_compile(joinpath(dir, "doc.typ"), pdf)
+            text = read(`pdftotext $pdf -`, String)
+            @test occursin("Note a.", text) && occursin("Note b.", text)
+            @test !occursin("[^", text) && !occursin("[ref]", text)
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "layout source: a region that is out of place gives an export warning" begin
+        function warns(tpl)
+            nb = _mknb("#%% md id=a\n## A\n\nText.\n")
+            nb.deck_template = (; hash = "h", source = tpl, settings = "", files = Dict{String,Vector{UInt8}}(), body_width = nothing)
+            return last(NS._export_pdf_report(nb; layout = "slides"))
+        end
+        @test isempty(warns(""))
+        # A deck template that draws the title over the first block of the body.
+        slide(title) = "#let slide(body, layout: none, title: none, n: none) = page({ $title; fit(body) })\n"
+        @test warns(slide("place(top + left, block(width: 100%, region(\"title\", title)))")) == ["Page 1: the title region is over a block of cell a."]
+        # A title in a box that is too low for it.
+        @test "Page 1: the title region is out of its area." in warns(slide("box(width: 100%, height: 10 * u, region(\"title\", title))"))
+    end
 end
 
 @testset "deck markup" begin
@@ -1082,6 +1200,15 @@ _svg_width(t) = parse(Float64, match(r"width=\"([\d.]+)\"", t)[1])
     finally
         rm(dir; recursive = true, force = true)
     end
+end
+
+# The box of a figure block is the picture as the fit draws it, not its column.
+@testset "layout source: the box of a figure is the drawn picture" begin
+    nb = _hooknb("#%% code id=lf1\nFigHook.Svg()\n\n#%% md id=lf2\nText.\n")
+    fig, text = only(NS.slide_layout(nb)).blocks
+    @test (fig.kind, fig.cell, fig.index, fig.src) == ("figure", "lf1", 1, nothing)
+    @test fig.box.w ≈ 1680 && fig.box.h ≈ 100 && fig.box.x ≈ 120          # the picture of the hook: 1680 by 100 u
+    @test text.box.y >= fig.box.y + fig.box.h
 end
 
 @testset "figure hook: the width comes from the columns and the template's body width" begin
