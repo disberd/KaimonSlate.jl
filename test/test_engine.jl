@@ -696,6 +696,53 @@ end
     @test ReportEngine.figure_vector("never-ran") === nothing
 end
 
+# The worker keeps the value of each output whose type has a figure hook, under (cell, slot), so that
+# an export can call the hook. A run of the cell replaces its entries; a run with no figure and the
+# delete of the cell remove them. Hook values have no count bound; image values keep the bound of 32.
+module HookFig
+import SlateExtensionsBase
+struct Plot; n::Int; end
+Base.show(io::IO, ::MIME"text/html", p::Plot) = print(io, "<div>plot ", p.n, "</div>")
+SlateExtensionsBase.slate_export_figure(io::IO, ::MIME"image/svg+xml", p::Plot, ctx) =
+    (print(io, "<svg width=\"", ctx.width, "\">", p.n, "</svg>"); true)
+end
+
+@testset "the worker keeps figure-hook values by (cell, slot) until a run or a delete" begin
+    RE_H = ReportEngine
+    ctx = RE_H.SlateExtensionsBase.FigureContext(; width = 840.0, max_height = 756.0, scale = 2.0,
+                                                 slate_palette = "midnight", dark = true)
+    svg(cell, slot = 0) = (f = RE_H.figure_export(cell, slot, ("application/pdf", "image/svg+xml"), ctx);
+                           f.held && !isempty(f.mime) ? String(f.bytes) : f.held)
+    m = Module(:HookFigCell)
+    Core.eval(m, :(const HookFig = $HookFig; const FigVec = $FigVec))
+    r = run_capture(m, "HookFig.Plot(1)", "cell:hk")
+    @test [ch[1] for ch in r.mime] == ["text/html", RE_H._FIGURE_HOOK_MIME]   # the display, then the marker
+    @test svg("hk") == "<svg width=\"840.0\">1</svg>"
+    run_capture(m, "HookFig.Plot(2)", "cell:hk")
+    @test svg("hk") == "<svg width=\"840.0\">2</svg>"                       # a new run replaces the value
+    run_capture(m, "1 + 1", "cell:hk")
+    @test svg("hk") === false                                                # a run with no figure drops it
+
+    # The `{{ }}` values of a markdown cell: slot i is the i-th value.
+    rep = RE_H.Report("hookfig", "")
+    Core.eval(RE_H.report_module(rep), :(const HookFig = $HookFig))
+    RE_H.interpolate(RE_H.InProcessKernel(), rep, ["1 + 1", "HookFig.Plot(7)"]; cell = "md")
+    @test svg("md", 1) === false && svg("md", 2) == "<svg width=\"840.0\">7</svg>"
+    RE_H.run_cleanups!(RE_H.InProcessKernel(), rep, ["md"])
+    @test svg("md", 2) === false                                             # the delete of the cell drops it
+
+    # More hook values than the bound of image values: all stay.
+    for i in 1:RE_H._FIGURE_KEEP + 1
+        run_capture(m, "HookFig.Plot($i)", "cell:hb$i")
+    end
+    @test svg("hb1") == "<svg width=\"840.0\">1</svg>"
+    for i in 1:RE_H._FIGURE_KEEP + 1
+        run_capture(m, "FigVec.Fig($i)", "cell:ib$i")
+    end
+    @test RE_H._figure_held("ib1") === nothing && RE_H._figure_held("ib2") !== nothing
+    foreach(i -> RE_H._figure_forget!("hb$i"), 1:RE_H._FIGURE_KEEP + 1)
+end
+
 @testset "the kind table" begin
     RE_K = ReportEngine
     # Every kind has a row, and a kind's name reads back to it. FOREIGN is never read from its name:

@@ -339,11 +339,15 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         r = NS.deck_settings("[roles]\nfg = \"dim\"\n", "")
         @test length(r.warnings) == 1 && r.values["roles"]["fg"] == "slate.text"
 
-        # A fixed surface with text roles on the Slate palette warns.
+        # A fixed surface with text roles or admonition accents on the Slate palette warns.
         r = NS.deck_settings("[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\n", "")
         @test length(r.warnings) == 1 && occursin("roles.strong", r.warnings[1]) && occursin("roles.dim", r.warnings[1])
-        @test isempty(NS.deck_settings("[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\nstrong = \"#003247\"\n" *
-                                       "dim = \"#8197a6\"\n", "").warnings)
+        fixedroles = "[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\nstrong = \"#003247\"\ndim = \"#8197a6\"\naccent = \"#0055aa\"\n"
+        r = NS.deck_settings(fixedroles, "")
+        @test length(r.warnings) == 1 && occursin("`admonition.tip.accent`", r.warnings[1]) && !occursin("roles.dim", r.warnings[1])
+        cats = join("[admonition.$c]\naccent = \"#22aa55\"\n" for c in ("tip", "hint", "answer", "solution", "warning",
+                                                                       "caution", "danger", "error", "compat"))
+        @test isempty(NS.deck_settings(fixedroles * cats, "").warnings)
 
         # Text that is not TOML: one warning that gives the line and the reason, and the layer is not used.
         r = NS.deck_settings("[text\n", "")
@@ -401,6 +405,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
                         "slate-palette = \"\"" => "slate-palette = \"daylight\"")
         @test NS.deck_fixes_colours(NS.deck_settings("", fixed).values)
         @test !NS.deck_fixes_colours(NS.deck_settings("", replace(fixed, "\"daylight\"" => "\"\"")).values)
+        # An admonition category accent on the Slate palette is a colour that the picker changes.
+        @test !NS.deck_fixes_colours(NS.deck_settings(fixed, "[admonition.tip]\naccent = \"slate.green\"\n").values)
     end
 
     # A `slate.` colour is a CSS reference on the live deck and a hex value of the export's Slate
@@ -473,7 +479,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
     @testset "a deck setting moves the measured text size in the PDF" begin
         sizes = map(("", "[text]\nsize = \"40u\"\n")) do set
             nb = _mknb("#%% md id=a\n## A\n\nbody text\n")
-            nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}())
+            nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}(), body_width = nothing)
             dir = NS._build_slides_project(nb)
             try
                 recs = NS._typst_query(joinpath(dir, "doc.typ"), "<slate>")
@@ -497,7 +503,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         long = join(fill("word", 30), " ")
         wide = "| $long | $long | x |\n|---|---|---|\n| a | b | c |\n"
         nb = _mknb("#%% md id=a\n## A\n\nOne$(mark("p1")) line.\n\nThe$(mark("p2")) next line.\n\n#%% md id=b\n## B\n\n$wide")
-        nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}())
+        nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}(), body_width = nothing)
         dir = NS._build_slides_project(nb)
         try
             doc = joinpath(dir, "doc.typ")
@@ -594,7 +600,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         dir = NS._build_slides_project(_mknb(src))
         before = try read(joinpath(dir, "doc.typ"), String) finally rm(dir; recursive = true, force = true) end
         nb = _mknb(src)
-        nb.deck_template = (; hash = "h", source = tpl, settings = "[text]\nfont = [\"DejaVu Sans\"]\n", files)
+        nb.deck_template = (; hash = "h", source = tpl, settings = "[text]\nfont = [\"DejaVu Sans\"]\n", files, body_width = nothing)
         pdf = NS.export_pdf(nb; layout = "slides")
         t = text(pdf)
         @test occursin("TPL layout=\"center\"", t) && occursin("title=Shown", t) && occursin("name=tomlvalue", t)
@@ -713,7 +719,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         # The records of a slides project of `src` with the deck template source `tpl`.
         function records(tpl)
             nb = _mknb(src)
-            nb.deck_template = (; hash = "h", source = tpl, settings = "", files = Dict{String,Vector{UInt8}}())
+            nb.deck_template = (; hash = "h", source = tpl, settings = "", files = Dict{String,Vector{UInt8}}(), body_width = nothing)
             dir = NS._build_slides_project(nb)
             try
                 q(label) = NS._typst_query(joinpath(dir, "doc.typ"), label)
@@ -1021,4 +1027,107 @@ end
     @test isapprox(sum(last.(seq)), 5.0; atol = 1e-9)
     @test first.(seq) == [1, 2, 3, 4] && isapprox(seq[end][2], 2.8; atol = 1e-9)   # the last motion frame holds
     @test NS._vtt_time(3725.5) == "01:02:05.500" && NS._vtt_time(0) == "00:00:00.000"
+end
+
+@testset "deck settings: text.list-marker reaches the live deck and the PDF" begin
+    s = NS.deck_settings("[text]\nlist-marker = \"#123456\"\n", "").values
+    @test occursin("--deck-text-list-marker: #123456;", NS.deck_settings_css(s))
+    @test occursin("\"list-marker\": rgb(\"#123456\")", NS.deck_settings_typ(s; ratio = "16:9", palette = "midnight"))
+    @test occursin("--deck-text-list-marker: var(--deck-accent);", NS.deck_settings_css(NS.deck_settings("", "").values))
+end
+
+# A value whose type has a figure hook (SlateExtensionsBase `slate_export_figure`) prints the picture
+# that the hook draws for its column, with no browser tab. A decline or a throw takes the next path.
+module FigHook
+import SlateExtensionsBase as SEB
+struct Svg end
+struct Decline end
+struct Boom end
+Base.show(io::IO, ::MIME"text/html", ::Svg) = print(io, "<div>live plot</div>")
+SEB.slate_export_figure(io::IO, ::MIME"image/svg+xml", ::Svg, ctx) =
+    (print(io, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"", ctx.width, "\" height=\"100\" data-cap=\"",
+           ctx.max_height, "\" data-palette=\"", ctx.slate_palette, "\"/>"); true)
+const STATIC = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"300\" height=\"100\" id=\"static\"/>"
+Base.show(io::IO, ::MIME"image/svg+xml", ::Union{Decline,Boom}) = print(io, STATIC)
+SEB.slate_export_figure(::IO, ::MIME"image/svg+xml", ::Decline, _) = false
+SEB.slate_export_figure(::IO, ::MIME"image/svg+xml", ::Boom, _) = error("boom\nsecond line")
+end
+
+# A notebook whose cells ran in this process, so that the figure values are kept here.
+function _hooknb(src)
+    nb = _mknb(src)
+    Core.eval(RE.report_module(nb.report), :(const FigHook = $FigHook))
+    foreach(c -> RE.eval_cell!(nb.report, c, nb.kernel), nb.report.cells)
+    return nb
+end
+# The files that `doc.typ` draws as figures, in order, as (name, text).
+_drawn_figs(dir) = [(m[1], read(joinpath(dir, m[1]), String))
+                    for m in eachmatch(r"figureimg\(\"([^\"]+)\"", read(joinpath(dir, "doc.typ"), String))]
+_svg_width(t) = parse(Float64, match(r"width=\"([\d.]+)\"", t)[1])
+
+@testset "figure hook: the picture of a value reaches the PDF with no tab" begin
+    nb = _hooknb("#%% code id=fh1\nFigHook.Svg()\n\n#%% md id=fh2\n{{ FigHook.Svg() }}\n")
+    w = String[]
+    dir = NS._build_slides_project(nb; warnings = w)
+    try
+        figs = _drawn_figs(dir)
+        @test length(figs) == 1 && endswith(figs[1][1], ".svg")
+        @test _svg_width(figs[1][2]) == 1680                      # the base body: 1920 u less 240 u
+        @test occursin("data-cap=\"756.0\"", figs[1][2]) && occursin("data-palette=\"midnight\"", figs[1][2])
+        comp = filter(f -> occursin(r"_comp\d+\.svg$", f), readdir(dir))   # the `{{ }}` value
+        @test length(comp) == 1 && _svg_width(read(joinpath(dir, comp[1]), String)) == 1680 - 32
+        @test isempty(w)
+        NS._typst_compile(joinpath(dir, "doc.typ"), joinpath(dir, "out.pdf"))
+        @test isfile(joinpath(dir, "out.pdf"))
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+@testset "figure hook: the width comes from the columns and the template's body width" begin
+    widths(nb) = (dir = NS._build_slides_project(nb);
+                  try; [_svg_width(t) for (_, t) in _drawn_figs(dir)]; finally; rm(dir; recursive = true, force = true); end)
+    nb = _hooknb("#%% code id=fw1\nFigHook.Svg()\n\n#%% code id=fw2 column=2\nFigHook.Svg()\n")
+    @test widths(nb) == [816, 816]                                # two cells share 1680 u with the 48 u row gap
+    # A deck template with its own body width (the template reaches the hub through the manifest).
+    SEB = RE.SlateExtensionsBase
+    try
+        SEB.provide_deck_template!(""; body_width = 1000)
+        @test widths(nb) == [476, 476]                            # (1000 − 48) / 2
+    finally
+        SEB._DECK_TEMPLATE[] = nothing
+    end
+    # A document: the text width of the A4 page in px at 96 dpi (article margins 2.2 cm).
+    dir = NS._build_typst_project(_hooknb("#%% code id=fw3\nFigHook.Svg()\n"))
+    try
+        @test only(_svg_width(t) for (_, t) in _drawn_figs(dir)) ≈ (210 - 44) / 25.4 * 96
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+@testset "figure hook: a decline and a throw take the next path; a throw warns" begin
+    w = String[]
+    dir = NS._build_slides_project(_hooknb("#%% code id=fd1\nFigHook.Decline()\n\n#%% code id=fd2\nFigHook.Boom()\n");
+                                   warnings = w)
+    try
+        @test [t for (_, t) in _drawn_figs(dir)] == [FigHook.STATIC, FigHook.STATIC]   # the image the cell showed
+        @test length(w) == 1 && occursin("Cell fd2", w[1]) && occursin("Boom", w[1]) && endswith(w[1], ": boom")
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+@testset "figure hook: a notebook from stored output warns and notes the figure" begin
+    nb = _hooknb("#%% code id=fs1\nFigHook.Svg()\n")
+    RE._figure_forget!("fs1")              # the output stays and the value is gone, as after an open from storage
+    w = String[]
+    dir = NS._build_slides_project(nb; warnings = w)
+    try
+        @test w == ["1 figure from stored output: run the notebook for vector figures"]
+        @test occursin("#notefig(\"[figure not captured — run the notebook, then re-export]\")",
+                       read(joinpath(dir, "doc.typ"), String))
+    finally
+        rm(dir; recursive = true, force = true)
+    end
 end

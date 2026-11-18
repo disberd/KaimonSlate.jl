@@ -55,21 +55,17 @@ function _component_slots(c::Cell)
     return [(s - 1, i) for (s, i) in enumerate(findall(_has_component, c.interp))]
 end
 
-# The notebook's component figures, keyed `(cell id, slot)`. Called BEFORE the caller takes
-# `nb.lock`, like the other warm passes — each round-trip blocks up to its timeout, and holding the
-# notebook lock for that would stall everything else on the notebook for the whole export. Nothing
-# is cached between exports: a component draws from live state, so a stale picture is worse than
-# paying the round-trip again. Best-effort — a mount that fails or times out is simply absent, and
-# the caller says so rather than dropping it silently.
 # Rasterise every HTML-output cell (a record grid, a custom card) in ONE round-trip, before the
 # document is written, so `_emit_output!` finds each picture already in the snapshot store. Asking
 # per cell as it emits costs a push and a 4 s wait EACH, so a notebook with a dozen of them spends a
 # dozen timeouts in series and the slowest raster quietly comes out as text — the failure is per
-# cell, silent, and different run to run. Returns how many pictures arrived.
-function _warm_html_rasters!(nb::LiveNotebook; theme::AbstractString = "")
+# cell, silent, and different run to run. Returns how many pictures arrived. A cell whose figure
+# hook gave a picture (in `figs`) needs no raster.
+function _warm_html_rasters!(nb::LiveNotebook; theme::AbstractString = "", figs::_CompFigs = _NO_COMPFIGS)
     ids = lock(nb.lock) do
         [c.id for c in nb.report.cells if _has_html_output(c) && !_has_server_raster(nb, c.id) &&
-                                          _output_chunk(c.output, "text/markdown") === nothing]   # typeset instead
+                                          _output_chunk(c.output, "text/markdown") === nothing &&   # typeset instead
+                                          !haskey(figs, (c.id, _hook_slot(0)))]
     end
     isempty(ids) && return 0
     return try; request_live_inspect_many(nb, ids; theme = theme); catch; 0; end
@@ -99,14 +95,28 @@ function _warm_vector_figs!(nb::LiveNotebook, figs::_CompFigs; progress = nothin
     return figs
 end
 
-function _warm_component_figs!(nb::LiveNotebook; theme::AbstractString = "midnight", progress = nothing)
+# The notebook's component figures, keyed `(cell id, slot)`, into `figs`. Called BEFORE the caller
+# takes `nb.lock`, like the other warm passes — each round-trip blocks up to its timeout, and holding
+# the notebook lock for that would stall everything else on the notebook for the whole export. Nothing
+# is cached between exports: a component draws from live state, so a stale picture is worse than
+# paying the round-trip again. Best-effort — a mount that fails or times out is simply absent, and
+# the caller says so rather than dropping it silently. An output whose figure hook already gave a
+# picture is not asked: the Julia hook wins. `geo` gives the size fields of the component's `ctx`
+# (see `_figure_ctx`).
+function _warm_component_figs!(nb::LiveNotebook, figs::_CompFigs, geo; theme::AbstractString = "midnight",
+                               progress = nothing)
     targets = lock(nb.lock) do
-        [(c.id, s) for c in nb.report.cells for (s, _) in _component_slots(c)]
+        [(c.id, s, i) for c in nb.report.cells for (s, i) in _component_slots(c)]
     end
-    figs = _CompFigs()
-    for (cid, slot) in targets
+    for (cid, slot, i) in targets
+        haskey(figs, (cid, _hook_slot(i))) && continue
         progress === nothing || (try; progress(cid); catch; end)
-        got = try; request_live_compfig(nb, cid, slot, theme); catch; nothing; end
+        ctx = _figure_ctx(geo, cid, i)
+        got = try
+            request_live_compfig(nb, cid, slot, theme; width = ctx.width, max_height = ctx.max_height, scale = ctx.scale)
+        catch
+            nothing
+        end
         got === nothing || (figs[(cid, slot)] = got)
     end
     return figs
@@ -125,6 +135,151 @@ function _comp_fig_width_pct(bytes::Vector{UInt8}, ext::AbstractString)
     w = tryparse(Float64, String(m.captures[1]))
     (w === nothing || w <= 0) && return nothing
     return clamp(round(Int, 100 * w / _COMP_FIG_REF_PX), 25, 100)
+end
+
+# ── Figures from the figure hook ──────────────────────────────────────────────────────────────────
+# The type of a value can have a `slate_export_figure` method (SlateExtensionsBase): the value draws its
+# own picture for the export, on the worker that ran its cell, with no tab. Its output carries a marker
+# chunk (capture.jl `_FIGURE_HOOK_MIME`). Before the document is written, the export asks the hook for
+# each marked output, with the size of the column of the figure, and keeps the picture with the
+# component figures under `_hook_slot(i)`: `i` is 0 for the output of a code cell and the index of the
+# value for a `{{ }}` or fence value of a markdown cell. The hook picture comes before every other path
+# of the output.
+const _TYPST_FIGURE_MIMES = ("application/pdf", "image/svg+xml", "image/png")   # the order Typst asks in
+const _FIGURE_MIME_EXT = Dict("application/pdf" => "pdf", "image/svg+xml" => "svg", "image/png" => "png")
+_hook_slot(i::Integer) = -2 - Int(i)
+_hook_output(o) = o !== nothing && any(ch -> ch.mime == ReportEngine._FIGURE_HOOK_MIME, o.display)
+
+# The size of a figure for an export: `width` maps `(cell id, slot)` to the width of the column of the
+# figure in px, `body` is the width of a figure that is not in it, `max_height` the figure cap (`nothing`
+# in a document) and `palette` the Slate palette of the figures.
+_figure_ctx(geo, cid::AbstractString, slot::Integer) =
+    SlateExtensionsBase.FigureContext(; width = get(geo.width, (String(cid), Int(slot)), geo.body),
+                                      max_height = geo.max_height, scale = 2.0, slate_palette = geo.palette,
+                                      dark = !_export_is_light(geo.palette))
+
+# Ask the figure hook for the picture of each marked output and keep it in `figs`. A hook that throws
+# adds a line to `warnings`. The outputs whose worker keeps no value add one line together: their
+# notebook opened from its stored outputs and did not run, or its worker is not running. Called before
+# the caller takes `nb.lock`, like the other warm passes.
+function _warm_hook_figs!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{String}, geo; progress = nothing)
+    targets = lock(nb.lock) do
+        out = Tuple{String,Int,String}[]
+        for c in nb.report.cells
+            renders(c.kind) || continue
+            if is_prose(c.kind)
+                for (i, o) in enumerate(c.interp)
+                    _hook_output(o) && push!(out, (c.id, i, _cell_region(c)))
+                end
+            elseif _hook_output(c.output)
+                push!(out, (c.id, 0, _cell_region(c)))
+            end
+        end
+        out
+    end
+    stored = 0
+    for (cid, slot, region) in targets
+        k = _running_kernel(nb, region)
+        k === nothing && (stored += 1; continue)
+        progress === nothing || (try; progress(cid); catch; end)
+        r = try; ReportEngine.export_figure(k, cid, slot, _TYPST_FIGURE_MIMES, _figure_ctx(geo, cid, slot)); catch; nothing; end
+        r === nothing && continue
+        if !r.held
+            stored += 1
+        elseif !isempty(r.mime)
+            figs[(cid, _hook_slot(slot))] = (r.bytes, _FIGURE_MIME_EXT[r.mime])
+        elseif !isempty(r.error)
+            push!(warnings, "Cell $cid: the figure hook of $(r.type) threw an error, so the output prints as it shows: $(r.error)")
+        end
+    end
+    stored > 0 && push!(warnings, "$stored figure$(stored == 1 ? "" : "s") from stored output: run the notebook for vector figures")
+    return figs
+end
+
+# The width of each `{{ }}` value of the markdown `src` (numbered from `ib + 1`) in a column `w` px wide,
+# into `out`. A `:::: columns` group shares the width among its columns (`_column_widths`). Returns the
+# number of the last value.
+function _interp_widths!(out, cid::AbstractString, src::AbstractString, ib::Integer, w::Real, gap::Real)
+    for p in _split_columns(src)
+        if p isa AbstractString
+            n = _md_interp_count(p)
+            for g in ib+1:ib+n
+                out[(String(cid), g)] = Float64(w)
+            end
+            ib += n
+        else
+            for (j, col) in enumerate(p.cols)
+                ib = _interp_widths!(out, cid, col, ib, _column_widths(p.widths, w, gap)[j], gap)
+            end
+        end
+    end
+    return ib
+end
+
+# The widths of the columns of a `:::: columns` group `w` wide, with `gap` between them, as `slidecols`
+# draws them. A percentage is of `w`, and percentages that fill the row or more shrink in proportion. A
+# column with no width shares the rest equally; so does a width in another unit.
+function _column_widths(widths, w::Real, gap::Real)
+    avail = w - (length(widths) - 1) * gap
+    pct = [endswith(x, "%") ? parse(Float64, chop(x)) : nothing for x in widths]
+    all(!isnothing, pct) && sum(pct) >= 100 && return [avail * p / sum(pct) for p in pct]
+    rest = max(avail - sum((w * p / 100 for p in pct if p !== nothing); init = 0.0), 0.0) / max(count(isnothing, pct), 1)
+    return [p === nothing ? rest : w * p / 100 for p in pct]
+end
+
+# The figure geometry of a slide deck (see `_figure_ctx`), in px = u. The body is `body_width` of the deck
+# template, else the slide width less the base margins (240 u). A row of `n` cells shares it with
+# `columns.row-gap` between the cells. A markdown cell has the 16 u padding of `mdcell` on each side.
+# The figure cap is `fit.figure-cap` of the slide height.
+function _slide_figure_geometry(nb::LiveNotebook, ds, ratio::AbstractString, level::Integer, palette::AbstractString)
+    W, H = deck_canvas(ratio)
+    t = notebook_deck_template(nb)
+    body = something(t === nothing ? nothing : t.body_width, W - 240.0)
+    rowgap, gap = ds.values["columns"]["row-gap"].value, ds.values["columns"]["gap"].value
+    width = Dict{Tuple{String,Int},Float64}()
+    lock(nb.lock) do
+        fm = report_frontmatter(nb.report)
+        bycell = Dict(c.id => c for c in nb.report.cells)
+        for sl in slide_deck(nb; level, drop = c -> c.id in fm.skip || :bibliography in c.flags),
+            row in unique(b.row for b in sl.frags)
+            fs = filter(b -> b.row == row, sl.frags)
+            cw = (body - (length(fs) - 1) * rowgap) / length(fs)
+            for f in fs
+                c = bycell[f.cell]
+                is_prose(c.kind) ? _interp_widths!(width, c.id, something(f.src, c.source), f.interpbase, cw - 32, gap) :
+                                   (width[(c.id, 0)] = cw)
+            end
+        end
+    end
+    return (; width, body, max_height = ds.values["fit"]["figure-cap"] * H, palette = String(palette))
+end
+
+# The figure geometry of a document (see `_figure_ctx`), in px at 96 dpi: the text width of the A4 page,
+# or one of its two columns (Typst `columns` puts 4 % between them). A row of cells shares the column
+# with the 1.2 em gutter of its grid. No figure cap.
+function _doc_figure_geometry(nb::LiveNotebook; style::AbstractString, cols::Integer, body::AbstractString,
+                              palette::AbstractString)
+    st = get(_STYLES, style, _STYLES["article"])
+    px(mm) = mm / 25.4 * 96
+    textw = px(210 - 20 * parse(Float64, match(r"x: ([\d.]+)cm", st.margin)[1]))
+    colw = cols == 2 ? 0.48 * textw : textw
+    gutter = 1.2 * parse(Float64, chop(_body_size(body); tail = 2)) * 96 / 72
+    width = Dict{Tuple{String,Int},Float64}()
+    lock(nb.lock) do
+        fm = report_frontmatter(nb.report)
+        cells = filter(c -> renders(c.kind), nb.report.cells)
+        rowopen, _, rowmembers = _column_row_brackets(cells,
+            c -> !(:collapsed in c.flags) && !(c.id in fm.skip) && !(:bibliography in c.flags))
+        n = 1
+        for c in cells
+            haskey(rowopen, c.id) && (n = rowopen[c.id])
+            w = c.id in rowmembers ? (colw - (n - 1) * gutter) / n : colw
+            for slot in (is_prose(c.kind) ? (1:length(c.interp)) : (0:0))
+                width[(c.id, slot)] = w
+            end
+        end
+    end
+    return (; width, body = colw, max_height = nothing, palette = String(palette))
 end
 
 # LaTeX macro shims for commands mitex lacks. mitex honors parameterized \newcommand, so
@@ -514,7 +669,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       set par(leading: 0em, spacing: settings.text.paragraph-after)
       set block(spacing: 0em)
       set list(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
-        marker: depth => box(width: settings.text.list-indent - 0.5em, align(right, text(fill: settings.roles.accent, ("•", "◦", "▪").at(calc.rem(depth - 1, 3))))))
+        marker: depth => box(width: settings.text.list-indent - 0.5em, align(right, text(fill: settings.text.list-marker, ("•", "◦", "▪").at(calc.rem(depth - 1, 3))))))
       set enum(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
         numbering: n => box(width: settings.text.list-indent - 0.5em, align(right, [#n.])))
       show list: set block(above: settings.text.paragraph-after, below: 0.6em)
@@ -865,22 +1020,25 @@ function _interp_typst_md(expr, o, figfile)
 end
 
 # The `compfig` callback `_md_for_typst` takes: interpolation index → the filename of that
-# component's captured figure, written into the project dir on first ask, or `nothing`. Staging is
-# the caller's job (only it has `dir`), so this closes over it and registers the figure's width in
-# `media.json` — the one place a markdown image can carry a size.
+# value's captured figure (from its figure hook, else from its component), written into the project
+# dir on first ask, or `nothing`. Staging is the caller's job (only it has `dir`), so this closes over
+# it and registers the figure's width in `media.json` — the one place a markdown image can carry a size.
+# A hook figure is drawn for its column, so it takes the width of the column.
 function _compfig_stager(c::Cell, dir::AbstractString, base::AbstractString, compfigs::_CompFigs, sizes)
     slotof = Dict(i => s for (s, i) in _component_slots(c))
     n = Ref(0)
     return function (i::Integer)
-        slot = get(slotof, Int(i), nothing); slot === nothing && return nothing
-        got = get(compfigs, (c.id, slot), nothing); got === nothing && return nothing
+        hook = get(compfigs, (c.id, _hook_slot(i)), nothing)
+        slot = get(slotof, Int(i), nothing)
+        got = hook !== nothing ? hook : slot === nothing ? nothing : get(compfigs, (c.id, slot), nothing)
+        got === nothing && return nothing
         bytes, ext = got
         n[] += 1
         fname = string(base, "_comp", n[], ".", ext)
         write(joinpath(dir, fname), bytes)
         if sizes !== nothing
             e = Dict{String,Any}("block" => true)
-            pct = _comp_fig_width_pct(bytes, ext)
+            pct = hook === nothing ? _comp_fig_width_pct(bytes, ext) : nothing
             pct === nothing || (e["width"] = (Float64(pct), "%"))
             sizes[fname] = e
         end
@@ -1103,6 +1261,9 @@ end
 # `ext ∈ ("pdf","svg","png")`, or `nothing` when the cell has no figure.
 function _figure_for_export(nb::LiveNotebook, c::Cell; theme::AbstractString = "midnight", override::Bool = false,
                             compfigs::_CompFigs = _NO_COMPFIGS)
+    # The picture that the value's figure hook drew for this export comes first (`_warm_hook_figs!`).
+    hook = get(compfigs, (c.id, _hook_slot(0)), nothing)
+    hook === nothing || return (copy(hook[1]), hook[2])
     # Themed OVERRIDE: a native figure re-rendered under the chosen palette (`_warm_makie_figs!`) wins
     # over the baked-in bytes, which carry the theme the cell was last RUN in — Makie can't be re-themed
     # any other way. Falls through to the baked bytes when the re-render was unavailable.
@@ -1357,7 +1518,9 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
         write(joinpath(dir, base * ".out"), rstrip(plain(o.stdout)))
         print(io, "#outblock(read(\"", base, ".out\"))\n")
     end
-    md = ReportRender._markdown_output(o)
+    # A figure hook that gave a picture wins over the text forms of the value too.
+    hooked = haskey(compfigs, (c.id, _hook_slot(0)))
+    md = hooked ? nothing : ReportRender._markdown_output(o)
     if md !== nothing
         # Prose: typeset as a markdown cell's would be, rather than rasterized as HTML.
         write(joinpath(dir, base * "_out.md"), ReportRender._md_kinds(_normalize_math_delims(md); plain = true))
@@ -1369,7 +1532,7 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
         print(io, "#valblock(read(\"", base, ".val\"))\n")
     end
     # Math, and HTML with a markdown form, print as text and formulas — ahead of any page snapshot.
-    if _emit_typeset_output!(io, dir, base, o)
+    if !hooked && _emit_typeset_output!(io, dir, base, o)
         for spec in _table_specs(c)
             print(io, _typst_table(spec; theme = theme))
         end
@@ -1395,7 +1558,7 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
         write(joinpath(dir, base * "." * ext), data)
         # A component keeps its on-screen proportions rather than filling the column like a figure
         # the author sized for print; everything else takes `figureimg`'s default.
-        pct = _has_component(o) ? _comp_fig_width_pct(data, ext) : nothing
+        pct = _has_component(o) && !hooked ? _comp_fig_width_pct(data, ext) : nothing
         print(io, "#figureimg(\"", base, ".", ext, "\"",
               pct === nothing ? "" : ", width: $(pct)%", ")\n")
     elseif !isempty(_echarts_specs(c))
@@ -1404,6 +1567,10 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
         print(io, "#notefig(\"[chart not captured — open this notebook in a browser, then re-export]\")\n")
     elseif _has_component(o)
         print(io, "#notefig(\"[component not captured — open this notebook in a browser, then re-export]\")\n")
+    elseif _hook_output(o)
+        print(io, "#notefig(\"[figure not captured — run the notebook, then re-export]\")\n")
+    elseif _has_html_output(c)
+        print(io, "#notefig(\"[figure not captured — open this notebook in a browser, then re-export]\")\n")
     end
     for spec in _table_specs(c)
         print(io, _typst_table(spec; theme = theme))
@@ -1516,17 +1683,19 @@ cell the document title falls back to the first markdown H1 (then the notebook f
 """
 export_pdf(nb::LiveNotebook; kwargs...) = first(_export_pdf_report(nb; kwargs...))
 
-# `export_pdf` and the export warnings of the PDF. A slides layout warns about the checks of its deck
-# settings and about the slides at the fit floor.
+# `export_pdf` and the export warnings of the PDF: the figure warnings of every layout (a figure hook
+# that threw, figures from stored output) and, for slides, the checks of the deck settings and the
+# slides at the fit floor.
 function _export_pdf_report(nb::LiveNotebook; kwargs...)
-    dir = _build_typst_project(nb; kwargs...)
+    figwarns = String[]
+    dir = _build_typst_project(nb; warnings = figwarns, kwargs...)
     try
         typ = joinpath(dir, "doc.typ"); pdf = joinpath(dir, "out.pdf")
         _typst_compile(typ, pdf)
-        warns = String[]
+        warns = figwarns
         if get(kwargs, :layout, "") == "slides"
             recs = _typst_query(typ, "<slate>")
-            warns = vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; unit = "Page"))
+            warns = vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; unit = "Page"), figwarns)
         end
         return read(pdf), warns
     finally
@@ -2108,28 +2277,32 @@ end
 # Assemble the Typst PROJECT — `doc.typ` plus every per-cell aux file it reads (.md / .jl /
 # figures / output blocks) — into a fresh temp dir and return its path. Shared by `export_pdf`
 # (compile it) and `export_typst_bundle` (archive it). Holds `nb.lock` while reading the report;
-# the caller owns the returned dir and must `rm` it.
+# the caller owns the returned dir and must `rm` it. The figure warnings (a figure hook that threw,
+# figures from stored output) go into `warnings`.
 function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                               style::AbstractString = "article", columns::Integer = 1,
                               theme::AbstractString = "light", charttheme::AbstractString = "",
                               override::Bool = false, code::AbstractString = "normal",
                               body::AbstractString = "", include_params::Bool = false,
                               layout::AbstractString = "article", notes::Bool = false,
-                              level::Integer = 2, outputs::AbstractString = "all")
+                              level::Integer = 2, outputs::AbstractString = "all",
+                              warnings::Vector{String} = String[])
     # Slide-deck layout takes a wholly different page geometry/flow — dispatch early.
     layout == "slides" && return _build_slides_project(nb; theme = theme, charttheme = charttheme, override = override,
         code = code, include_source = include_source, include_params = include_params, notes = notes,
-        level = level, ratio = get(nb.report.meta, "slideratio", "16:9"), outputs = outputs)
+        level = level, ratio = get(nb.report.meta, "slideratio", "16:9"), outputs = outputs, warnings = warnings)
     show_source = include_source && code != "hidden"
     cols = clamp(Int(columns), 1, 2)
     body = isempty(body) ? (cols == 2 ? "compact" : "normal") : body   # narrow columns → smaller default
     ct = _chart_theme(charttheme, theme)                               # the Slate palette charts render in
+    geo = _doc_figure_geometry(nb; style, cols, body, palette = ct)
+    compfigs = _warm_hook_figs!(nb, _CompFigs(), warnings, geo; progress = cid -> _export_progress(nb, cid))
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     # Themed override: re-render native (Makie) figures under the picked palette too (see the export
     # dialog's warning). No-op when not overriding — the baked figure bytes already match the live theme.
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
-    _warm_html_rasters!(nb; theme = ct)   # one round-trip, under the EXPORT's palette (see above)
-    compfigs = _warm_component_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
+    _warm_html_rasters!(nb; theme = ct, figs = compfigs)   # one round-trip, under the EXPORT's palette (see above)
+    _warm_component_figs!(nb, compfigs, geo; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_vector_figs!(nb, compfigs; progress = cid -> _export_progress(nb, cid))
     lock(nb.lock) do
         dir = mktempdir()
@@ -2377,7 +2550,8 @@ end
 function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark", charttheme::AbstractString = "",
                                override::Bool = false, ratio::AbstractString = "16:9", code::AbstractString = "hidden",
                                include_source::Bool = false, include_params::Bool = false,
-                               notes::Bool = false, level::Integer = 2, outputs::AbstractString = "all")
+                               notes::Bool = false, level::Integer = 2, outputs::AbstractString = "all",
+                               warnings::Vector{String} = String[])
     show_source = include_source && code != "hidden"
     # Pull the manifest now, so an edit to a file-backed template part (`@pkg_asset`) reaches this export
     # without a run or a worker restart.
@@ -2385,10 +2559,12 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
     ds = notebook_deck_settings(nb)
     palette = _chart_theme(charttheme, theme)       # the Slate palette of the `slate.` colours
     ct = _deck_figure_palette(ds.values, palette)   # the Slate palette the figures render in
+    geo = _slide_figure_geometry(nb, ds, ratio, level, ct)
+    compfigs = _warm_hook_figs!(nb, _CompFigs(), warnings, geo; progress = cid -> _export_progress(nb, cid))
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
-    _warm_html_rasters!(nb; theme = ct)   # one round-trip, under the EXPORT's palette (see above)
-    compfigs = _warm_component_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
+    _warm_html_rasters!(nb; theme = ct, figs = compfigs)   # one round-trip, under the EXPORT's palette (see above)
+    _warm_component_figs!(nb, compfigs, geo; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_vector_figs!(nb, compfigs; progress = cid -> _export_progress(nb, cid))
     lock(nb.lock) do
         dir = mktempdir()

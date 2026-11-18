@@ -1753,6 +1753,37 @@ end
 # An in-process kernel captured the figure in this process.
 export_vector(::Kernel, cellid::AbstractString) = figure_vector(cellid)
 
+"""
+    export_figure(kernel, cellid, slot, mimes, ctx) -> Union{Nothing,NamedTuple}
+
+The picture of the figure that output `slot` of cell `cellid` showed, from the figure hook of its value,
+on the kernel that ran the cell (capture.jl `figure_export`). `ctx` is a
+`SlateExtensionsBase.FigureContext`. The result is `(; held, mime, bytes, error, type)`: `held` is false
+when the kernel keeps no value for the output, and `mime` is empty when the hook declines or throws.
+`nothing` when the round trip fails.
+"""
+function export_figure(k::GateKernel, cellid::AbstractString, slot::Integer, mimes, ctx)
+    res = try
+        _tool(k, "__slate_export_figure", Dict{String,Any}("cell" => String(cellid), "slot" => Int(slot),
+              "mimes" => String[String(m) for m in mimes], "width" => Float64(ctx.width),
+              "max_height" => Float64(something(ctx.max_height, 0.0)), "scale" => Float64(ctx.scale),
+              "slate_palette" => String(ctx.slate_palette), "dark" => ctx.dark); timeout = _eval_timeout())
+    catch
+        return nothing
+    end
+    field(k) = get(res, k, get(res, String(k), ""))
+    (res !== nothing && field(:held) isa Bool) || return nothing
+    b64 = String(field(:b64))
+    bytes = try; Base64.base64decode(b64); catch; return nothing; end
+    return (; held = field(:held), mime = String(field(:mime)), bytes, error = String(field(:error)),
+            type = String(field(:type)))
+end
+function export_figure(::Kernel, cellid::AbstractString, slot::Integer, mimes, ctx)
+    r = figure_export(cellid, slot, mimes, ctx)
+    return (; held = r.held, mime = get(r, :mime, ""), bytes = get(r, :bytes, UInt8[]), error = get(r, :error, ""),
+            type = get(r, :type, ""))
+end
+
 # Fetch a byte asset an extension registered on the WORKER via `provide_served_asset!` (keyed by content
 # hash), so the hub can serve it at a stable URL. Returns `(mime, bytes)` or `nothing`. The hub caches by
 # hash after the first fetch (content-addressed → immutable), so this round-trips at most once per asset.
@@ -2076,10 +2107,10 @@ profile_source(k::GateKernel, ::Report; file::AbstractString) =
     _tool(k, "__slate_profile_source", Dict{String,Any}("file" => String(file)); timeout = 60.0)
 
 # Capture markdown interpolation expressions in the worker (rich, one each).
-function interpolate(k::GateKernel, report::Report, exprs::Vector{String})
+function interpolate(k::GateKernel, report::Report, exprs::Vector{String}; cell::AbstractString = "")
     prepare!(k, report)
     wires = try
-        _tool(k, "__slate_interp", Dict("exprs" => exprs))
+        _tool(k, "__slate_interp", Dict("exprs" => exprs, "cell" => String(cell)))
     catch
         return CellOutput[]
     end
@@ -2226,9 +2257,10 @@ _deck_file_name_ok(name::AbstractString) =
     all(s -> !isempty(s) && s != "." && s != "..", split(name, '/'))
 
 # The deck template a worker sent (`__slate_deck_template`, see `deck_template_wire`) as
-# `(; hash, source, settings, files)` with decoded bytes, or `nothing` when the worker has none or sent
-# anything the hub cannot trust: a file name that leaves the directory, or bytes that do not decode. A
-# worker with an older SlateExtensionsBase sends no settings: they are `""`.
+# `(; hash, source, settings, files, body_width)` with decoded bytes, or `nothing` when the worker has
+# none or sent anything the hub cannot trust: a file name that leaves the directory, or bytes that do not
+# decode. A worker with an older SlateExtensionsBase sends no settings (`""`) and no body width. A body
+# width that is not a number of slide units in (0, 10000] is `nothing`: the base body width.
 function _decode_deck_template(res)
     field(x, k::Symbol) = x === nothing ? nothing : get(x, k, get(x, String(k), nothing))
     field(res, :ok) === true || return nothing
@@ -2242,7 +2274,9 @@ function _decode_deck_template(res)
         (name isa AbstractString && b64 isa AbstractString && _deck_file_name_ok(name)) || return nothing
         files[String(name)] = try; Base64.base64decode(b64); catch; return nothing; end
     end
-    return (; hash = String(hash), source = String(source), settings = String(settings), files)
+    bw = field(res, :body_width)
+    body_width = bw isa Real && !(bw isa Bool) && isfinite(bw) && 0 < bw <= 10000 ? Float64(bw) : nothing
+    return (; hash = String(hash), source = String(source), settings = String(settings), files, body_width)
 end
 
 # The deck template of the worker's loaded packages as `(; hash, source, settings, files)`, or `nothing`.
@@ -2264,7 +2298,7 @@ function get_deck_template(::InProcessKernel, ::Report)
     t = Base.invokelatest(SlateExtensionsBase.deck_template)
     t === nothing && return nothing
     return (; hash = t.hash, source = t.source, settings = hasproperty(t, :settings) ? t.settings : "",
-            files = copy(t.files))
+            files = copy(t.files), body_width = hasproperty(t, :body_width) ? t.body_width : nothing)
 end
 
 # Filesystem coordinates for a self-contained export (active project dir + path-dep sources).

@@ -61,6 +61,19 @@ were written when they went out. They are marked.
   key of `draw` that is no block kind gives an export warning. A deck template that draws its
   slides with its own rules (it does not call `base-rhythm`) keeps each block as its markdown gives
   it, unless it gives the function of that kind.
+- A package can draw the picture of its figures for the Typst PDF export (slides, article, report)
+  with a `SlateExtensionsBase.slate_export_figure(io, mime, x, ctx)` method for each format it can
+  write. The export asks for PDF, then SVG, then PNG, on the worker that ran the cell, so it needs no
+  open tab. `ctx` (`FigureContext`) gives the width of the figure's column in px (1 px = 1 u on a
+  slide, 1/96 inch in a document), the figure cap on a slide, the raster scale and the Slate palette of
+  the figures. A method that declines or throws lets the export take the figure as before; a throw
+  adds an export warning. The worker keeps the value of each output whose type has such a method,
+  until the cell runs again or is deleted. A notebook opened from its stored outputs and not run has
+  no values: the export warns "N figures from stored output". A component's `exportFigure` gets the
+  same `width`, `max_height` and `scale` in its `ctx`, beside its old keys. A deck template states
+  the width of its body with `provide_deck_template!(…; body_width)`, in `u`.
+- The deck setting `text.list-marker` sets the colour of list bullets, on the live deck and in the
+  PDF deck. Its base value is the role `accent`.
 
 ### Changed
 
@@ -172,6 +185,12 @@ were written when they went out. They are marked.
 - On a slide a figure caption (a cell with the `caption` tag) has the caption size and colour of
   the deck settings, and the PDF deck prints its "Figure N." label, as the live deck does.
 - The PDF deck rounds the corners of a figure by `figures.radius`, as the live deck does.
+- An output with no picture in the PDF export (an HTML output that no tab captured, or a figure-hook
+  value that the worker does not hold) prints a note in its place, in documents too. Such an output
+  used to print nothing.
+- The export dialog says that the deck template fixes the colours only when no value of the merged
+  deck settings, admonition category accents included, follows the Slate palette. The warning about a
+  fixed `roles.surface` also names the admonition accents that follow the Slate palette.
 
 ## [2.2.0] - 2026-11-16
 

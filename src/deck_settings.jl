@@ -233,13 +233,21 @@ function _deck_merge!(s, base, text::AbstractString, from::AbstractString, warns
         join(first(over, 3), ", ") * (length(over) > 3 ? ", …" : "") * ".")
 end
 
-# Text roles that follow the Slate palette on a fixed surface can be hard to read: a warning.
+# Text roles and admonition accents that follow the Slate palette on a fixed surface can be hard to
+# read: a warning. An accent that is a role name follows that role. A category without its own accent
+# takes the default one, so the warning lists only the accents that the settings set.
 function _deck_check_surface!(s, warns)
     r = s["roles"]
     startswith(r["surface"], "slate.") && return
-    left = [k for k in ("fg", "strong", "dim") if startswith(r[k], "slate.")]
+    left = ["`roles.$k`" for k in ("fg", "strong", "dim") if startswith(r[k], "slate.")]
+    follows(a) = a isa AbstractString && startswith(get(r, a, a), "slate.")
+    adm = s["admonition"]
+    follows(get(adm, "accent", nothing)) && push!(left, "`admonition.accent`")
+    for (c, d) in _sorted(adm)
+        d isa AbstractDict && follows(get(d, "accent", nothing)) && push!(left, "`admonition.$c.accent`")
+    end
     isempty(left) || push!(warns, "Deck settings: `roles.surface` is a fixed colour, but " *
-        join(("`roles.$k`" for k in left), ", ") * " follow the Slate palette, so the text can be hard to read on some palettes.")
+        join(left, ", ") * " follow the Slate palette, so the text can be hard to read on some palettes.")
 end
 
 """
@@ -305,9 +313,12 @@ _deck_num(x::Real) = replace(string(round(Float64(x); digits = 4)), r"\.0$" => "
 _deck_figure_palette(s, palette::AbstractString) =
     (fp = s["figures"]["slate-palette"]; isempty(fp) ? String(palette) : fp)
 
-# True when the export picker changes no colour of the deck: the exporter's settings are the same for a
-# light and a dark Slate palette.
-deck_fixes_colours(s) = deck_settings_dict(s; palette = "daylight") == deck_settings_dict(s; palette = "midnight")
+# True when the export picker changes no colour of the deck: no value of the merged settings is a
+# `slate.` name (a role or an admonition category accent included), and the figures have a Slate
+# palette of their own.
+_deck_has_slate_ref(v) = v isa AbstractString ? startswith(v, "slate.") :
+                         v isa AbstractDict && any(_deck_has_slate_ref, values(v))
+deck_fixes_colours(s) = !isempty(s["figures"]["slate-palette"]) && !_deck_has_slate_ref(s)
 
 # True when a hex colour is light (the luminance rule of `_export_is_light`).
 function _hex_is_light(hex::AbstractString)

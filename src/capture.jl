@@ -166,6 +166,10 @@ end
 # all in one eval. Those methods land in a world newer than this frame, so a direct
 # `showable`/`show` would miss them and yield an empty chunk (notably on a cell's
 # first run). `invokelatest` pins the dispatch to the latest world.
+#
+# A value that shows as an image, or whose type has a figure hook, is kept for the export
+# (`_figure_remember!`). A value with a hook also gets a marker chunk after its display, so that the
+# hub knows which outputs to ask the hook for, also when the notebook opens from stored outputs.
 function _rich_scan!(chunks::Vector{Tuple{String,Vector{UInt8}}}, x)
     # Lazily load this type's front-end, the display counterpart of the `@bind` path's call in
     # `_do_bind`. Without it `required_assets` only ever fires for a BOUND value, so a type that is
@@ -182,8 +186,11 @@ function _rich_scan!(chunks::Vector{Tuple{String,Vector{UInt8}}}, x)
             bytes = Base.invokelatest(_mime_bytes, MIME(m), x)
             m == "text/html" && (bytes = _fix_at_refs(bytes))
             push!(chunks, (m, bytes))
-            startswith(m, "image/") ? _figure_remember!(get(task_local_storage(), :slate_cell, ""), x) :
-                                      _capture_export_markdown!(chunks, x)
+            image = startswith(m, "image/")
+            hook = _has_figure_hook(x)
+            (image || hook) && _figure_remember!(x; hook)
+            image || _capture_export_markdown!(chunks, x)
+            hook && push!(chunks, (_FIGURE_HOOK_MIME, Vector{UInt8}(first(string(typeof(x)), 200))))
             return true
         end
     end
@@ -254,22 +261,41 @@ function _capture_gallery!(chunks::Vector{Tuple{String,Vector{UInt8}}}, value)
     return true
 end
 
-# The figure each cell showed, kept so export can render its vector form on request. The first one
-# a run shows, since export takes one figure per cell. Bounded like the record cache: a figure holds
-# its data, so the oldest goes when the bound is reached, and an export that finds none uses the
-# raster the cell already has.
+# The figure values that the cells showed, kept for the export. The key is `(cell id, slot)`: slot 0
+# is the output of a code cell, slot `i` the `i`-th `{{ }}` or fence value of a markdown cell. The
+# first figure of an output is kept, since the export takes one figure for each output. A run of a cell
+# replaces all its entries (`run_capture`, `__slate_interp`), and the delete of a cell removes them
+# (`__slate_cleanup_cells`).
+#
+# A value whose type has a figure hook (`slate_export_figure`) stays until then: the export calls the
+# hook on it. Any other value (a figure that showed as an image) is kept only for its vector PDF
+# (`figure_vector`). Those entries have a bound, because a figure holds its data: the oldest goes when
+# there are more than `_FIGURE_KEEP`, and an export that finds none uses the raster that the cell has.
 const _FIGURE_KEEP = 32
-const _FIGURE_CACHE = Dict{String,Any}()
-const _FIGURE_ORDER = String[]
+const _FIGURE_CACHE = Dict{Tuple{String,Int},Any}()
+const _FIGURE_ORDER = Tuple{String,Int}[]   # the keys of the entries with no hook, oldest first
 const _FIGURE_LOCK = ReentrantLock()
 
-function _figure_remember!(cellid::AbstractString, x)
-    isempty(cellid) && return nothing
+# The marker chunk of an output whose value has a figure hook. Its bytes are the name of the type.
+const _FIGURE_HOOK_MIME = "application/vnd.kaimonslate.figure-hook"
+# A notebook project can pin a SlateExtensionsBase that has no figure hook: then no value has one.
+const _FIGURE_HOOK_OK = isdefined(SlateExtensionsBase, :slate_export_figure)
+
+# True when the type of `x` has a `slate_export_figure` method of its own, for any MIME. The default
+# method, which declines, does not count.
+function _has_figure_hook(x)
+    _FIGURE_HOOK_OK || return false
+    f = SlateExtensionsBase.slate_export_figure
+    dflt = which(f, Tuple{IO,MIME,Any,Any})
+    return any(m -> m !== dflt, Base.invokelatest(methods, f, Tuple{IO,Any,typeof(x),Any}))
+end
+
+function _figure_put!(key::Tuple{String,Int}, x, hook::Bool)
     lock(_FIGURE_LOCK) do
-        id = String(cellid)
-        haskey(_FIGURE_CACHE, id) && return nothing
-        push!(_FIGURE_ORDER, id)
-        _FIGURE_CACHE[id] = x
+        haskey(_FIGURE_CACHE, key) && return
+        _FIGURE_CACHE[key] = x
+        hook && return
+        push!(_FIGURE_ORDER, key)
         while length(_FIGURE_ORDER) > _FIGURE_KEEP
             delete!(_FIGURE_CACHE, popfirst!(_FIGURE_ORDER))
         end
@@ -277,20 +303,58 @@ function _figure_remember!(cellid::AbstractString, x)
     return nothing
 end
 
-_figure_forget!(cellid::AbstractString) = lock(_FIGURE_LOCK) do
-    id = String(cellid)
-    delete!(_FIGURE_CACHE, id)
-    filter!(!=(id), _FIGURE_ORDER)
+# Keep `x` under the figure key of the eval in progress (`run_capture` sets it). An eval with no key
+# (not a run of a cell) keeps nothing.
+function _figure_remember!(x; hook::Bool = _has_figure_hook(x))
+    key = get(task_local_storage(), :slate_figure_key, nothing)
+    key === nothing || _figure_put!(key, x, hook)
     return nothing
 end
 
-_figure_held(cellid::AbstractString) = lock(() -> get(_FIGURE_CACHE, String(cellid), nothing), _FIGURE_LOCK)
+# Remove every entry of cell `cellid`.
+_figure_forget!(cellid::AbstractString) = lock(_FIGURE_LOCK) do
+    id = String(cellid)
+    filter!(e -> e.first[1] != id, _FIGURE_CACHE)
+    filter!(k -> k[1] != id, _FIGURE_ORDER)
+    return nothing
+end
 
-# Put back what `_figure_held` returned, for a caller that re-ran a cell for some other purpose.
+_figure_held(cellid::AbstractString, slot::Integer = 0) =
+    lock(() -> get(_FIGURE_CACHE, (String(cellid), Int(slot)), nothing), _FIGURE_LOCK)
+
+# Put back what `_figure_held` returned for the output of code cell `cellid`, for a caller that ran the
+# cell again for some other purpose.
 function _figure_restore!(cellid::AbstractString, x)
     _figure_forget!(cellid)
-    x === nothing || _figure_remember!(cellid, x)
+    x === nothing || _figure_put!((String(cellid), 0), x, _has_figure_hook(x))
     return nothing
+end
+
+"""
+    figure_export(cellid, slot, mimes, ctx) -> NamedTuple
+
+The picture of the figure that output `slot` of cell `cellid` showed, from its figure hook
+(`slate_export_figure`). The hook gets each MIME of `mimes` in order; the first form that it writes
+wins: `(; held = true, mime, bytes)`. `(; held = false)` when no value is kept for the output, and
+`(; held = true, mime = "")` when the value has no hook or each call declines. A call that throws
+stops the search: `(; held = true, mime = "", error, type)`, with the first line of the error and the
+type of the value.
+"""
+function figure_export(cellid::AbstractString, slot::Integer, mimes, ctx)
+    x = _figure_held(cellid, slot)
+    x === nothing && return (; held = false)
+    _has_figure_hook(x) || return (; held = true, mime = "")
+    for m in mimes
+        io = IOBuffer()
+        ok = try
+            Base.invokelatest(SlateExtensionsBase.slate_export_figure, io, MIME(m), x, ctx) === true
+        catch e
+            msg = strip(sprint(showerror, e))
+            return (; held = true, mime = "", error = String(first(split(msg, '\n'))), type = string(typeof(x)))
+        end
+        ok && return (; held = true, mime = String(m), bytes = take!(io))
+    end
+    return (; held = true, mime = "")
 end
 
 # A layer with this many elements goes into the PDF as an image (at twice its size) rather than as
@@ -1272,9 +1336,14 @@ function _stale_cache_hint(msg::AbstractString)
            ", so packages that depend on them cannot be precompiled in this session. Restart the worker."
 end
 
+# `figure_key` is the key under which this eval keeps the figure it shows (`_figure_remember!`): the
+# caller gives it for the `{{ }}` values of a markdown cell (`__slate_interp`). A run of a cell
+# (`cell:<id>`, not a copy such as `cell:<id>#mirror`) keeps it under `(id, 0)`, and first removes the
+# figures of the cell's last run.
 function run_capture(mod::Module, source::AbstractString, filename::AbstractString = "string";
                      capture::OutputCapture = RedirectCapture(), slate_ctx = nothing,
-                     stop_key::Union{Nothing,String} = nothing)
+                     stop_key::Union{Nothing,String} = nothing,
+                     figure_key::Union{Nothing,Tuple{String,Int}} = nothing)
     chunks = Tuple{String,Vector{UInt8}}[]
     # Begin output capture (stdout/stderr + display) via the strategy: process-global redirect for the
     # in-process/serial kernel, or task-local demux for the worker's parallel evaluators. The strategy
@@ -1297,7 +1366,11 @@ function run_capture(mod::Module, source::AbstractString, filename::AbstractStri
     # (a Bonito `Session`, a subscription) so a re-run doesn't leak them. Cleared in the `finally`.
     cid = replace(filename, r"^cell:" => "")
     task_local_storage(:slate_cell, cid)
-    _figure_forget!(cid)            # this run's first figure replaces the last run's
+    if figure_key === nothing && startswith(filename, "cell:") && !occursin('#', cid)
+        figure_key = (String(cid), 0)
+        _figure_forget!(cid)
+    end
+    task_local_storage(:slate_figure_key, figure_key)
     _ns_defined(mod, :__slate_cleanups) && _run_cell_cleanups!(_ns_read(mod, :__slate_cleanups), cid)
     # …and take back the methods its last run defined, so an edited signature doesn't leave the old one.
     startswith(filename, "cell:") && _redefine_cell!(mod, cid, source)
@@ -1450,6 +1523,7 @@ function run_capture(mod::Module, source::AbstractString, filename::AbstractStri
         raw_out, raw_err = _finish_capture!(capture)
         slate_ctx === nothing || delete!(task_local_storage(), :slate_ctx)   # never outlive this eval
         delete!(task_local_storage(), :slate_cell)
+        delete!(task_local_storage(), :slate_figure_key)
         delete!(task_local_storage(), :slate_replay_seq)
     end
     # An eval that threw never reached `render_value!`, whose `finally` takes the asset sink.

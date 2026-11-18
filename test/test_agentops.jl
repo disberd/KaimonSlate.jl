@@ -1006,7 +1006,8 @@ end
                        "teardown_output.mjs", "carry_mounted.mjs", "duration_fmt.mjs",
                        "swap_hold.mjs", "pkg_log_tail.mjs", "run_resume.mjs",
                        "setbind_coalesce.mjs", "src_banner_close.mjs",
-                       "replay_figure.mjs", "copymath.mjs", "slide_title.mjs", "fit_search.mjs")
+                       "replay_figure.mjs", "copymath.mjs", "slide_title.mjs", "fit_search.mjs",
+                       "component_fig_ctx.mjs")
             io = IOBuffer()
             ok = success(pipeline(`$node $(joinpath(@__DIR__, "js", script))`; stdout = io, stderr = io))
             ok || print(String(take!(io)))
