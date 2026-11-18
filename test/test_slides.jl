@@ -1722,3 +1722,17 @@ _plain(_) = false
         delete!(SEB._EXPORTERS, "outline")
     end
 end
+
+# The settings tool answers a set of `decksettings` with the warnings of its checks.
+@testset "the settings tool lists the warnings of the deck settings" begin
+    nb = _mknb("#%% md id=a\n## A\n")
+    old = KaimonSlate._HUB[]
+    KaimonSlate._HUB[] = NS.Hub(Dict("deck" => nb), nothing, "127.0.0.1", 0, ReentrantLock())
+    try
+        tool = only(t.f for t in KaimonSlate.create_tools(_XTool) if t.name == "settings")
+        answer = tool("deck"; key = "decksettings", value = "[text]\nsizee = \"40u\"\n")
+        @test startswith(answer, "✅ decksettings") && occursin("\n⚠ ", answer) && occursin("sizee", answer)
+    finally
+        KaimonSlate._HUB[] = old
+    end
+end

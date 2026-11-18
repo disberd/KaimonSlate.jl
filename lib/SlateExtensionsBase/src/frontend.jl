@@ -638,7 +638,8 @@ Declare a Typst deck template for every notebook that loads this package. `sourc
 
 `settings` is the partial deck-settings file of the template: TOML text or bytes. Slate merges it on its
 base settings key by key, and the notebook setting `decksettings` on top. Slate checks each key and
-value; see the Slate docs for the keys. On the live deck each value is a `--deck-*` custom property.
+value; its base file `src/assets/deck-settings.toml` lists every key with its unit and base value. On
+the live deck each value is a `--deck-*` custom property.
 The colour roles (`--deck-fg`, …), `--deck-font` and the palette are on the deck root (`.deck`); every
 other value is on each slide, so a CSS rule that overrides one must match `.deck-slide`, not `.deck`.
 

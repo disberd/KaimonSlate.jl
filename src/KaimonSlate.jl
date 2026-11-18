@@ -3404,10 +3404,11 @@ function create_tools(GateTool::Type)
     Read or change a notebook's own settings: the ones under Settings → This notebook, kept in the
     `.jl` so they travel with it. Among them the slide deck's style (`deckstyle`), default transition
     (`slidetransition`), autoplay seconds (`slideauto`), aspect ratio (`slideratio`) and the heading level
-    that starts a slide (`slidelevel`), and the citation style.
+    that starts a slide (`slidelevel`), the deck settings TOML (`decksettings`), and the citation style.
 
     With no `key`: every setting with its current value and, for a choice, the allowed values. With
-    `key` and `value`: set it (open pages update). `clear="true"`: back to its default.
+    `key` and `value`: set it (open pages update). `clear="true"`: back to its default. A set of
+    `decksettings` also lists the warnings of its checks: a key or value that fails one is not used.
     """
     function settings_tool(notebook::String; key::String = "", value::String = "", clear::String = "false")::String
         nb, err = _nb(notebook); nb === nothing && return err
@@ -3432,7 +3433,8 @@ function create_tools(GateTool::Type)
         get(res, "ok", false) === true || return "⛔ " * string(get(res, "message", "could not set '$key'"))
         NS._agent_push!(nb)
         now = get(nb.report.meta, String(key), it.default)
-        return "✅ $key = $(repr(now))" * (doclear ? "  (default)" : "")
+        warns = key == "decksettings" ? NS.notebook_deck_settings(nb).warnings : String[]
+        return "✅ $key = $(repr(now))" * (doclear ? "  (default)" : "") * join(("\n⚠ " * w for w in warns))
     end
 
     """
