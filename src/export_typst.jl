@@ -232,13 +232,14 @@ function _hook_forms!(plan, nb::LiveNotebook, warnings::Vector{String}, geo)
     return plan
 end
 
+# The warning for the cells whose figure output comes from storage. The advice comes first and the cell
+# ids last, so that the header of the export dialog (300 characters a line) cuts ids, not the advice.
 function _stored_figs_warning(cells::Vector{String})
     one = length(cells) == 1
-    return string(one ? "Cell " : "Cells ", join(cells, ", "), ": the output comes from storage (the memo or the ",
-                  "saved notebook), so the figure hook has no value to draw and the PDF has the output as it shows. ",
-                  "A run of the notebook restores ", one ? "this cell" : "these cells", " from the memo again. Run ",
-                  one ? "it" : "each of them", " with its ▶ button (`POST /api/<notebook>/cell/<cell>` with ",
-                  "`force: true`), then export again.")
+    return string("The output of ", one ? "a cell" : "$(length(cells)) cells", " comes from storage (the memo or ",
+                  "the saved notebook), so the figure hook has no value to draw and the PDF has the output as it ",
+                  "shows. Run ", one ? "the cell" : "each cell", " with its ▶ button, then export again: a run of ",
+                  "the notebook restores it from the memo. ", one ? "Cell: " : "Cells: ", join(cells, ", "), ".")
 end
 
 # The width of each `{{ }}` value of the markdown `src` (numbered from `ib + 1`) in a column `w` px wide,

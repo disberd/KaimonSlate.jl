@@ -1471,8 +1471,9 @@ end
     w = String[]
     dir = NS._build_slides_project(nb; warnings = w)
     try
-        @test length(w) == 1 && startswith(w[1], "Cell fs1: the output comes from storage")
-        @test occursin("Run it with its ▶ button (`POST /api/<notebook>/cell/<cell>` with `force: true`)", w[1])
+        # One warning; the header of the export dialog keeps it whole, and it ends with the cell id.
+        @test length(w) == 1 && length(w[1]) <= 300 && endswith(w[1], " fs1.")
+        @test occursin("▶", w[1]) && !occursin("POST", w[1])   # the advice is the ▶ button, not a route that can empty a cell
         @test occursin("#notefig(\"[figure not captured — run this cell with its ▶ button, then re-export]\")",
                        read(joinpath(dir, "doc.typ"), String))
     finally
@@ -1483,7 +1484,7 @@ end
     RE._figure_forget!("fs2"); RE._figure_forget!("fs3")
     w = String[]
     rm(NS._build_slides_project(nb; warnings = w); recursive = true, force = true)
-    @test length(w) == 1 && startswith(w[1], "Cells fs2, fs3: ") && occursin("Run each of them", w[1])
+    @test length(w) == 1 && endswith(w[1], " fs2, fs3.")
     # A cell that the memo restored did not run: a value that its worker keeps is of an earlier run, so
     # the export does not draw it and warns as for stored output.
     nb = _hooknb("#%% code id=fs4\nFigHook.Svg()\n")
