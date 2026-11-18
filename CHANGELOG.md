@@ -222,6 +222,8 @@ were written when they went out. They are marked.
   markdown cell is set in `code.font` on a band of `code.fill`, with the 21 u inset and 11 u corners
   of the PDF code block, and the stdout, value and error blocks of an output have the `code.fill`
   band. An error block loses its red tint on a slide.
+- In the PDF deck the value, error and parameter blocks take `code.fill`, as the code and output
+  blocks do. They lose their own tints.
 - Base tables, on the live deck and in the PDF deck, take the `[table]` deck settings: the full width
   of their column, text at 0.8 em, a line height of 1.2, padding in em, a bold header row on a fill
   and a rule under each row. In the PDF deck the column widths follow the automatic table layout of
