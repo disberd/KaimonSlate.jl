@@ -472,11 +472,15 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
     end
 
     # The Typst preamble reads the deck settings: a template's `text.size` moves the body text size that
-    # the fit record measures, in `u`.
-    @testset "a deck setting moves the measured text size in the PDF" begin
-        sizes = map(("", "[text]\nsize = \"40u\"\n")) do set
+    # the fit record measures, in `u`. A deck template from before the deck settings (its own pages and
+    # text size, CSS of its own, no settings file) keeps its text size and gets no settings warning. Its
+    # CSS keeps winning on the live deck because every base rule is in `:where` (tested above), and its
+    # blocks keep the look their markdown gives them (the block kinds test below).
+    @testset "a deck setting moves the measured text size in the PDF; an old template keeps its own" begin
+        function size(src, set)
             nb = _mknb("#%% md id=a\n## A\n\nbody text\n")
-            nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}(), body_width = nothing)
+            nb.deck_template = (; hash = "h", source = src, settings = set, files = Dict{String,Vector{UInt8}}(), body_width = nothing)
+            @test isempty(NS.notebook_deck_settings(nb).warnings)
             dir = NS._build_slides_project(nb)
             try
                 recs = NS._typst_query(joinpath(dir, "doc.typ"), "<slate>")
@@ -485,7 +489,9 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
                 rm(dir; recursive = true, force = true)
             end
         end
-        @test sizes[1] ≈ 34 && sizes[2] ≈ 40
+        @test size("", "") ≈ 34 && size("", "[text]\nsize = \"40u\"\n") ≈ 40
+        old = "#let slide(body, layout: none, title: none, n: none) = page[#set text(size: 30 * u); #title #fit(body)]\n"
+        @test size(old, "") ≈ 30
     end
 
     # The base preamble copies the rhythm and the geometry of the live base deck: two paragraphs are
