@@ -19,11 +19,14 @@
 #
 # The detector looks at the top-level blocks and at the blocks of each `:::` fenced div (a div is a
 # container: print drops its fence lines and keeps its blocks). It does not look inside a block: a
-# table in an admonition is part of the admonition.
+# table in an admonition is part of the admonition. It does not look inside the element of a region
+# of the title slide (`_REGION_ELEMENTS`): the text of a region is plain text on every target, so an
+# emphasis byline is no caption. Such an element is one part of the kind `prose`.
 
 const BLOCK_KINDS = ("prose", "key-message", "caption", "admonition", "code", "figure", "table")
 const _WRAPPED_KINDS = ("key-message", "caption", "admonition", "figure", "table")
-const _SLATE_TAG_RE = Regex("<(/?)slate-(" * join(_WRAPPED_KINDS, "|") * ")(?=[\\s>])")
+const _REGION_ELEMENTS = ("subtitle", "byline", "abstract")
+const _SLATE_TAG_RE = Regex("<(/?)slate-(" * join((_WRAPPED_KINDS..., _REGION_ELEMENTS...), "|") * ")(?=[\\s>])")
 # The text after the emphasis of a caption: citations only, in the source form (`[@key]`, `@key`), as
 # the citation link of the page, or as the citation mark of the Typst export.
 const _CAPTION_TAIL_RE = r"^(?:\s*(?:\[[^\]]*@[^\]]*\]|<a class=\"(?:cite|figref)\"[^>]*>.*?</a>|§c§[^§]*§[^§]+§[^§]*§|@[\w:.\-]+)[,;.]?)*\s*$"s
@@ -148,7 +151,7 @@ function _md_blocks(src::AbstractString; plain::Bool = false, caption::Union{Not
             b = min(b, limit)
             while b > a && isempty(strip(lines[b])); b -= 1; end
             if m !== nothing && m.offset == 1 && isempty(m[1])
-                block!(String(m[2]), a, b)
+                block!(m[2] in _REGION_ELEMENTS ? "prose" : String(m[2]), a, b)
             elseif caption !== nothing
                 block!("caption", a, b; wrap = true, attrs = numbered ? "" : " number=\"$caption\"")
                 numbered = true

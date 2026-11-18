@@ -975,6 +975,9 @@ end
         r = RE.parse_report("#%% code id=f\n1\n\n#%% md id=c caption\nOne.\n\nTwo.\n")
         @test occursin(r"<slate-caption number=\"1\">\s*<p><span class=\"figlabel\">",
                        NS.cell_json(r.cells[2]; figidx = NS.figure_index(r))["output"])
+        # The text of a region of the title slide is plain text: a byline in emphasis is no caption.
+        out = NS.cell_json(RE.parse_report("#%% md id=t title\n# Deck\n\n*An Author, 2026*\n").cells[1])["output"]
+        @test occursin("<slate-byline>", out) && !occursin("<slate-caption>", out)
         # An admonition category with its own values has a rule on its element in the deck CSS.
         css = NS.deck_settings_css(NS.deck_settings("[admonition.aside]\naccent = \"#123456\"\n", "").values)
         @test occursin(":where(.deck-slide slate-admonition[category=\"aside\"]) { --deck-admonition-accent: #123456; }", css)
