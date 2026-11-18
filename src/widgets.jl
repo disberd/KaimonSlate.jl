@@ -101,6 +101,11 @@ function exporter_wire(name::AbstractString, deck, maxbytes::Integer)
     return (; ok = true, out.bytes, out.warnings)
 end
 
+"""The file that the exporter `name` (`SlateExtensionsBase.register_exporter!`) makes of the deck value
+`deck` that the hub built: `(; ok, bytes, warnings)` with the export warnings of the exporter, or
+`(; ok = false, error)`. A file of more than `maxbytes` bytes is an error and does not cross the gate."""
+__slate_export(; name::String = "", deck = Dict{String,Any}(), maxbytes::Int = 0) = exporter_wire(name, deck, maxbytes)
+
 # slate_fingerprint + memo-store introspection — shared notebook helpers injected below
 # (one include here serves both namespaces, mirroring how this file itself is shared).
 include(joinpath(@__DIR__, "fingerprint.jl"))

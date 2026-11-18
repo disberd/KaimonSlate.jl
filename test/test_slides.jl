@@ -1576,7 +1576,9 @@ _plain(_) = false
     try
         nb = _hooknb(_XSRC)
         @testset "the outline round trip through the route and the gate" begin
-            r = NS._exporter_response(nb, "outline", Dict("charttheme" => "daylight"))
+            # The route of the hub's router.
+            router = NS._make_router(NS.Hub(Dict("deck" => nb), nothing, "127.0.0.1", 0, ReentrantLock()))
+            r = router(NS.HTTP.Request("GET", "/api/deck/export/outline?charttheme=daylight"))
             @test r.status == 200
             @test NS.HTTP.header(r, "Content-Type") == "text/markdown"
             @test NS.HTTP.header(r, "Content-Disposition") == "attachment; filename=\"slidetest.md\""
@@ -1585,11 +1587,18 @@ _plain(_) = false
             @test occursin("## 1. Intro", md) && occursin("## 2. Table", md) && occursin("> Notes: Say hi.", md)
             @test occursin("One paragraph and [a link][r].", md) && occursin("https://example.com", md)
             @test count("[figure: image/svg+xml, image/png]", md) == 2
-            # The worker side of the gate refuses an unknown exporter and gives the reason.
-            w = RE.exporter_wire("nope", Dict{String,Any}(), 1000)
+            # The worker tools, called with the arguments that the hub sends through the gate. The figure
+            # tool gives the picture of the hook; the exporter tool refuses an unknown exporter and gives
+            # the reason.
+            kw(args) = (Symbol(k) => v for (k, v) in args)
+            ctx = RE.SlateExtensionsBase.FigureContext(; width = 500.0, max_height = 756.0, scale = 2.0,
+                                                       slate_palette = "midnight", dark = true)
+            f = RE._gate_figure(RE.__slate_export_figure(; kw(RE._export_figure_args("xf", 0, ["image/svg+xml"], ctx))...))
+            @test f.held && f.mime == "image/svg+xml" && occursin("<svg", String(copy(f.bytes)))
+            w = RE.__slate_export(; kw(RE._export_args("nope", Dict{String,Any}(), 1000))...)
             @test w.ok === false && occursin("no exporter", w.error)
             @test_throws ErrorException RE._gate_export(w, 1000)
-            out = RE._gate_export(RE.exporter_wire("outline", NS.exporter_deck(nb), 10^6), 10^6)
+            out = RE._gate_export(RE.__slate_export(; kw(RE._export_args("outline", NS.exporter_deck(nb), 10^6))...), 10^6)
             @test out.bytes isa Vector{UInt8} && out.warnings == ["The outline names 2 figures but does not show them."]
             # The dialog lists the exporter by its checked fields.
             @test NS.state_json(nb)["exporters"] == [Dict("name" => "outline", "label" => "Markdown outline", "ext" => "md")]

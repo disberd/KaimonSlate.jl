@@ -1764,16 +1764,18 @@ when the kernel keeps no value for the output, and `mime` is empty when the hook
 """
 function export_figure(k::GateKernel, cellid::AbstractString, slot::Integer, mimes, ctx)
     res = try
-        _tool(k, "__slate_export_figure", Dict{String,Any}("cell" => String(cellid), "slot" => Int(slot),
-              "mimes" => String[String(m) for m in mimes], "width" => Float64(ctx.width),
-              "max_height" => Float64(something(ctx.max_height, 0.0)), "scale" => Float64(ctx.scale),
-              "slate_palette" => String(ctx.slate_palette), "dark" => ctx.dark, "text_size" => Float64(ctx.text_size),
-              "roles" => Dict{String,String}(ctx.roles)); timeout = _eval_timeout())
+        _tool(k, "__slate_export_figure", _export_figure_args(cellid, slot, mimes, ctx); timeout = _eval_timeout())
     catch
         return nothing
     end
     return _gate_figure(res)
 end
+# The arguments of the worker tool `__slate_export_figure` (capture.jl) for `export_figure`.
+_export_figure_args(cellid, slot, mimes, ctx) =
+    Dict{String,Any}("cell" => String(cellid), "slot" => Int(slot), "mimes" => String[String(m) for m in mimes],
+                     "width" => Float64(ctx.width), "max_height" => Float64(something(ctx.max_height, 0.0)),
+                     "scale" => Float64(ctx.scale), "slate_palette" => String(ctx.slate_palette), "dark" => ctx.dark,
+                     "text_size" => Float64(ctx.text_size), "roles" => Dict{String,String}(ctx.roles))
 # The answer of the worker tool `__slate_export_figure` as the result of `export_figure`, or `nothing`
 # when it is no answer. The gate carries the NamedTuple of the worker as it is; a dictionary with
 # string keys is read too.
@@ -1800,10 +1802,11 @@ with the reason when the exporter throws, when it gives more than `maxbytes` byt
 trip fails. The round trip has the timeout of an evaluation (`_eval_timeout`).
 """
 function run_exporter(k::GateKernel, name::AbstractString, deck; maxbytes::Integer)
-    res = _tool(k, "__slate_export", Dict{String,Any}("name" => String(name), "deck" => deck, "maxbytes" => Int(maxbytes));
-                timeout = _eval_timeout())
+    res = _tool(k, "__slate_export", _export_args(name, deck, maxbytes); timeout = _eval_timeout())
     return _gate_export(res, maxbytes)
 end
+# The arguments of the worker tool `__slate_export` (widgets.jl) for `run_exporter`.
+_export_args(name, deck, maxbytes) = Dict{String,Any}("name" => String(name), "deck" => deck, "maxbytes" => Int(maxbytes))
 run_exporter(::Kernel, name::AbstractString, deck; maxbytes::Integer) = _gate_export(exporter_wire(name, deck, maxbytes), maxbytes)
 
 # The file and the export warnings of an answer of `__slate_export` (`exporter_wire`). The hub checks
