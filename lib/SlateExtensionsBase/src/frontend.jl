@@ -791,7 +791,7 @@ Each slide:
 | `"title"` | `nothing`, or a `Dict` for the heading that the slide starts with: `"text"` (its markdown), `"depth"` (its level, an `Int`) and `"cell"` (the id of its cell). The heading is not a block. |
 | `"notes"` | A `Vector{String}`: the markdown of each `notes` cell of the slide, as the author wrote it. |
 | `"transition"`, `"auto"` | The values of the `transition=` and `auto=` tags of the slide, or `nothing`. |
-| `"regions"` | A `Vector` of `Dict`s, one for each region that the slides PDF draws from notebook content: `"name"` (`"title"`, `"subtitle"`, `"byline"` or `"abstract"`), `"text"` (its markdown), `"box"`, `"size"` (its text size in `u`) and `"lineheight"` (its line height in `u`). |
+| `"regions"` | A `Vector` of `Dict`s, one for each region that the slides PDF draws from notebook content and marks (see below): `"name"` (`"title"`, `"subtitle"`, `"byline"` or `"abstract"`), `"text"` (its markdown), `"box"`, `"size"` (its text size in `u`) and `"lineheight"` (its line height in `u`). |
 | `"blocks"` | A `Vector` of `Dict`s, one for each block of the body, in reading order. |
 
 Each block:
@@ -808,6 +808,12 @@ Each block:
 | `"box"`, `"size"`, `"lineheight"` | Its box, its text size in `u` and its line height in `u`; `nothing` when the slides PDF does not draw it. The box of a figure is the picture, the box of a table is the table, the box of each other block is as wide as its column. |
 | `"cols"`, `"rows"` | Only on a table: the widths of its columns and the heights of its rows in `u`, a `Vector{Float64}`. |
 | `"forms"` | Only on a figure: a `Vector` of `(mime, bytes)` pairs, in the order of `figure_mimes`, one for each MIME type that Slate has a picture of. It can be empty. |
+
+A region, and so its text, is in the deck value only where the Typst source calls `region(name, body)`
+of the slides preamble. The base deck calls it for the regions of its title slide and for the title of
+each slide. A deck template ([`provide_deck_template!`](@ref)) that draws its own layout (its own
+`#let slide` or `#let metablock`) must put each region that it draws from notebook content in
+`region()`. Else an exporter gets no region for it: for example, no title and no subtitle on the cover.
 
 # Example
 

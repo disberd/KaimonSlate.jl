@@ -859,6 +859,8 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // "byline" or "abstract". A deck template puts each region that it draws from notebook content in
     // it, inside the text size of the region and inside the box that is the area of the region. Slate
     // warns when the region is taller than that box, off the page, or over a block or another region.
+    // Only a region in `region` is in the layout source: a template that draws its own layout and
+    // does not call it gives an exporter no region and no region text.
     #let region(name, body) = if MARKS { [#metadata((rec: (kind: "region", name: name), body: body, lines: true)) <slate-mark>] } else { body }
     // The base title slide draws the regions of a `title` cell with the sizes and the spacing of the
     // live title slide. The title is at 0.94 em, weight 800, in the strong colour, with 0.18 em above
