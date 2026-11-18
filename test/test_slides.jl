@@ -1194,6 +1194,12 @@ import SlateExtensionsBase as SEB
 struct Svg end
 struct Decline end
 struct Boom end
+struct Two end                                     # draws itself as SVG and as PNG
+const PNG = UInt8[0x89, 0x50, 0x4e, 0x47]
+Base.show(io::IO, ::MIME"text/html", ::Two) = print(io, "<div>live plot</div>")
+SEB.slate_export_figure(io::IO, ::MIME"image/svg+xml", ::Two, ctx) =
+    (print(io, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\"/>"); true)
+SEB.slate_export_figure(io::IO, ::MIME"image/png", ::Two, ctx) = (write(io, PNG); true)
 Base.show(io::IO, ::MIME"text/html", ::Svg) = print(io, "<div>live plot</div>")
 SEB.slate_export_figure(io::IO, ::MIME"image/svg+xml", ::Svg, ctx) =
     (print(io, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"", ctx.width, "\" height=\"100\" data-cap=\"",
@@ -1333,5 +1339,113 @@ end
         @test occursin("data-fg=\"$(RE.SLATE_PALETTES[pal].text)\"", t)
     finally
         rm(dir; recursive = true, force = true)
+    end
+end
+
+# The exporter hook (`register_exporter!`). The outline exporter is the example of its docstring.
+function _outline(deck)
+    io = IOBuffer()
+    w, h = deck["size"]
+    println(io, "<!-- ", deck["ratio"], ", ", w, " × ", h, " u -->")
+    for (i, s) in enumerate(deck["slides"])
+        t = s["title"]
+        println(io, "\n## ", i, ". ", t === nothing ? "(no title)" : t["text"])
+        for b in s["blocks"]
+            if b["kind"] == "figure"
+                println(io, "\n[figure: ", join(first.(b["forms"]), ", "), "]")
+            elseif b["markdown"] !== nothing
+                println(io, "\n", strip(b["markdown"]))
+            end
+        end
+        foreach(n -> println(io, "\n> Notes: ", strip(n)), s["notes"])
+    end
+    return take!(io)
+end
+
+const _XSRC = "#%% md id=xa\n## Intro\n\nOne paragraph and [a link][r].\n\n> A key message.\n\n[r]: https://example.com\n\n" *
+              "#%% code id=xf\nFigHook.Two()\n\n#%% md id=xv\n{{ FigHook.Two() }}\n\n#%% md id=xn notes\nSay hi.\n\n" *
+              "#%% md id=xb\n## Table\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"
+
+# Only plain Base types: a `Dict` with string keys, vectors, tuples, named tuples, strings, symbols,
+# numbers, `nothing` and bytes.
+_plain(::Union{Nothing,Bool,Int,Float64,String,Symbol}) = true
+_plain(::Vector{UInt8}) = true
+_plain(x::Dict) = keytype(x) === String && all(_plain, values(x))
+_plain(x::Union{Tuple,NamedTuple,Vector}) = all(_plain, x)
+_plain(_) = false
+
+@testset "exporter hook" begin
+    SEB = RE.SlateExtensionsBase
+    SEB.register_exporter!(_outline, "outline"; label = "Markdown outline", ext = "md", mime = "text/markdown",
+                           figure_mimes = ["image/svg+xml", "image/png"])
+    try
+        nb = _hooknb(_XSRC)
+        @testset "the outline round trip through the route and the gate" begin
+            r = NS._exporter_response(nb, "outline", Dict("charttheme" => "daylight"))
+            @test r.status == 200
+            @test NS.HTTP.header(r, "Content-Type") == "text/markdown"
+            @test NS.HTTP.header(r, "Content-Disposition") == "attachment; filename=\"slidetest.md\""
+            md = String(r.body)
+            @test startswith(md, "<!-- 16:9, 1920.0 × 1080.0 u -->")
+            @test occursin("## 1. Intro", md) && occursin("## 2. Table", md) && occursin("> Notes: Say hi.", md)
+            @test occursin("One paragraph and [a link][r].", md) && occursin("https://example.com", md)
+            @test count("[figure: image/svg+xml, image/png]", md) == 2
+            # The worker side of the gate refuses an unknown exporter and gives the reason.
+            w = RE.exporter_wire("nope", Dict{String,Any}(), 1000)
+            @test w.ok === false && occursin("no exporter", w.error)
+            @test_throws ErrorException RE._gate_export(w, 1000)
+            @test RE._gate_export(RE.exporter_wire("outline", NS.exporter_deck(nb), 10^6), 10^6) isa Vector{UInt8}
+            # The dialog lists the exporter by its checked fields.
+            @test NS.state_json(nb)["exporters"] == [Dict("name" => "outline", "label" => "Markdown outline", "ext" => "md")]
+        end
+        @testset "an unregistered name gives 404" begin
+            @test NS._exporter_response(nb, "pptx", Dict()).status == 404
+            @test NS._exporter_response(nb, "../outline", Dict()).status == 404
+        end
+        @testset "a bad name, ext or mime is dropped with a warning" begin
+            ok = (; name = "good", label = "Good", ext = "md", mime = "text/markdown", figure_mimes = ["image/png"])
+            m = (; exporters = [ok, merge(ok, (; name = "Bad Name")), merge(ok, (; name = "badext", ext = "m.d")),
+                                merge(ok, (; name = "badmime", mime = "text")),
+                                merge(ok, (; name = "badfig", figure_mimes = ["image/png\r\nX: y"]))])
+            xnb = _mknb("#%% md id=a\nText.\n")
+            @test_logs (:warn, r"Bad Name") (:warn, r"file extension \"m.d\"") (:warn, r"\"text\" is not a type/subtype") (:warn, r"figure MIME type") NS._merge_exporters!(xnb, m)
+            @test [e.name for e in xnb.exporters] == ["good"]
+            @test NS._merge_exporters!(xnb, (; frontend = [])) && isempty(xnb.exporters)   # an older SEB: none
+        end
+        @testset "the size cap holds" begin
+            r = NS._exporter_response(nb, "outline", Dict(); maxbytes = 10)
+            @test r.status == 500 && occursin("more than the limit of 10 bytes", String(r.body))
+            @test_throws ErrorException RE._gate_export((; ok = true, bytes = zeros(UInt8, 11)), 10)   # the hub checks again
+        end
+        @testset "the deck value has plain Base types only and its blocks join the slide model" begin
+            deck = NS.exporter_deck(nb; figure_mimes = ["image/svg+xml"], charttheme = "daylight")
+            @test _plain(deck)
+            @test deck["size"] == (1920.0, 1080.0) && deck["ratio"] == "16:9"
+            @test deck["settings"]["slate_palette"] == "daylight" && startswith(deck["settings"]["roles"]["fg"], "#")
+            s1, s2 = deck["slides"]
+            @test s1["title"] == Dict{String,Any}("text" => "Intro", "depth" => 2, "cell" => "xa") && strip.(s1["notes"]) == ["Say hi."]
+            @test [(r["name"], r["text"]) for r in s1["regions"]] == [("title", "Intro")]
+            L = NS.slide_layout(nb)
+            for (s, l) in zip(deck["slides"], L)
+                @test [(b["kind"], b["cell"], b["frag"], b["index"], b["row"], b["column"]) for b in s["blocks"]] ==
+                      [(b.kind, b.cell, b.frag, b.index, b.row, b.column) for b in l.blocks]
+                @test all(b["box"]["y"] ≈ q.box.y && b["box"]["h"] ≈ q.box.h && b["size"] ≈ q.size for (b, q) in zip(s["blocks"], l.blocks))
+            end
+            @test [b["kind"] for b in s1["blocks"]] == ["prose", "key-message", "figure", "figure"]
+            t = only(s2["blocks"])
+            @test t["kind"] == "table" && length(t["cols"]) == 2 && length(t["rows"]) == 2
+            @test !haskey(s1["blocks"][1], "forms") && !haskey(s1["blocks"][1], "cols")
+        end
+        @testset "figure forms follow figure_mimes" begin
+            forms(mimes) = [[f[1] for f in b["forms"]] for b in NS.exporter_deck(nb; figure_mimes = mimes)["slides"][1]["blocks"]
+                            if b["kind"] == "figure"]
+            @test forms(["image/png", "image/svg+xml"]) == [["image/png", "image/svg+xml"], ["image/png", "image/svg+xml"]]
+            @test forms(["image/svg+xml"]) == [["image/svg+xml"], ["image/svg+xml"]]
+            @test forms(["image/jpeg"]) == [String[], String[]]
+            png = only(b for b in NS.exporter_deck(nb; figure_mimes = ["image/png"])["slides"][1]["blocks"] if b["cell"] == "xv")
+            @test only(png["forms"]) == ("image/png", FigHook.PNG)
+        end
+    finally
+        delete!(SEB._EXPORTERS, "outline")
     end
 end

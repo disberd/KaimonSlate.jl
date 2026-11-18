@@ -522,6 +522,25 @@ SlateExtensionsBase.to_palette_command(c::TaggedCmd) = auto_palette_command(c)
         SlateExtensionsBase._DECK_TEMPLATE[] = nothing
     end
 
+    # The manifest carries each exporter without its function; the function runs in this process.
+    @testset "register_exporter!" begin
+        register_exporter!(d -> "slides: $(length(d["slides"]))", "count"; label = "Count", ext = "txt", mime = "text/plain")
+        register_exporter!(d -> UInt8[1, 2], "bytes"; label = "Bytes", ext = "bin", mime = "application/octet-stream",
+                           figure_mimes = ["image/svg+xml", "image/png"])
+        try
+            @test extension_manifest().exporters ==
+                  [(; name = "bytes", label = "Bytes", ext = "bin", mime = "application/octet-stream",
+                      figure_mimes = ["image/svg+xml", "image/png"]),
+                   (; name = "count", label = "Count", ext = "txt", mime = "text/plain", figure_mimes = ["image/png"])]
+            @test SlateExtensionsBase.run_exporter("count", Dict{String,Any}("slides" => Any[1, 2])) == Vector{UInt8}("slides: 2")
+            @test SlateExtensionsBase.run_exporter("bytes", Dict{String,Any}()) == UInt8[1, 2]
+            @test_throws ArgumentError SlateExtensionsBase.run_exporter("none", Dict{String,Any}())
+        finally
+            empty!(SlateExtensionsBase._EXPORTERS)
+        end
+        @test isempty(extension_manifest().exporters)
+    end
+
     # Lazy front-end: `required_assets(::Type{W})` + `ensure_widget_assets!` — Slate loads a widget's JS the
     # first time it's seen (no __init__), under the type-derived kind, idempotently.
     @testset "required_assets lazy loading" begin

@@ -66,6 +66,10 @@ function extension_manifest_wire(m)
     end
     hasproperty(m, :fences) && (out["fences"] = String[String(f) for f in m.fences])
     hasproperty(m, :deck_template_hash) && (out["deck_template_hash"] = String(m.deck_template_hash))
+    # Sent as the package gave them; the hub checks each value (`_merge_exporters!`).
+    hasproperty(m, :exporters) && (out["exporters"] = Dict{String,Any}[Dict{String,Any}(
+        "name" => string(e.name), "label" => string(e.label), "ext" => string(e.ext), "mime" => string(e.mime),
+        "figure_mimes" => String[string(x) for x in e.figure_mimes]) for e in m.exporters])
     return out
 end
 
@@ -80,6 +84,20 @@ function deck_template_wire()
         "body_width" => hasproperty(t, :body_width) ? t.body_width : nothing,
         "files" => Dict{String,Any}[Dict{String,Any}("name" => n, "b64" => Base64.base64encode(b))
                                     for (n, b) in sort!(collect(t.files); by = first)])
+end
+
+# The file that the exporter `name` (`register_exporter!`) makes of `deck`, as the gate wire carries it:
+# `(; ok = true, bytes)`, or `(; ok = false, error)` with the first line of the error. A file of more than
+# `maxbytes` bytes is an error, so that it does not cross the gate.
+function exporter_wire(name::AbstractString, deck, maxbytes::Integer)
+    bytes = try
+        SlateExtensionsBase.run_exporter(name, deck)
+    catch e
+        return (; ok = false, error = String(first(split(sprint(showerror, e), '\n'))))
+    end
+    length(bytes) > maxbytes &&
+        return (; ok = false, error = "the exporter gave $(length(bytes)) bytes, more than the limit of $maxbytes bytes")
+    return (; ok = true, bytes)
 end
 
 # slate_fingerprint + memo-store introspection — shared notebook helpers injected below

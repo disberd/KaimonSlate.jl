@@ -73,7 +73,7 @@ on_worker_reset, run_worker_resets,
        frontend_scripts, extension_manifest, provide_assets!, @provide_assets!, @pkg_dir, asset_dirs,
        js_bundle,
        ext_asset_url, @ext_asset_url, pkg_key, provide_import!, package_imports,
-       provide_deck_template!, deck_template
+       provide_deck_template!, deck_template, register_exporter!
 # Execution context
 export slate_context, slate_region, slate_regions, slate_side, slate_notebook,
        slate_emit, slate_effect, slate_everywhere, slate_on, slate_off, slate_on_cleanup,

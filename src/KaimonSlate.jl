@@ -3610,6 +3610,39 @@ function create_tools(GateTool::Type)
     end
 
     """
+        export(notebook; format, path="") -> String
+
+    Export the notebook as a slide deck with an exporter that one of its loaded packages registers
+    (`SlateExtensionsBase.register_exporter!`, for example a PowerPoint writer of a deck template),
+    and WRITE the file. `format` is the name of the exporter; an unknown name lists the registered
+    ones. The exporter gets the slides with the boxes and the text sizes of the slides PDF, in the
+    default palette of the slides PDF. `path` overrides the output file (default: a temp path with the
+    file extension of the exporter). Returns the written path and the export warnings of the dialog.
+    """
+    function export_tool(notebook::String; format::String = "", path::String = "")::String
+        nb, err = _nb(notebook); nb === nothing && return err
+        r = try
+            NotebookServer.export_with(nb, format)
+        catch e
+            return "Export failed: " * sprint(showerror, e)
+        end
+        if r === nothing
+            names = [e.name for e in NotebookServer.notebook_exporters(nb)]
+            return "No exporter named \"$format\". " *
+                   (isempty(names) ? "The packages of this notebook register none." : "Registered: " * join(names, ", ") * ".")
+        end
+        out = isempty(path) ? joinpath(tempdir(), "slate-export-" * ReportEngine._slate_user_tag(),
+                  replace(splitext(basename(nb.path))[1], r"[^A-Za-z0-9_.-]" => "_") * "." * r.exporter.ext) : String(path)
+        try
+            mkpath(dirname(out)); write(out, r.bytes)
+        catch e
+            return "Exported $(length(r.bytes)) bytes but writing to $out failed: " * sprint(showerror, e)
+        end
+        warn = isempty(r.warnings) ? "" : "\nExport warnings (the file is complete):" * join(("\n⚠ " * w for w in r.warnings))
+        return "Wrote $(length(r.bytes)) bytes → $out" * warn
+    end
+
+    """
         export_app(notebook, dir; theme="", pagewidth="", port="0", agent="0") -> String
 
     Write this notebook to `dir` as a self-contained **application**. Running `julia run.jl` inside
@@ -4295,6 +4328,7 @@ function create_tools(GateTool::Type)
         GateTool("check_eval", check_scratch_eval),
         GateTool("eval_js", eval_js),
         GateTool("export_pdf", export_pdf_tool; timeout_ms = RENDER_MS),
+        GateTool("export", export_tool; timeout_ms = RENDER_MS),
         GateTool("export_app", export_app_tool; timeout_ms = DEPLOY_MS),
         GateTool("export_docs", export_docs_tool; timeout_ms = DEPLOY_MS),
         GateTool("index_docs", index_docs; timeout_ms = RENDER_MS),

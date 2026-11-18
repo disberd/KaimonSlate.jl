@@ -31,6 +31,12 @@ Two things to know about the published GitHub releases for this package:
   `dark`, `text_size` (the body text size of the page in px) and `roles` (the colour roles as hex);
   a later version can add fields. `provide_deck_template!` takes `body_width`, the width of the
   template's content body in slide units; `deck_template()` returns it, and it is part of the hash.
+- **`register_exporter!(f, name; label, ext, mime, figure_mimes = ["image/png"])`**: an export format of
+  a slide deck. Slate builds the deck value, a `Dict{String,Any}` of plain Base types that the docstring
+  documents key by key (slide size and ratio, deck settings, slides with their regions and blocks, the
+  boxes and text sizes of the slides PDF, figure forms in the order of `figure_mimes`), and calls
+  `f(deck)` on the worker; `f` gives the bytes of the file. `extension_manifest()` gains an `exporters`
+  field with the name, label, extension and MIME types of each exporter.
 
 ## [0.11.3] - 2026-11-05
 

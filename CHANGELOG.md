@@ -93,6 +93,18 @@ were written when they went out. They are marked.
 - The deck setting `table.rule-width` sets the width of the rule under each table row, on the live
   deck and in the PDF deck. Its base value is 2 u. With `0u` the rows have no rule and take no room
   for it.
+- Exporters. A package that a notebook loads can add an export format of the slide deck with
+  `SlateExtensionsBase.register_exporter!(f, name; label, ext, mime, figure_mimes)`. The export dialog
+  shows `label` next to the built-in formats, the route `/api/<notebook>/export/<name>` gives the file,
+  and so does the new tool `export(notebook; format, path)`. The hub compiles the slides PDF with its
+  marks, builds the deck value (slide size and ratio, deck settings in the palette of the Theme picker,
+  slides with their layout, title, notes, transition, regions and blocks, each block with its markdown
+  or its figure forms, its box and its text size), and the worker calls `f(deck)` through the gate tool
+  `__slate_export`. The hub checks the name (`^[a-z0-9][a-z0-9-]{0,31}$`), the file extension
+  (`^[a-z0-9]{1,8}$`) and each MIME type (`type/subtype`), and drops an exporter that fails with a
+  warning in its log. The route serves only registered names (404 for another name), passes nothing of
+  its query to the exporter, and refuses a file of more than 256 MiB. The export warnings of the slides
+  PDF show in the dialog and in the tool answer.
 
 ### Changed
 

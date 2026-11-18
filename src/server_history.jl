@@ -1803,6 +1803,8 @@ function state_json(nb::LiveNotebook)
         meta["deckFigurePalette"] = ds.values["figures"]["slate-palette"]
     end
     meta["deckBrowser"] = chrome_status_cached().problem                    # "" = the deck print, video and captures can run
+    # The export formats of the notebook's packages (`register_exporter!`), for the export dialog.
+    meta["exporters"] = [Dict("name" => e.name, "label" => e.label, "ext" => e.ext) for e in notebook_exporters(nb)]
     meta["bibStyle"] = get(nb.report.meta, "bibstyle", "ieee")               # CSL citation/reference style
     meta["agentModel"] = get(nb.report.meta, "agentmodel", "")               # per-notebook agent-model override ("" = browser global)
     meta["agentAvailable"] = _agent_available()   # false on a standalone hub (slate --own / serve_notebook) → the UI disables agent chat

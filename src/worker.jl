@@ -2980,6 +2980,11 @@ function __slate_export_figure(; cell::String = "", slot::Int = 0, mimes::Vector
             error = get(r, :error, ""), type = get(r, :type, ""))
 end
 
+"""The file that the exporter `name` (`SlateExtensionsBase.register_exporter!`) makes of the deck value
+`deck` that the hub built: `(; ok, bytes)`, or `(; ok = false, error)`. A file of more than `maxbytes`
+bytes is an error and does not cross the gate."""
+__slate_export(; name::String = "", deck = Dict{String,Any}(), maxbytes::Int = 0) = exporter_wire(name, deck, maxbytes)
+
 function tools()
     return KaimonGate.GateTool[
         KaimonGate.GateTool("__slate_cluster_status", __slate_cluster_status),
@@ -2989,6 +2994,7 @@ function tools()
         KaimonGate.GateTool("__slate_rerender_fig", __slate_rerender_fig),
         KaimonGate.GateTool("__slate_figure_vector", __slate_figure_vector),
         KaimonGate.GateTool("__slate_export_figure", __slate_export_figure),
+        KaimonGate.GateTool("__slate_export", __slate_export),
         KaimonGate.GateTool("__slate_running", __slate_running),
         KaimonGate.GateTool("__slate_run_chunks", __slate_run_chunks),
         KaimonGate.GateTool("__slate_chunk_status", __slate_chunk_status),

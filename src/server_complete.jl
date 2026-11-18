@@ -828,6 +828,24 @@ function _warnings_header(warns)
     end
 end
 
+# The response of the route `/api/<id>/export/<name>`: the file of the exporter `name`
+# (`register_exporter!`), with the file extension and the MIME type that the hub checked. 404 when no
+# package of the notebook registers `name`. Of the query only `theme` and `charttheme` are read: they
+# choose the Slate palette of the deck settings in the deck value. Nothing of the query reaches the
+# exporter.
+function _exporter_response(nb::LiveNotebook, name::AbstractString, qp; maxbytes::Integer = _EXPORT_MAX_BYTES)
+    r = try
+        export_with(nb, name; theme = get(qp, "theme", "light"), charttheme = get(qp, "charttheme", ""), maxbytes)
+    catch e
+        return HTTP.Response(500, "Export failed: " * first(sprint(showerror, e), 2000))
+    end
+    r === nothing && return HTTP.Response(404, "no such exporter")
+    fn = _download_name(nb, "." * r.exporter.ext)
+    headers = ["Content-Type" => r.exporter.mime, "Content-Disposition" => "attachment; filename=\"$fn\""]
+    isempty(r.warnings) || push!(headers, "X-Slate-Warnings" => _warnings_header(r.warnings))
+    return HTTP.Response(200, headers, r.bytes)
+end
+
 # Read an MB-valued query param (`key`) and convert to a byte budget: absent or unparseable ⇒ `default`.
 _mb_budget(qp, key, default) = begin
     s = get(qp, key, "")
@@ -2867,6 +2885,9 @@ function _make_router(h::Hub)
         isempty(warns) || push!(headers, "X-Slate-Warnings" => _warnings_header(warns))
         HTTP.Response(200, headers, pdf)
     end))
+    # The file of an exporter that a package of the notebook registers (`register_exporter!`).
+    HTTP.register!(router, "GET", "/api/{id}/export/{name}", req -> _withnb(h, req, nb ->
+        _exporter_response(nb, HTTP.getparam(req, "name"), HTTP.queryparams(HTTP.URI(req.target)))))
     # The editable Typst PROJECT (doc.typ + assets) as a .tar.gz, so the layout can be tweaked and
     # recompiled (`typst compile doc.typ`). Same options as export.pdf.
     HTTP.register!(router, "GET", "/api/{id}/export.typ", req -> _withnb(h, req, nb -> begin

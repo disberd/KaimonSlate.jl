@@ -165,6 +165,26 @@ _figure_ctx(geo, cid::AbstractString, slot::Integer) =
 _figure_roles(s, palette::AbstractString) =
     Dict{String,String}(k => String(v) for (k, v) in deck_settings_dict(s; palette)["roles"])
 
+# The outputs whose value has a figure hook, as `(cell, slot, region)`: slot 0 is the output of a code
+# cell, slot `i` the `i`-th `{{ }}` or fence value of a markdown cell.
+_hook_targets(nb::LiveNotebook) = lock(nb.lock) do
+    out = Tuple{String,Int,String}[]
+    for c in nb.report.cells
+        renders(c.kind) || continue
+        if is_prose(c.kind)
+            for (i, o) in enumerate(c.interp)
+                _hook_output(o) && push!(out, (c.id, i, _cell_region(c)))
+            end
+        elseif _hook_output(c.output)
+            push!(out, (c.id, 0, _cell_region(c)))
+        end
+    end
+    out
+end
+
+_hook_throw_warning(cid, r) =
+    "Cell $cid: the figure hook of $(r.type) threw an error, so the output prints as it shows: $(r.error)"
+
 # Ask the figure hook for the picture of each marked output and keep it in `figs`. A hook that throws
 # adds a line to `warnings`. The cells whose worker keeps no value for an output add one line together,
 # with their ids. Their output comes from storage: the hub restored it from the memo, or the notebook
@@ -173,22 +193,8 @@ _figure_roles(s, palette::AbstractString) =
 # `POST /api/<notebook>/cell/<cell>` with `force: true`) computes the value. Called before the caller
 # takes `nb.lock`, like the other warm passes.
 function _warm_hook_figs!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{String}, geo; progress = nothing)
-    targets = lock(nb.lock) do
-        out = Tuple{String,Int,String}[]
-        for c in nb.report.cells
-            renders(c.kind) || continue
-            if is_prose(c.kind)
-                for (i, o) in enumerate(c.interp)
-                    _hook_output(o) && push!(out, (c.id, i, _cell_region(c)))
-                end
-            elseif _hook_output(c.output)
-                push!(out, (c.id, 0, _cell_region(c)))
-            end
-        end
-        out
-    end
     stored = String[]
-    for (cid, slot, region) in targets
+    for (cid, slot, region) in _hook_targets(nb)
         k = _running_kernel(nb, region)
         k === nothing && (push!(stored, cid); continue)
         progress === nothing || (try; progress(cid); catch; end)
@@ -199,11 +205,30 @@ function _warm_hook_figs!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{St
         elseif !isempty(r.mime)
             figs[(cid, _hook_slot(slot))] = (r.bytes, _FIGURE_MIME_EXT[r.mime])
         elseif !isempty(r.error)
-            push!(warnings, "Cell $cid: the figure hook of $(r.type) threw an error, so the output prints as it shows: $(r.error)")
+            push!(warnings, _hook_throw_warning(cid, r))
         end
     end
     isempty(stored) || push!(warnings, _stored_figs_warning(unique!(stored)))
     return figs
+end
+
+# The pictures of the figure hooks in the MIME types of an exporter (`plan.mimes`), into `plan.forms`:
+# the hook gets one MIME type at a time, so each output can give a form in each type. A throw stops the
+# search for that output and adds the warning of the Typst export.
+function _hook_forms!(plan, nb::LiveNotebook, warnings::Vector{String}, geo)
+    for (cid, slot, region) in _hook_targets(nb)
+        k = _running_kernel(nb, region)
+        k === nothing && continue
+        forms = Tuple{String,Vector{UInt8}}[]
+        for m in plan.mimes
+            r = try; ReportEngine.export_figure(k, cid, slot, [m], _figure_ctx(geo, cid, slot)); catch; nothing; end
+            (r === nothing || !r.held) && break
+            isempty(r.error) || (push!(warnings, _hook_throw_warning(cid, r)); break)
+            isempty(r.mime) || push!(forms, (r.mime, r.bytes))
+        end
+        isempty(forms) || (plan.forms[(cid, slot)] = forms)
+    end
+    return plan
 end
 
 function _stored_figs_warning(cells::Vector{String})
@@ -1139,15 +1164,14 @@ end
 # A hook figure is drawn for its column, so it takes the width of the column.
 function _compfig_stager(c::Cell, dir::AbstractString, base::AbstractString, compfigs::_CompFigs, sizes)
     slotof = Dict(i => s for (s, i) in _component_slots(c))
-    n = Ref(0)
+    # A staged file has the number of its value in its name, so that an exporter finds the value.
     return function (i::Integer)
         hook = get(compfigs, (c.id, _hook_slot(i)), nothing)
         slot = get(slotof, Int(i), nothing)
         got = hook !== nothing ? hook : slot === nothing ? nothing : get(compfigs, (c.id, slot), nothing)
         got === nothing && return nothing
         bytes, ext = got
-        n[] += 1
-        fname = string(base, "_comp", n[], ".", ext)
+        fname = string(base, "_comp", i, ".", ext)
         write(joinpath(dir, fname), bytes)
         if sizes !== nothing
             e = Dict{String,Any}("block" => true)
@@ -1686,8 +1710,8 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
         # A component keeps its on-screen proportions rather than filling the column like a figure
         # the author sized for print; everything else takes `figureimg`'s default.
         pct = _has_component(o) && !hooked ? _comp_fig_width_pct(data, ext) : nothing
-        put("figure", "#figureimg(\"", base, ".", ext, "\"",
-            pct === nothing ? "" : ", width: $(pct)%", ")\n")
+        print(io, blk("figure", string("#figureimg(\"", base, ".", ext, "\"", pct === nothing ? "" : ", width: $(pct)%", ")\n");
+                      file = base * "." * ext))
     elseif !isempty(_echarts_specs(c))
         # A client-rendered chart that no browser tab was open to snapshot (headless export) —
         # don't silently drop it, note the gap (mirrors the HTML export path).
@@ -1819,6 +1843,12 @@ _draw_warnings(records) =
      "). Slate does not use it."
      for r in records if r isa AbstractDict && get(r, "kind", "") == "warning" && get(r, "about", "") == "draw"]
 
+# The export warnings of a slides PDF from the records of its marks compile: the checks of the deck
+# settings, the `draw` keys, the slides at the fit floor, the regions out of place, then `figwarns`.
+_slides_warnings(nb::LiveNotebook, recs, figwarns) =
+    vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; unit = "Page"),
+         _region_warnings(recs, deck_canvas(String(get(nb.report.meta, "slideratio", "16:9")))), figwarns)
+
 """
     export_pdf(nb; include_source=true, style="article", columns=1,
                theme="light", code="normal", body="normal") -> Vector{UInt8}
@@ -1851,8 +1881,7 @@ function _export_pdf_report(nb::LiveNotebook; kwargs...)
         warns = figwarns
         if get(kwargs, :layout, "") == "slides"
             recs = _typst_query(typ, "<slate>"; marks = true)
-            warns = vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; unit = "Page"),
-                         _region_warnings(recs, deck_canvas(String(get(nb.report.meta, "slideratio", "16:9")))), figwarns)
+            warns = _slides_warnings(nb, recs, figwarns)
         end
         return read(pdf), warns
     finally
@@ -2718,13 +2747,21 @@ end
 # `deck` is the slide model. `pages[p]` is the index in `deck` of the slide on page `p` of the PDF
 # (0 for the title page of a notebook with no `title` cell); the pages after `pages` hold no slide of
 # the model (the references, the notes). `blocks` holds each block in the order of the document:
-# `(slide, frag, index, kind, cell, row, column, divcolumn, src)`.
+# `(slide, frag, index, kind, cell, row, column, divcolumn, src, file)`; `file` is the picture of a figure
+# output in the project directory, else `nothing`. `texts` holds the markdown of each region, by
+# `(slide, name)`. For an exporter (`exporter_deck`), `mimes` are its figure MIME types and `forms` the
+# pictures of the figure hooks in those types, by output `(cell, slot)`.
 mutable struct _SlidePlan
     deck::Vector{NamedTuple}
     pages::Vector{Int}
     blocks::Vector{NamedTuple}
+    texts::Dict{Tuple{Int,String},String}
+    mimes::Vector{String}
+    forms::Dict{Tuple{String,Int},Vector{Tuple{String,Vector{UInt8}}}}
 end
-_SlidePlan() = _SlidePlan(NamedTuple[], Int[], NamedTuple[])
+_SlidePlan(mimes::Vector{String} = String[]) =
+    _SlidePlan(NamedTuple[], Int[], NamedTuple[], Dict{Tuple{Int,String},String}(), mimes,
+               Dict{Tuple{String,Int},Vector{Tuple{String,Vector{UInt8}}}}())
 
 # The `blk` function of `_emit_slide_frag!` for fragment `frag` of slide `slide`; `f` holds the cell,
 # the row and the column of the fragment. It numbers the blocks of the fragment in reading order,
@@ -2732,9 +2769,9 @@ _SlidePlan() = _SlidePlan(NamedTuple[], Int[], NamedTuple[])
 # `#blk(i, kind, frag: "s<slide>f<frag>", cell: "<id>")[…]`, with the line ends that follow `typ`.
 function _block_printer(plan::_SlidePlan, slide::Integer, frag::Integer, f)
     n = Ref(0)
-    return function (kind, typ; src = nothing, divcolumn = 0)
+    return function (kind, typ; src = nothing, divcolumn = 0, file = nothing)
         n[] += 1
-        push!(plan.blocks, (; slide, frag, index = n[], kind, cell = f.cell, row = f.row, column = f.column, divcolumn, src))
+        push!(plan.blocks, (; slide, frag, index = n[], kind, cell = f.cell, row = f.row, column = f.column, divcolumn, src, file))
         body = rstrip(typ)
         return string("#blk(", n[], ", \"", kind, "\", frag: \"s", slide, "f", frag, "\", cell: \"", _typ_str(f.cell), "\")[", lstrip(body), "]",
                       SubString(typ, ncodeunits(body) + 1))
@@ -2834,6 +2871,128 @@ function _slide_layout(plan::_SlidePlan, records)
     return [merge(sl, (regions = regions[si], blocks = blocks[si])) for (si, sl) in enumerate(plan.deck)]
 end
 
+# ── Exporters ─────────────────────────────────────────────────────────────────────────────────────
+# The deck value of an exporter (`SlateExtensionsBase.register_exporter!`; its docstring states the
+# keys) and the export through it.
+
+const _EXPORT_MAX_BYTES = 256 * 1024^2   # the size cap of the file that an exporter gives
+
+# The MIME type of a picture that the slides project staged, by its file extension.
+const _STAGED_MIME = Dict("pdf" => "application/pdf", "svg" => "image/svg+xml", "png" => "image/png",
+                          "jpg" => "image/jpeg", "jpeg" => "image/jpeg", "gif" => "image/gif", "webp" => "image/webp")
+
+# The markdown of a block for an exporter: each citation goes back from the sentinel of the Typst
+# export (`_cite_token`) to its markdown, `[@key]`, `[@key, supplement]` or `@key`.
+const _CITE_SENTINEL_RE = r"§c§([^§]*)§([^§]+)§([^§]*)§"
+_exporter_markdown(src::AbstractString) = replace(src, _CITE_SENTINEL_RE => function (s)
+    m = match(_CITE_SENTINEL_RE, s)
+    return m[1] == "p" ? "@" * m[2] : string("[@", m[2], isempty(m[3]) ? "" : ", " * m[3], "]")
+end)
+
+_deck_box(b) = b === nothing ? nothing : Dict{String,Any}("x" => b.x, "y" => b.y, "w" => b.w, "h" => b.h)
+
+# The `forms` of figure block `b`, in the order of `plan.mimes`. For each MIME type: the picture of the
+# figure hook, else a chunk of that type of the output, else the picture that the slides project
+# staged when it has that type. `file` is the staged picture of an output; a figure of a markdown cell
+# names its staged picture in its markdown, and a `{{ }}` value has its number in that name.
+function _figure_forms(plan::_SlidePlan, b, file, cells, dir)
+    slot, o = 0, nothing
+    if b.src === nothing
+        o = cells[b.cell].output
+    else
+        m = match(r"!\[[^\]]*\]\(<?([^)\s>]+)", b.src)
+        file = m === nothing ? nothing : String(m[1])
+        s = file === nothing ? nothing : match(r"_comp(\d+)\.\w+$", file)
+        slot = s === nothing ? -1 : parse(Int, s[1])
+        interp = cells[b.cell].interp
+        o = 1 <= slot <= length(interp) ? interp[slot] : nothing
+    end
+    hook = get(plan.forms, (b.cell, slot), Tuple{String,Vector{UInt8}}[])
+    root = normpath(dir) * Base.Filesystem.path_separator
+    path = file === nothing ? "" : normpath(joinpath(dir, file))
+    staged = startswith(path, root) && isfile(path) ? get(_STAGED_MIME, lowercase(chopprefix(splitext(path)[2], ".")), "") : ""
+    forms = Tuple{String,Vector{UInt8}}[]
+    for m in plan.mimes
+        i = findfirst(f -> first(f) == m, hook)
+        j = o === nothing ? nothing : findfirst(ch -> ch.mime == m, o.display)
+        bytes = i !== nothing ? hook[i][2] : j !== nothing ? copy(o.display[j].data) : staged == m ? read(path) : nothing
+        bytes === nothing || push!(forms, (m, bytes))
+    end
+    return forms
+end
+
+function _deck_block(si, b, plan::_SlidePlan, files, cells, dir)
+    d = Dict{String,Any}("kind" => b.kind, "cell" => b.cell, "frag" => b.frag, "index" => b.index, "row" => b.row,
+                         "column" => b.column, "divcolumn" => b.divcolumn,
+                         "markdown" => b.src === nothing ? nothing : _exporter_markdown(b.src),
+                         "box" => _deck_box(b.box), "size" => b.size)
+    b.kind == "table" && (d["cols"] = b.cols; d["rows"] = b.rows)
+    b.kind == "figure" && (d["forms"] = _figure_forms(plan, b, get(files, (si, b.frag, b.index), nothing), cells, dir))
+    return d
+end
+
+function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir)
+    t = sl.title
+    return Dict{String,Any}(
+        "layout" => sl.layout, "transition" => sl.transition, "auto" => sl.auto,
+        "title" => t === nothing ? nothing : Dict{String,Any}("text" => String(t.text), "depth" => Int(t.depth), "cell" => String(t.cell)),
+        "notes" => String[cells[id].source for id in sl.notes],
+        "regions" => Any[Dict{String,Any}("name" => r.name, "text" => get(plan.texts, (si, r.name), nothing),
+                                          "box" => _deck_box(r.box), "size" => r.size) for r in sl.regions],
+        "blocks" => Any[_deck_block(si, b, plan, files, cells, dir) for b in sl.blocks])
+end
+
+"""
+    exporter_deck(nb; figure_mimes = ["image/png"], theme = "light", charttheme = "", warnings = String[]) -> Dict{String,Any}
+
+The deck value that an exporter gets (`SlateExtensionsBase.register_exporter!`, whose docstring states
+its keys): the slide model of the notebook with the boxes and the text sizes of its slides PDF, at the
+slide ratio and the slide level of the notebook. A figure block has a form for each type of
+`figure_mimes` that Slate has a picture of. `theme` and `charttheme` choose the Slate palette of the
+colour roles and of the figures, as for the slides PDF. The export warnings of the slides PDF go into
+`warnings`.
+"""
+function exporter_deck(nb::LiveNotebook; figure_mimes = ["image/png"], theme::AbstractString = "light",
+                       charttheme::AbstractString = "", warnings::Vector{String} = String[])
+    ratio = String(get(nb.report.meta, "slideratio", "16:9"))
+    plan = _SlidePlan(String[String(m) for m in figure_mimes])
+    figwarns = String[]
+    dir = _build_slides_project(nb; level = get(nb.report.meta, "slidelevel", 2), ratio, theme, charttheme, plan,
+                                warnings = figwarns)
+    try
+        recs = _typst_query(joinpath(dir, "doc.typ"), "<slate>"; marks = true)
+        append!(warnings, _slides_warnings(nb, recs, figwarns))
+        files = Dict((b.slide, b.frag, b.index) => b.file for b in plan.blocks)
+        cells = lock(() -> Dict(c.id => c for c in nb.report.cells), nb.lock)
+        W, H = deck_canvas(ratio)
+        return Dict{String,Any}("size" => (Float64(W), Float64(H)), "ratio" => ratio,
+            "settings" => deck_settings_dict(notebook_deck_settings(nb).values; palette = _chart_theme(charttheme, theme)),
+            "slides" => Any[_deck_slide(si, sl, plan, files, cells, dir) for (si, sl) in enumerate(_slide_layout(plan, recs))])
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+"""
+    export_with(nb, name; theme = "light", charttheme = "", maxbytes = 256 MiB) -> Union{Nothing,NamedTuple}
+
+The file of the exporter `name` that a package of the notebook registers, as `(; exporter, bytes,
+warnings)`: Slate builds the deck value (`exporter_deck`) and the exporter runs on the main worker of
+the notebook. `nothing` when no package of the notebook registers `name`. Throws when the exporter
+throws, or when its file has more than `maxbytes` bytes.
+"""
+function export_with(nb::LiveNotebook, name::AbstractString; theme::AbstractString = "light",
+                     charttheme::AbstractString = "", maxbytes::Integer = _EXPORT_MAX_BYTES)
+    _refresh_extensions_for_page!(nb)       # a package loaded since the last drain
+    i = findfirst(e -> e.name == name, notebook_exporters(nb))
+    i === nothing && return nothing
+    exporter = notebook_exporters(nb)[i]
+    warnings = String[]
+    deck = exporter_deck(nb; figure_mimes = exporter.figure_mimes, theme, charttheme, warnings)
+    bytes = ReportEngine.run_exporter(_running_kernel(nb, ""), exporter.name, deck; maxbytes)
+    return (; exporter, bytes, warnings = unique!(warnings))
+end
+
 # Write a deck template's files into the project `dir` and append its source to `io`, after the base
 # preamble, so a `#let slide` or `#let metablock` in it shadows the base one. The source stays inline
 # (an `#include` would not export its lets). A template ships fonts under `fonts/`: `_typst_compile`
@@ -2873,6 +3032,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
     ct = _deck_figure_palette(ds.values, palette)   # the Slate palette the figures render in
     geo = _slide_figure_geometry(nb, ds, ratio, level, ct; page_palette = palette)
     compfigs = _warm_hook_figs!(nb, _CompFigs(), warnings, geo; progress = cid -> _export_progress(nb, cid))
+    isempty(plan.mimes) || _hook_forms!(plan, nb, warnings, geo)
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_html_rasters!(nb; theme = ct, figs = compfigs)   # one round-trip, under the EXPORT's palette (see above)
@@ -2916,6 +3076,9 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             print(io, "#SUBLEVEL.update(", fm.sublevel, ")\n")   # the heading level of the subtitle, for `metablock`
             print(io, "#slide(layout: \"title\", ", position(rio) == 0 ? meta : string("metarest(", meta, ", [\n", String(take!(rio)), "])"), ")\n\n")
             push!(plan.pages, tsi)
+            for (name, text) in (("title", fm.title), ("subtitle", fm.subtitle), ("byline", fm.byline), ("abstract", fm.abstract))
+                isempty(strip(text)) || get!(plan.texts, (tsi, name), String(text))
+            end
         end
         titles = fill("", length(deck))   # per slide: its `title: …` argument, or "" without a title
         for (si, sl) in enumerate(deck)
@@ -2926,6 +3089,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             write(joinpath(dir, "s$(si)title.md"),
                   _stage_typst_md_media(md, dir, "s$(si)title", _proj_root(nb); sizes = mediasz))
             titles[si] = "title: heading(level: $(t.depth), $(_md_render("s$(si)title.md")))"
+            get!(plan.texts, (si, "title"), String(t.text))
         end
         for (si, sl) in enumerate(deck)
             frags = [(cell = bycell[b.cell], src = b.src, interpbase = b.interpbase) for b in sl.frags]
