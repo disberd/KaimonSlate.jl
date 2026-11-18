@@ -597,7 +597,7 @@ end
 # The manifest carries only the hash; the hub pulls the bytes when the hash changes.
 const _DECK_TEMPLATE_LOCK = ReentrantLock()
 const _DeckTemplate = @NamedTuple{hash::String, source::String, settings::String,
-                                  files::Dict{String,Vector{UInt8}}}
+                                  files::Dict{String,Vector{UInt8}}, body_width::Union{Nothing,Float64}}
 const _DECK_TEMPLATE = Ref{Union{Nothing,_DeckTemplate}}(nothing)
 # (; path, mtime) of each part that came from a file ([`PkgAsset`](@ref)), under the key `"source"`,
 # `"settings"` or `"files/<name>"`. [`deck_template`](@ref) reads a part again when its mtime moves, as
@@ -609,9 +609,11 @@ _template_path_ok(name::AbstractString) =
     !isempty(name) && !startswith(name, '/') && !occursin(r"^[A-Za-z]:|[\\\0]", name) &&
     all(s -> !isempty(s) && s != "." && s != "..", split(name, '/'))
 
-# SHA-256 over the source, the settings and the (name, bytes) pairs in name order. Each part carries its
-# length, so two different splits of the same bytes give two different hashes.
-function _template_hash(source::AbstractString, settings::AbstractString, files::AbstractDict)
+# SHA-256 over the source, the settings, the (name, bytes) pairs in name order and the body width when
+# the template gives one. Each part carries its length, so two different splits of the same bytes give
+# two different hashes.
+function _template_hash(source::AbstractString, settings::AbstractString, files::AbstractDict,
+                        body_width::Union{Nothing,Float64} = nothing)
     ctx = SHA.SHA2_256_CTX()
     part(b) = (SHA.update!(ctx, codeunits("$(length(b)):")); SHA.update!(ctx, b))
     part(codeunits(source))
@@ -619,6 +621,7 @@ function _template_hash(source::AbstractString, settings::AbstractString, files:
     for name in sort!(collect(keys(files)))
         part(codeunits(name)); part(files[name])
     end
+    body_width === nothing || part(codeunits("body_width=$body_width"))
     return bytes2hex(SHA.digest!(ctx))
 end
 
@@ -628,7 +631,8 @@ _template_bytes(x::AbstractString) = Vector{UInt8}(codeunits(String(x)))
 _template_bytes(x::AbstractVector{UInt8}) = Vector{UInt8}(x)
 
 """
-    provide_deck_template!(source; settings = nothing, files = Dict{String,Vector{UInt8}}()) -> Nothing
+    provide_deck_template!(source; settings = nothing, files = Dict{String,Vector{UInt8}}(),
+                           body_width = nothing) -> Nothing
 
 Declare a Typst deck template for every notebook that loads this package. `source` is the `.typ` text.
 
@@ -640,6 +644,12 @@ other value is on each slide, so a CSS rule that overrides one must match `.deck
 
 `files` maps a file name to its bytes: the layout catalogue, art and fonts that `source` uses. Put fonts
 under `fonts/`.
+
+`body_width` is the width of the content body of the template's slides, in slide units `u` (the slide
+is 1920 u wide at 16:9 and 16:10, 1440 u at 4:3). Slate computes the width of the column of a figure
+from it and from the columns of the slide, for [`FigureContext`](@ref). The default `nothing` is the
+width of the base body: the slide width less 240 u. A value that is not a number in (0, 10000] throws
+an `ArgumentError`.
 
 `source`, `settings` and each value of `files` can be a [`PkgAsset`](@ref)
 (`@pkg_asset("typst/deck.typ")`). Then the registry keeps its path and reads the file again when its
@@ -655,7 +665,12 @@ pulls the bytes only when the hash changes.
 """
 function provide_deck_template!(source::AbstractString;
                                 settings::Union{Nothing,AbstractString,AbstractVector{UInt8}} = nothing,
-                                files::AbstractDict = Dict{String,Vector{UInt8}}())
+                                files::AbstractDict = Dict{String,Vector{UInt8}}(),
+                                body_width::Union{Nothing,Real} = nothing)
+    body_width === nothing || (!(body_width isa Bool) && isfinite(body_width) && 0 < body_width <= 10000) ||
+        throw(ArgumentError("provide_deck_template!: body_width must be a number of slide units in (0, 10000], " *
+                            "not $(repr(body_width))"))
+    bw = body_width === nothing ? nothing : Float64(body_width)
     copied = Dict{String,Vector{UInt8}}()
     paths = Dict{String,@NamedTuple{path::String, mtime::Float64}}()
     follow(key, x) = x isa PkgAsset && (paths[key] = (path = x.path, mtime = mtime(x.path)))
@@ -670,7 +685,7 @@ function provide_deck_template!(source::AbstractString;
     set = settings === nothing ? "" : _template_text(settings)
     follow("source", source)
     settings === nothing || follow("settings", settings)
-    t = (; hash = _template_hash(src, set, copied), source = src, settings = set, files = copied)
+    t = (; hash = _template_hash(src, set, copied, bw), source = src, settings = set, files = copied, body_width = bw)
     lock(_DECK_TEMPLATE_LOCK) do
         _DECK_TEMPLATE[] = t
         empty!(_DECK_TEMPLATE_FILES)
@@ -684,7 +699,7 @@ end
 function _refresh_deck_template_files!()
     cur = _DECK_TEMPLATE[]
     cur === nothing && return
-    (; source, settings, files) = cur
+    (; source, settings, files, body_width) = cur
     changed = false
     for (key, f) in collect(_DECK_TEMPLATE_FILES)
         t = mtime(f.path)
@@ -700,15 +715,17 @@ function _refresh_deck_template_files!()
         key == "settings" ? (settings = String(bytes)) : (files[chopprefix(key, "files/")] = bytes)
         _DECK_TEMPLATE_FILES[key] = (path = f.path, mtime = t)
     end
-    changed && (_DECK_TEMPLATE[] = (; hash = _template_hash(source, settings, files), source, settings, files))
+    changed && (_DECK_TEMPLATE[] = (; hash = _template_hash(source, settings, files, body_width), source, settings,
+                                    files, body_width))
     return
 end
 
 """
     deck_template() -> Union{Nothing,NamedTuple}
 
-The template that [`provide_deck_template!`](@ref) declared, as `(; hash, source, settings, files)`, or
-`nothing`. `settings` is the TOML text, `""` when the template gives none. The hash is a hex SHA-256
+The template that [`provide_deck_template!`](@ref) declared, as `(; hash, source, settings, files, body_width)`,
+or `nothing`. `settings` is the TOML text, `""` when the template gives none. `body_width` is a `Float64` in
+slide units, or `nothing`. The hash is a hex SHA-256
 string. A later `provide_deck_template!`, or an edit to a file-backed part, replaces the template and
 leaves the returned value as it was.
 """
