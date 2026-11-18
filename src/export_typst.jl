@@ -2963,9 +2963,9 @@ function exporter_deck(nb::LiveNotebook; figure_mimes = ["image/png"], theme::Ab
         recs = _typst_query(joinpath(dir, "doc.typ"), "<slate>"; marks = true)
         append!(warnings, _slides_warnings(nb, recs, figwarns))
         files = Dict((b.slide, b.frag, b.index) => b.file for b in plan.blocks)
-        cells = lock(() -> Dict(c.id => c for c in nb.report.cells), nb.lock)
+        cells, title = lock(() -> (Dict(c.id => c for c in nb.report.cells), String(report_frontmatter(nb.report).title)), nb.lock)
         W, H = deck_canvas(ratio)
-        return Dict{String,Any}("size" => (Float64(W), Float64(H)), "ratio" => ratio,
+        return Dict{String,Any}("title" => title, "size" => (Float64(W), Float64(H)), "ratio" => ratio,
             "settings" => deck_settings_dict(notebook_deck_settings(nb).values; palette = _chart_theme(charttheme, theme)),
             "slides" => Any[_deck_slide(si, sl, plan, files, cells, dir) for (si, sl) in enumerate(_slide_layout(plan, recs))])
     finally

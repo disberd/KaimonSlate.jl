@@ -97,7 +97,7 @@ were written when they went out. They are marked.
   `SlateExtensionsBase.register_exporter!(f, name; label, ext, mime, figure_mimes)`. The export dialog
   shows `label` next to the built-in formats, the route `/api/<notebook>/export/<name>` gives the file,
   and so does the new tool `export(notebook; format, path)`. The hub compiles the slides PDF with its
-  marks, builds the deck value (slide size and ratio, deck settings in the palette of the Theme picker,
+  marks, builds the deck value (deck title, slide size and ratio, deck settings in the palette of the Theme picker,
   slides with their layout, title, notes, transition, regions and blocks, each block with its markdown
   or its figure forms, its box and its text size), and the worker calls `f(deck)` through the gate tool
   `__slate_export`. The hub checks the name (`^[a-z0-9][a-z0-9-]{0,31}$`), the file extension

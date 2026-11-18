@@ -1347,6 +1347,7 @@ function _outline(deck)
     io = IOBuffer()
     w, h = deck["size"]
     println(io, "<!-- ", deck["ratio"], ", ", w, " × ", h, " u -->")
+    isempty(deck["title"]) || println(io, "\n# ", deck["title"])
     for (i, s) in enumerate(deck["slides"])
         t = s["title"]
         println(io, "\n## ", i, ". ", t === nothing ? "(no title)" : t["text"])
@@ -1420,7 +1421,7 @@ _plain(_) = false
         @testset "the deck value has plain Base types only and its blocks join the slide model" begin
             deck = NS.exporter_deck(nb; figure_mimes = ["image/svg+xml"], charttheme = "daylight")
             @test _plain(deck)
-            @test deck["size"] == (1920.0, 1080.0) && deck["ratio"] == "16:9"
+            @test deck["size"] == (1920.0, 1080.0) && deck["ratio"] == "16:9" && deck["title"] == ""
             @test deck["settings"]["slate_palette"] == "daylight" && startswith(deck["settings"]["roles"]["fg"], "#")
             s1, s2 = deck["slides"]
             @test s1["title"] == Dict{String,Any}("text" => "Intro", "depth" => 2, "cell" => "xa") && strip.(s1["notes"]) == ["Say hi."]
@@ -1435,6 +1436,12 @@ _plain(_) = false
             t = only(s2["blocks"])
             @test t["kind"] == "table" && length(t["cols"]) == 2 && length(t["rows"]) == 2
             @test !haskey(s1["blocks"][1], "forms") && !haskey(s1["blocks"][1], "cols")
+        end
+        @testset "the deck title is the title of the front matter" begin
+            tnb = _mknb("#%% md id=t title\n# The deck\n\n### A subtitle\n\n#%% md id=b\n## Body\n\nText.\n")
+            deck = NS.exporter_deck(tnb)
+            @test deck["title"] == "The deck"
+            @test startswith(String(_outline(deck)), "<!-- 16:9, 1920.0 × 1080.0 u -->\n\n# The deck\n")
         end
         @testset "figure forms follow figure_mimes" begin
             forms(mimes) = [[f[1] for f in b["forms"]] for b in NS.exporter_deck(nb; figure_mimes = mimes)["slides"][1]["blocks"]

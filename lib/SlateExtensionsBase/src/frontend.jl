@@ -770,6 +770,7 @@ add keys, so an exporter must not fail on a key that it does not know.
 
 | Key | Value |
 |:----|:------|
+| `"title"` | The title of the deck: the title of the front matter (the `title` cell, else the first level-1 heading), as a `String`; `""` when there is none. |
 | `"size"` | `(w, h)`, the size of the slide in `u`, as `Float64`s. |
 | `"ratio"` | The slide ratio: `"16:9"`, `"16:10"` or `"4:3"`. |
 | `"settings"` | The merged deck settings, one `Dict` for each group (`"text"`, `"roles"`, `"table"`, …). A length is `(value = 34.0, unit = :u)`, a ratio is a `Float64`, a colour is a hex string; the colour roles are hex. `"slate_palette"` is the name of the Slate palette of the figures; the Theme picker of the export dialog sets it. |
@@ -811,6 +812,7 @@ register_exporter!("outline"; label = "Markdown outline", ext = "md", mime = "te
     io = IOBuffer()
     w, h = deck["size"]
     println(io, "<!-- ", deck["ratio"], ", ", w, " × ", h, " u -->")
+    isempty(deck["title"]) || println(io, "\\n# ", deck["title"])
     for (i, s) in enumerate(deck["slides"])
         t = s["title"]
         println(io, "\\n## ", i, ". ", t === nothing ? "(no title)" : t["text"])
