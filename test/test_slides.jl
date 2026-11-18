@@ -1643,6 +1643,10 @@ _plain(_) = false
             c = first(NS.exporter_deck(_mknb("#%% md id=t title\n# The deck\n\n#%% md id=b\n## Body\n\nText.\n"))["slides"])
             ct = only(r for r in c["regions"] if r["name"] == "title")
             @test ct["lineheight"] ≈ 1.1 * ct["size"]
+            @test c["layout"] == "title"                     # the PDF draws it with the title layout; no tag says else
+            # The title of a slide is the text that the PDF draws: its `{{ }}` values are resolved.
+            s = only(NS.exporter_deck(_hooknb("#%% md id=f\n## Fine {{ 1 + 1 }}\n\nText.\n"))["slides"])
+            @test s["title"]["text"] == "Fine 2" && only(r["text"] for r in s["regions"] if r["name"] == "title") == "Fine 2"
         end
         @testset "the deck title is the title of the front matter" begin
             tnb = _mknb("#%% md id=t title\n# The deck\n\n### A subtitle\n\n#%% md id=b\n## Body\n\nText.\n")

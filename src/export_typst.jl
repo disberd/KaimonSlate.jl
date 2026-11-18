@@ -3066,7 +3066,8 @@ function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir, warnings)
     t = sl.title
     return Dict{String,Any}(
         "layout" => sl.layout, "transition" => sl.transition, "auto" => sl.auto,
-        "title" => t === nothing ? nothing : Dict{String,Any}("text" => String(t.text), "depth" => Int(t.depth), "cell" => String(t.cell)),
+        "title" => t === nothing ? nothing : Dict{String,Any}("text" => get(plan.texts, (si, "title"), String(t.text)),
+                                                              "depth" => Int(t.depth), "cell" => String(t.cell)),
         "notes" => String[cells[id].source for id in sl.notes],
         "regions" => Any[Dict{String,Any}("name" => r.name, "text" => get(plan.texts, (si, r.name), nothing),
                                           "box" => _deck_box(r.box), "size" => r.size, "lineheight" => r.lineheight)
@@ -3225,7 +3226,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             write(joinpath(dir, "s$(si)title.md"),
                   _stage_typst_md_media(md, dir, "s$(si)title", _proj_root(nb); sizes = mediasz, warnings, cell = t.cell))
             titles[si] = "title: heading(level: $(t.depth), $(_md_render("s$(si)title.md")))"
-            get!(plan.texts, (si, "title"), String(t.text))
+            get!(plan.texts, (si, "title"), _exporter_markdown(md))   # the text that the PDF draws, `{{ }}` resolved
         end
         for (si, sl) in enumerate(deck)
             frags = [(cell = bycell[b.cell], src = b.src, interpbase = b.interpbase) for b in sl.frags]
@@ -3280,6 +3281,9 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                       "#", _md_render("notes$(si).md"), "\n]\n\n")
             end
         end
+        # The slide of the title page has the layout of that page (`"title"`) in the plan, unless its tag
+        # sets one. After the pages: a body page of that slide keeps the layout of its tag.
+        fm.has && tsi > 0 && plan.deck[tsi].layout === nothing && (plan.deck[tsi] = merge(plan.deck[tsi], (; layout = "title")))
         write(joinpath(dir, "media.json"), JSON.json(mediasz))   # always present: the preamble reads it
         write(joinpath(dir, "doc.typ"), String(take!(io)))
         return dir
