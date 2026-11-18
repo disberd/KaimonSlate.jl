@@ -214,14 +214,19 @@ function _warm_hook_figs!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{St
 end
 
 # The pictures of the figure hooks in the MIME types of an exporter (`plan.mimes`), into `plan.forms`:
-# the hook gets one MIME type at a time, so each output can give a form in each type. A throw stops the
-# search for that output and adds the warning of the Typst export.
-function _hook_forms!(plan, nb::LiveNotebook, warnings::Vector{String}, geo)
+# the hook gets one MIME type at a time, so each output can give a form in each type. The picture of
+# the Typst pass (`figs`, from `_warm_hook_figs!`) is the form of its type, with no second round trip,
+# and a video or audio type is not asked: a figure hook draws pictures only. A throw stops the search
+# for that output and adds the warning of the Typst export.
+function _hook_forms!(plan, nb::LiveNotebook, warnings::Vector{String}, geo, figs::_CompFigs)
     for (cid, slot, region, held) in _hook_targets(nb)
         k = held ? _running_kernel(nb, region) : nothing
         k === nothing && continue
+        typst = get(figs, (cid, _hook_slot(slot)), nothing)   # (bytes, file extension)
         forms = Tuple{String,Vector{UInt8}}[]
         for m in plan.mimes
+            (startswith(m, "video/") || startswith(m, "audio/")) && continue
+            typst !== nothing && get(_FIGURE_MIME_EXT, m, "") == typst[2] && (push!(forms, (m, typst[1])); continue)
             r = try; ReportEngine.export_figure(k, cid, slot, [m], _figure_ctx(geo, cid, slot)); catch; nothing; end
             (r === nothing || !r.held) && break
             isempty(r.error) || (push!(warnings, _hook_throw_warning(cid, r)); break)
@@ -3186,7 +3191,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
     ct = _deck_figure_palette(ds.values, palette)   # the Slate palette the figures render in
     geo = _slide_figure_geometry(nb, ds, ratio, level, ct; page_palette = palette)
     compfigs = _warm_hook_figs!(nb, _CompFigs(), warnings, geo; progress = cid -> _export_progress(nb, cid))
-    isempty(plan.mimes) || _hook_forms!(plan, nb, warnings, geo)
+    isempty(plan.mimes) || _hook_forms!(plan, nb, warnings, geo, compfigs)
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_html_rasters!(nb; theme = ct, figs = compfigs)   # one round-trip, under the EXPORT's palette (see above)

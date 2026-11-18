@@ -1229,6 +1229,12 @@ const STATIC = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"300\" height=\
 Base.show(io::IO, ::MIME"image/svg+xml", ::Union{Decline,Boom}) = print(io, STATIC)
 SEB.slate_export_figure(::IO, ::MIME"image/svg+xml", ::Decline, _) = false
 SEB.slate_export_figure(::IO, ::MIME"image/svg+xml", ::Boom, _) = error("boom\nsecond line")
+struct Counted end                                 # counts the calls of its hook
+const CALLS = Ref(0)
+Base.show(io::IO, ::MIME"text/html", ::Counted) = print(io, "<div>counted</div>")
+SEB.slate_export_figure(io::IO, ::MIME"image/svg+xml", ::Counted, ctx) =
+    (CALLS[] += 1; print(io, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>"); true)
+SEB.slate_export_figure(io::IO, ::MIME"image/png", ::Counted, ctx) = (CALLS[] += 1; write(io, PNG); true)
 end
 
 # A notebook whose cells ran in this process, so that the figure values are kept here.
@@ -1690,6 +1696,12 @@ _plain(_) = false
             @test forms(["image/jpeg"]) == [String[], String[]]
             png = only(b for b in NS.exporter_deck(nb; figure_mimes = ["image/png"])["slides"][1]["blocks"] if b["cell"] == "xv")
             @test only(png["forms"]) == ("image/png", FigHook.PNG)
+            # The hook draws each type once: the SVG of the Typst pass is the SVG form, and a clip type is not asked.
+            cnb = _hooknb("#%% code id=xc\nFigHook.Counted()\n")
+            FigHook.CALLS[] = 0
+            NS.exporter_deck(cnb; figure_mimes = ["image/svg+xml", "image/png", "video/mp4"])
+            @test FigHook.CALLS[] == 2
+            RE._figure_forget!("xc")
         end
     finally
         delete!(SEB._EXPORTERS, "outline")
