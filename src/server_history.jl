@@ -1118,7 +1118,8 @@ function cell_json(c::Cell, bindref::Dict{String,Tuple{Cell,BindSpec}} = Dict{St
         "blocked" => c.blocked,
         "blockedHost" => c.blocked_host,
         "blockedAt" => c.blocked_at,
-        "output"  => _externalize_blobs(nbid, is_prose(c.kind) ? _asset_srcs(nbid, markdown_html(_mdsrc, c.interp; prose = cites ? _cite_rw : identity)) :
+        "output"  => _externalize_blobs(nbid, is_prose(c.kind) ? _asset_srcs(nbid, markdown_html(_mdsrc, c.interp; prose = cites ? _cite_rw : identity,
+                            caption = :caption in c.flags ? get(fignums, c.id, nothing) : nothing)) :
                         (live_placeholder && _is_live(c) ? _live_output_placeholder() : output_html(c))),
         # How the browser should treat this output's session-boundness (see `_live_output_placeholder`):
         # "render" = the real, live-for-THIS-session thing; "placeholder" = a stand-in awaiting the connect

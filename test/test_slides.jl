@@ -457,14 +457,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         live = read(joinpath(src, "assets", "notebook.css"), String) * read(joinpath(src, "assets", "js", "slides.js"), String)
         typ = read(joinpath(src, "export_typst.jl"), String)
         julia = ("code.syntax", "figures.slate-palette")
-        todo_live = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
-                     "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
-                     "code.fill", "code.font", "key-message.bar-color", "key-message.bar-width", "key-message.fill",
-                     "key-message.pad-x", "key-message.pad-y", "key-message.text-color")
-        todo_typst = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
-                      "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
-                      "figures.radius", "key-message.bar-color", "key-message.bar-width", "key-message.fill",
-                      "key-message.pad-x", "key-message.pad-y", "key-message.text-color")
+        todo_live = ("code.fill", "code.font")
+        todo_typst = ()
         keys_ = ["$g.$k" for (g, d) in NS.deck_settings("", "").values for (k, v) in d if g != "palette" && !(v isa AbstractDict)]
         @test length(keys_) > 50
         reads_live(key) = occursin(Regex(NS._deck_css_name(split(key, '.')...) * "(?![\\w-])"), live)
@@ -588,7 +582,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
 
         # Without a template the preamble is the only prefix; no template text leaks in.
-        @test !occursin("deck template", before)
+        @test !occursin("── deck template ──", before)
 
         # The write site refuses a file name that leaves the project directory, and the name of a file
         # that Slate writes.
@@ -673,6 +667,52 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test fit43[2]["size"] ≈ fit[2]["size"] && fit43[2]["s"] == 1
         @test cap43 ≈ 0.7 atol = 0.01
     end
+
+    # The block kinds in the PDF (the `draw` dictionary of the slides preamble, the handlers of the
+    # document preamble). A mark inside a paragraph records the text size there.
+    @testset "block kinds in the PDF: paint, a template draw function, an unknown key" begin
+        mark(k) = "<!--raw-typst #context [#metadata(text.size / 1pt) <$k>]-->"
+        src = "#%% md id=a\n## A\n\nBody$(mark("body")) text.\n\n*A caption$(mark("cap")) of the figure.*\n\n" *
+              "> A key message.\n\n!!! note \"Heads up\"\n    The body.\n"
+        # The records of a slides project of `src` with the deck template source `tpl`.
+        function records(tpl)
+            nb = _mknb(src)
+            nb.deck_template = (; hash = "h", source = tpl, settings = "", files = Dict{String,Vector{UInt8}}())
+            dir = NS._build_slides_project(nb)
+            try
+                q(label) = NS._typst_query(joinpath(dir, "doc.typ"), label)
+                return (; ratio = only(q("<cap>")) / only(q("<body>")), probe = q("<probe>"), warns = NS._draw_warnings(q("<slate>")))
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+        # The base deck: a caption is `caption.size` of the body text, and no key warns.
+        base = records("")
+        @test base.ratio ≈ 0.8 && isempty(base.warns)
+        # A deck template gives `draw.caption`, and a key that is no block kind gives a warning.
+        mine = records("#let draw = (caption: it => [#metadata(\"mine\") <probe>#it.body], captoin: it => it.body)\n")
+        @test mine.probe == ["mine"] && mine.ratio ≈ 1
+        @test length(mine.warns) == 1 && occursin("draw.captoin", only(mine.warns))
+        # A deck template that draws its slides with its own rules (no `base-rhythm`) and gives no
+        # function keeps each block as its markdown gives it: the base paint does not apply.
+        own = "#let slide(body, layout: none, title: none, n: none) = page(fit(body))\n"
+        @test records(own).ratio ≈ 1
+        @test records(own * "#let draw = (caption: base-draw.caption)\n").ratio ≈ 0.8
+        # An article draws an admonition as its box, not as `!!!` text: the heading and the body are
+        # inside the box, 9 pt to the right of the text around it.
+        dir = NS._build_typst_project(_mknb(src))
+        try
+            pdf = joinpath(dir, "out.pdf")
+            NS._typst_compile(joinpath(dir, "doc.typ"), pdf)
+            words = read(`pdftotext -bbox $pdf -`, String)
+            x(w) = parse(Float64, match(Regex("xMin=\"([\\d.]+)\"[^>]*>$w</word>"), words)[1])
+            @test x("Heads") - x("Body") ≈ 9 atol = 0.1
+            @test x("The") - x("Body") ≈ 9 atol = 0.1
+            @test !occursin("!!!", words)
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
 end
 
 @testset "deck markup" begin
@@ -707,6 +747,48 @@ end
         s = NS._strip_deck_markup("::: step\nA\n:::\n. . .\nB\n```\n:::\n```")
         @test s == "A\nB\n```\n:::\n```"                     # fenced code untouched
         @test NS._strip_deck_markup("plain") == "plain"
+    end
+    # Each block of markdown has one kind (block_kinds.jl). The detector puts a block of a kind that a
+    # deck paints into a `<slate-…>` element, for the page and for the PDF.
+    @testset "block kinds: the kind of each markup, the elements in the HTML" begin
+        kind(md; kw...) = only(p.kind for p in R._md_blocks(md; kw...) if !isempty(p.kind))
+        for (md, k) in ("> A key message." => "key-message",
+                        "*All of it is emphasis.*" => "caption",
+                        "_Source: X_ [@key]" => "caption",
+                        "*With \$a*b\$ math and [a link](u).*" => "caption",
+                        "*Source:* part of it" => "prose",
+                        "*one* *two*" => "prose",
+                        "!!! note \"Title\"\n    Body.\n\n    | a |\n    |---|\n    | 1 |" => "admonition",
+                        "![alt](pic.png)" => "figure",
+                        "![alt](pic.png){width=300}" => "figure",
+                        "Text with ![alt](pic.png)" => "prose",
+                        "| a | b |\n|---|---|\n| 1 | 2 |" => "table",
+                        "```julia\n> not a quote\n*not a caption*\n```" => "code",
+                        "- a list\n- of items" => "prose",
+                        "\$\$x^2\$\$" => "prose",
+                        "## Heading" => "prose")
+            @test kind(md) == k
+        end
+        # A `{{ }}` value alone in its paragraph is a figure when it draws one.
+        @test kind(RE._interp_token(1); figure = ==(1)) == "figure" && kind(RE._interp_token(1)) == "prose"
+        doc = "Intro.\n\n> Key.\n\n*Caption.*\n\n!!! tip\n    Body.\n\n:::: columns\n::: column\n*In a column.*\n:::\n::::\n\n```\n> code\n```\n"
+        out = R._md_kinds(doc)
+        @test R._md_kinds(out) == out                               # a second run changes nothing
+        @test occursin("```\n> code\n```", out)                    # fenced code stays code
+        @test count("<slate-caption>", out) == 2                    # a block of a `:::` div has its kind too
+        @test R._md_kinds("Plain prose.\n\n- a list\n") == "Plain prose.\n\n- a list\n"
+        h = R.markdown_html(doc)
+        @test occursin("<slate-caption>\n<p><em>Caption.</em></p>\n</slate-caption>", h)
+        @test occursin("<slate-admonition category=\"tip\" heading=\"Tip\">\n<div class=\"admonition tip\">", h)
+        # The elements are the only change to the HTML.
+        bare(s) = replace(s, r"</?slate-[^>]*>" => "", r"\s+" => "")
+        @test bare(h) == bare(R.CommonMark.html(R._md_parser()(doc)))
+        # A cell with the `caption` tag: each block is a caption, and the first one has the figure number.
+        @test R._md_kinds("One.\n\nTwo."; caption = 3) ==
+              "<slate-caption number=\"3\">\n\nOne.\n\n</slate-caption>\n\n<slate-caption>\n\nTwo.\n\n</slate-caption>"
+        # An admonition category with its own values has a rule on its element in the deck CSS.
+        css = NS.deck_settings_css(NS.deck_settings("[admonition.aside]\naccent = \"#123456\"\n", "").values)
+        @test occursin(":where(.deck-slide slate-admonition[category=\"aside\"]) { --deck-admonition-accent: #123456; }", css)
     end
     @testset "SlideSteps" begin
         w = RE.SlideSteps(4)

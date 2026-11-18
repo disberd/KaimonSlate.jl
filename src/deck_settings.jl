@@ -348,7 +348,9 @@ end
     deck_settings_css(s) -> String
 
 The live deck's CSS for the merged settings `s` (the `values` of [`deck_settings`](@ref)): one custom
-property per value, in two `:where(…)` rules (specificity zero), so that a package's CSS overrides them.
+property per value, in `:where(…)` rules (specificity zero), so that a package's CSS overrides them.
+Each admonition category that sets a value has one more rule, on its `<slate-admonition>` element:
+it gives the `--deck-admonition-*` properties the values of the category.
 """
 function deck_settings_css(s)
     root, slide = String[], String[]
@@ -356,19 +358,15 @@ function deck_settings_css(s)
         push!(root, "--deck-palette-$k: $v;")
     end
     for g in sort!(collect(keys(s))), k in sort!(collect(keys(s[g])))
-        (g == "palette" || g == "admonition") && continue
+        (g == "palette" || s[g][k] isa AbstractDict) && continue
         decl = string(_deck_css_name(g, k), ": ", _deck_css_value(s, s[g][k], g, k), ";")
         push!(g == "roles" || (g == "text" && k == "font") ? root : slide, decl)
     end
-    dflt, cats = _deck_admonition(s)
-    for (k, v) in _sorted(dflt)
-        push!(slide, "--deck-admonition-$k: $(_deck_css_value(s, v, "admonition", k));")
-    end
-    for (c, d) in _sorted(cats), (k, v) in _sorted(d)
-        push!(slide, "--deck-admonition-$c-$k: $(_deck_css_value(s, v, "admonition", k));")
-    end
+    cats = [string(":where(.deck-slide slate-admonition[category=\"", c, "\"]) { ",
+                   join(("--deck-admonition-$k: $(_deck_css_value(s, v, "admonition", k));" for (k, v) in _sorted(d)), " "), " }\n")
+            for (c, d) in _sorted(s["admonition"]) if d isa AbstractDict && !isempty(d)]
     return string(":where(.deck, .pp-frame, .deck-sheet, .deck-print) { ", join(root, " "), " }\n",
-                  ":where(.deck-slide) { ", join(slide, " "), " }\n")
+                  ":where(.deck-slide) { ", join(slide, " "), " }\n", join(cats))
 end
 
 # ── Typst: deck-settings.typ ──────────────────────────────────────────────────────────────────────

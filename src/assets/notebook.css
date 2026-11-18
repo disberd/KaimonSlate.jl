@@ -1425,6 +1425,13 @@ body.wrap-output .output pre { white-space:pre-wrap; word-break:break-word; }
    space above (and below) the block — reads as too much air, worst in a reading pass. */
 .md > :first-child { margin-top:0; }
 .md > :last-child { margin-bottom:0; }
+/* The elements of the block kinds (`<slate-key-message>`, `<slate-caption>`, `<slate-admonition>`,
+   `<slate-figure>`, `<slate-table>`, written by block_kinds.jl around a block) make a box only on a
+   slide. Here a block looks the same with and without its element. The two rules above reach the
+   block through its element; `:where` keeps their specificity. */
+slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table { display:contents; }
+.md > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table):first-child) > :first-child { margin-top:0; }
+.md > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table):last-child) > :last-child { margin-bottom:0; }
 .md h1 { font-size:1.7rem; border-bottom:1px solid var(--border); padding-bottom:.2em; }
 .md table { border-collapse:collapse; } .md td,.md th { border:1px solid var(--border); padding:4px 10px; }
 /* A `---` in prose. Unstyled it falls back to the browser's `1px inset grey`, which is a different
@@ -3272,10 +3279,37 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide .md strong { color: var(--deck-strong); }
 .deck-slide .md code { font-size: .85em; }
 .deck-slide .md pre { font-size: var(--deck-code-size); }
-/* A key message (a blockquote) has the gap between cells below it. `:where` keeps the rule below a
-   deck template's own. */
+/* A block quote has the gap between cells below it. `:where` keeps the rule below a deck template's
+   own. */
 .deck-slide :where(.md, .markdown) blockquote { margin: 0 0 var(--deck-rhythm-cell-gap); }
 .deck-slide :where(.md, .markdown) blockquote > :last-child { margin-bottom: 0; }
+/* Block kinds. On a slide the element of a block is a box, so that a build step or the spotlight can
+   show and hide the block. The block in it takes the paint of the deck settings. */
+.deck-slide :is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table) { display: block; }
+/* Key message: a band with a bar on its left. */
+.deck-slide :where(slate-key-message) > blockquote { padding: var(--deck-key-message-pad-y) var(--deck-key-message-pad-x);
+  background: var(--deck-key-message-fill); border: none;
+  border-left: var(--deck-key-message-bar-width) solid var(--deck-key-message-bar-color); color: var(--deck-key-message-text-color); }
+/* Caption: smaller and dimmed. A figure caption (a cell with the `caption` tag) is a markdown cell of
+   captions on a slide, and its first block shows the figure number. */
+.deck-slide :is(.md, .markdown) slate-caption > * { font-size: var(--deck-caption-size); color: var(--deck-caption-color); }
+.deck-slide slate-caption[number] > :first-child::before { content: "Figure " attr(number) ". "; font-weight: 700; color: var(--deck-fg); }
+.deck-slide .cell.role-caption .md { font-size: 1em; line-height: inherit; color: var(--deck-fg); margin: 0; }
+.deck-slide .cell.role-caption .md p { display: block; margin: 0 0 var(--deck-text-paragraph-after); }
+.deck-slide .cell.role-caption .md .figlabel { display: none; }
+/* Admonition: a box with a bar on its left, the heading in bold above the body. The values of its
+   category replace the `--deck-admonition-*` values on its element (`deck_settings_css`). It has the
+   gap between cells below it, but not at the end of its cell, as a key message. */
+.deck-slide slate-admonition > .admonition { margin: 0 0 var(--deck-rhythm-cell-gap); border: none;
+  border-left: var(--deck-admonition-bar-width) solid var(--deck-admonition-accent); border-radius: var(--deck-admonition-radius);
+  background: var(--deck-admonition-fill); padding: var(--deck-admonition-pad-y) var(--deck-admonition-pad-x); }
+.deck-slide .md > slate-admonition:last-child > .admonition { margin-bottom: 0; }
+.deck-slide slate-admonition > .admonition > .admonition-title { margin: 0 0 var(--deck-text-paragraph-after); padding: 0;
+  background: none; border: none; color: var(--deck-admonition-title-color); font-weight: 700; letter-spacing: 0; }
+.deck-slide slate-admonition > .admonition > .admonition-title:empty { display: none; }
+.deck-slide slate-admonition > .admonition > :not(.admonition-title) { margin-left: 0; margin-right: 0; }
+.deck-slide slate-admonition > .admonition > .admonition-title + * { margin-top: 0; }
+.deck-slide slate-admonition > .admonition > :last-child { margin-bottom: 0; }
 /* Base tables: the structure and paint keys of `[table]`. The table is as wide as its column when
    `full-width` is on. */
 .deck-slide :is(.md, .markdown) table { font-size: var(--deck-table-text-size); line-height: var(--deck-table-line-height);

@@ -18,6 +18,7 @@ using ..ReportEngine
 import Base64
 
 include(joinpath(@__DIR__, "expanduser_fix.jl"))   # `~` in a backtrace path (`_linkify_trace`)
+include(joinpath(@__DIR__, "block_kinds.jl"))      # the block kinds of markdown (`_md_blocks`)
 
 export render_html, render_report_file, output_html, markdown_html
 
@@ -112,10 +113,11 @@ end
 Markdown source → HTML (live notebook + md cells). `interps` are the captured
 outputs of the cell's `{{ expr }}` blocks, spliced in document order. `prose` is applied to each
 markdown value spliced in, as the caller already applied it to the source (the live view's citation
-links, say), so spliced prose gets the same treatment as written prose.
+links, say), so spliced prose gets the same treatment as written prose. `caption` is the figure number
+of a cell with the `caption` tag: each of its blocks is then a caption (`_md_blocks`).
 """
-markdown_html(src::AbstractString; prose = identity) = _md_html(src, CellOutput[]; prose)
-markdown_html(src::AbstractString, interps; prose = identity) = _md_html(src, interps; prose)
+markdown_html(src::AbstractString; kw...) = _md_html(src, CellOutput[]; kw...)
+markdown_html(src::AbstractString, interps; kw...) = _md_html(src, interps; kw...)
 
 """
     output_html(cell) -> String
@@ -444,7 +446,7 @@ end
 # Other self-contained outputs (image / HTML / LaTeX / scalar) embed directly; echarts & interactive
 # tables emit a host placeholder (`.ichart`/`.itable` keyed by index) that the SPA hydrates from the
 # cell's collected `echarts`/`tables` — same order as here.
-function _md_html(src::AbstractString, interps = CellOutput[]; prose = identity)
+function _md_html(src::AbstractString, interps = CellOutput[]; prose = identity, caption = nothing)
     tmpl, exprs = _md_spliced(src, interps; prose)
     frags = String[]; ec = 0; tc = 0
     for i in 1:length(exprs)
@@ -492,17 +494,13 @@ function _md_html(src::AbstractString, interps = CellOutput[]; prose = identity)
             print(b, t)
         end
     end
-    s = String(take!(b))
-    p = CommonMark.Parser()
-    # Tables (GFM) and `!!! category "Title"` callouts — the latter is the syntax Julia authors
-    # already write in docstrings and Documenter, and the category is free-form, so a notebook can
-    # coin its own (`!!! answer`) and style it. Emits `.admonition.<category>` + `.admonition-title`.
-    enable!(p, CommonMark.TableRule())
-    enable!(p, CommonMark.AdmonitionRule())
-    # Pandoc `:::` fenced divs → `<div class=…>`. Slides lay out and build with them (`::: columns`,
-    # `::: {.column width="40%"}`, `::: step`, `::: incremental`); outside a deck they are plain divs.
-    enable!(p, CommonMark.FencedDivRule())
-    html = CommonMark.html(p(s))
+    # Each block of a kind gets its `<slate-…>` element (block_kinds.jl). The markdown values are in
+    # the source already, so this one call covers them. A `{{ }}` value alone in its paragraph is a
+    # figure when it draws a picture, a chart or a component.
+    isfig(i) = i <= length(frags) && (startswith(frags[i], "<div class=\"ichart\"") ||
+        (startswith(frags[i], "<div class=\"disp ") && !startswith(frags[i], "<div class=\"disp latex\"")))
+    s = _md_kinds(String(take!(b)); caption, figure = isfig)
+    html = CommonMark.html(_md_parser()(s))
     for (i, m) in enumerate(math)
         tex = m
         for j in 1:length(exprs)                                    # interpolations inside math → raw TeX

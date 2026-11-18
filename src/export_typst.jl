@@ -291,6 +291,16 @@ function _typst_preamble(title::AbstractString; style::AbstractString = "article
       if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), im) } else { im }
     }
     #let mdscope = (image: mdimage)
+    // The elements of the block kinds of markdown (`ReportRender._md_blocks`), as `html:` handlers of
+    // `cmarker.render`. A document draws an admonition as a box with its heading. Each other kind
+    // prints as its markdown does.
+    #let admonition(attrs, body) = block(width: 100%, inset: (x: 9pt, y: 7pt), radius: 3pt, fill: $(p.parbg), stroke: (left: 2pt + $(p.parlabel)), {
+      let h = attrs.at("heading", default: "")
+      if h != "" { text(weight: "bold", fill: $(p.parlabel), h); parbreak() }
+      body
+    })
+    #let mdhtml = (slate-admonition: admonition, slate-key-message: (attrs, body) => body, slate-caption: (attrs, body) => body,
+      slate-figure: (attrs, body) => body, slate-table: (attrs, body) => body)
     $(_CITE_SHOW)
     #let titleblock(t) = { align(center, text(size: $(st.titlesize), weight: "bold", fill: $(p.title), t)); v(2pt); line(length: 100%, stroke: 0.5pt + $(p.rule)); v(10pt) }
     #let metablock(title, subtitle, byline, abstract) = {
@@ -427,6 +437,47 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
         table(..f, columns: w.map(x => x / u * 1fr), ..children)
       }))
     }
+    // The paint of each block kind that has an element (`ReportRender._md_blocks`). `base-draw` holds
+    // one function for each kind. A function gets `it`, a dictionary with the `body` of the block and
+    // its attributes (`category` and `heading` of an admonition, `number` of a figure caption), and it
+    // reads the deck settings. A deck template gives its own function for a kind by its key:
+    // `#let draw = (caption: it => …)`. `draw-kind` says which function draws a block.
+    // A function paints and does not size. `fit` sizes a figure before `figure` gets it. The base
+    // sizes a table whatever paint `table` puts around it.
+    // `barbox` is a band with a bar on its left, as a CSS box with a left border: the bar has its
+    // width beside the padding. It has the gap between cells below it.
+    #let barbox(bar, w, fill, inset, radius, body) = block(width: 100%, radius: radius, clip: true,
+      above: settings.text.paragraph-after, below: settings.rhythm.cell-gap,
+      grid(columns: (w, 1fr), fill: (x, _) => if x == 0 { bar } else { fill }, [], block(width: 100%, inset: inset, body)))
+    #let base-draw = (
+      key-message: it => barbox(settings.key-message.bar-color, settings.key-message.bar-width, settings.key-message.fill,
+        (x: settings.key-message.pad-x, y: settings.key-message.pad-y), 0 * u, text(fill: settings.key-message.text-color, it.body)),
+      caption: it => {
+        set text(size: settings.caption.size, fill: settings.caption.color)
+        if "number" in it [#text(fill: settings.roles.fg, weight: "bold")[Figure #it.number.] ]
+        it.body
+      },
+      // `[admonition.<category>]` of the deck settings replaces the values of `[admonition]`.
+      admonition: it => {
+        let c = settings.admonition.at(it.at("category", default: ""), default: none)
+        let v = (accent: settings.admonition.accent, fill: settings.admonition.fill, title-color: settings.admonition.title-color,
+          bar-width: settings.admonition.bar-width, pad-x: settings.admonition.pad-x, pad-y: settings.admonition.pad-y,
+          radius: settings.admonition.radius) + if type(c) == dictionary { c } else { (:) }
+        let h = it.at("heading", default: "")
+        barbox(v.accent, v.bar-width, v.fill, (x: v.pad-x, y: v.pad-y), v.radius, {
+          if h != "" { text(fill: v.title-color, weight: "bold", h); parbreak() }
+          it.body
+        })
+      },
+      figure: it => box(radius: settings.figures.radius, clip: true, it.body),
+      table: it => {
+        set table(stroke: (x, y) => (bottom: TRULE + $(p.rule)),
+          fill: (x, y) => if y == 0 { settings.table.header-fill } else if calc.even(y) { settings.table.stripe-fill })
+        show table.cell.where(y: 0): set text(fill: settings.table.header-color, weight: "bold")
+        it.body
+      },
+    )
+    #let draw = (:)
     // `base-rhythm(body)` draws `body` with the vertical rhythm of the live base deck, from the deck
     // settings. The base `slide` puts it around `fit`; a template that draws its own pages can put it
     // around its `fit` too, or keep its own rules. Inside it, `mdcell` and `cellgap` (`RHYTHM`) draw
@@ -445,12 +496,12 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     //   (800, 750, 650). Typst sets a level-1 heading at 1.4em and a level-2 heading at 1.2em of the
     //   text around it, below any show rule, so those sizes divide by these factors. A level-2
     //   heading has the accent bar of the live deck.
-    // - A key message (a block quote) has the gap between cells below it. A code block has
+    // - A block quote has the gap between cells below it. A code block has
     //   `code.size` above and below it, as the margin of a live `pre`. Display math is at 1.4em with
     //   .8em above and 1em below it (the margin and the padding of a live `.katex-display`), inline
     //   math at 1.1em.
-    // - Tables take the structure and paint keys of `[table]`, and `base-table` sets their text size
-    //   and column widths.
+    // - Tables take the structure keys of `[table]`, and `base-table` sets their text size and column
+    //   widths. A table that has no `<slate-table>` element (a table in a list) takes the base paint.
     #let RHYTHM = state("slate-rhythm", false)
     #let base-rhythm(body) = { RHYTHM.update(true); context {
       let m(t, b) = measure(text(top-edge: t, bottom-edge: b, "x")).height / text.size
@@ -479,14 +530,11 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       show math.equation.where(block: true): set text(size: 1.4em)
       show math.equation.where(block: true): set block(above: 0.8em / 1.4, below: 1em / 1.4)
       show math.equation.where(block: false): set text(size: 1.1em)
-      set table(stroke: (x, y) => (bottom: TRULE + $(p.rule)),
-        inset: (x, y) => { let p = tinset(if y == 0 { settings.table.header-pad-y } else { settings.table.body-pad-y }); (x: settings.table.pad-x, top: p, bottom: p + TRULE) },
-        fill: (x, y) => if y == 0 { settings.table.header-fill } else if calc.even(y) { settings.table.stripe-fill })
+      set table(inset: (x, y) => { let p = tinset(if y == 0 { settings.table.header-pad-y } else { settings.table.body-pad-y }); (x: settings.table.pad-x, top: p, bottom: p + TRULE) })
       show table: set par(leading: (TL - settings.text.line-height) * 1em)
-      show table.cell.where(y: 0): set text(fill: settings.table.header-color, weight: "bold")
       show table.cell: set align(horizon)
       show table: base-table
-      body
+      (base-draw.table)((body: body))
     }; RHYTHM.update(false) }
     // Author-embedded markdown images stage into the doc root; resolve them relative to THIS file
     // (not cmarker's package dir, where its built-in image() looks) — passed to cmarker as scope.image.
@@ -506,7 +554,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
         return [#metadata((p: src, w: if w == none { none } else { mdlen(w) })) <slate-fig>]
       }
       let im = image(src, alt: alt, width: mdlen(w), height: mdlen(h))
-      if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), im) } else { im }
+      if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), [#box(im) <slate-figure>]) } else { im }
     }
     // Code in markdown as on the live deck: inline code at `CODE-INLINE` of its text, a code block at
     // `code.size` with its code at `CODE-INLINE` of that. Typst sets raw text at 0.8em of the text
@@ -518,6 +566,23 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // holds that space. `cellgap` is the gap between the cells of a slide.
     #let mdcell(body) = context if RHYTHM.get() { pad(x: 16 * u, { body; block(height: 0em, above: settings.text.paragraph-after) }) } else { body }
     #let cellgap = context if RHYTHM.get() { v(settings.rhythm.cell-gap) }
+    // `draw-kind` draws the block `it` of kind `k`. `draw` holds the function of each kind, and `own`
+    // the kinds for which the deck template gives the function. Inside `base-rhythm` each kind has its
+    // function. Outside it a deck template draws the slide with its own rules, so only its own
+    // functions apply: each other block is `plain`, the block as its markdown gives it.
+    #let draw-kind(draw, own, k, it, plain) = context if k in own or RHYTHM.get() { (draw.at(k))(it) } else { plain }
+    // The `html:` handlers of `cmarker.render` for the elements of the block kinds. The function of a
+    // key message gets the content of its block quote. A plain admonition is a block quote with its
+    // heading in bold. A figure gets its function when its size is known (the label `<slate-figure>`,
+    // see `drawfig`).
+    #let slate-html(draw, own) = (
+      slate-key-message: (attrs, body) => draw-kind(draw, own, "key-message", attrs + (body: { show quote.where(block: true): q => q.body; body }), body),
+      slate-caption: (attrs, body) => draw-kind(draw, own, "caption", attrs + (body: body), body),
+      slate-admonition: (attrs, body) => draw-kind(draw, own, "admonition", attrs + (body: body),
+        quote(block: true, { strong(attrs.at("heading", default: "")); parbreak(); body })),
+      slate-figure: (attrs, body) => body,
+      slate-table: (attrs, body) => draw-kind(draw, own, "table", attrs + (body: body), body),
+    )
     $(_CITE_SHOW)
     #let metablock(title, subtitle, byline, abstract) = align(center + horizon)[
       #text(size: 2.4em, weight: "bold", fill: $(p.title))[#title]
@@ -533,7 +598,8 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // width: a ratio of the column, or a length. With no `width`, the full size of a figure is the
     // natural size of the picture that the live deck shows (`natural-w`), at most its column. At
     // figure scale `f`, a figure is `f` of its full size, and at most `FIT.fig-cap` of the slide
-    // height. Outside `fit` it is drawn at `f = 1`.
+    // height. Outside `fit` it is drawn at `f = 1`. The sized picture has the label `<slate-figure>`:
+    // the rule for that label, after the deck template, gives it to `draw.figure`.
     #let figureimg(p, width: none) = [#metadata((p: p, w: width)) <slate-fig>]
     // The natural width in CSS px (1/96 in), which is `u` on the slide, of a PNG (its pixel width: a
     // browser does not read its density) or an SVG. A PDF figure (a Makie figure) shows on the live
@@ -546,7 +612,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       let n = measure(image(v.p))
       let nw = natural-w(v.p, n)
       let cw = if v.w != none { if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) } } else if nw == none { c.width } else { calc.min(c.width, nw * u) }
-      align(center, image(v.p, height: calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))))
+      align(center, [#box(image(v.p, height: calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width))))) <slate-figure>])
     })
     #show <slate-fig>: it => drawfig(it.value, 1)
     #let notefig(s) = block(width: 100%, inset: 19 * u, text(size: 0.7em, style: "italic", fill: $(p.parlabel), s))
@@ -643,6 +709,28 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
 
     """
 end
+
+# The Typst call that draws the markdown file `file` of the project. `mdhtml` holds the handlers of the
+# block-kind elements (`ReportRender._md_blocks`): the document preamble defines it, and the slides get
+# it from `_SLIDES_TAIL`.
+_md_render(file) = string("cmarker.render(read(\"", file, "\"), math: mathfn, scope: mdscope, html: mdhtml)")
+
+# The Typst text that Slate writes after the deck template of a slides project. At this point `draw`
+# holds the block-kind functions that the deck template gives (none with no template). The tail puts
+# them on the base functions and binds the result to the code that draws the blocks: the `html:`
+# handlers of the markdown (`mdhtml`) and the rule for a sized figure. A Typst function keeps the
+# definitions that it saw, so without the tail a function of the template does not reach the base
+# code. A key of `draw` that is no block kind gives a `(kind: "warning", about: "draw", key)` record
+# under `<slate>`.
+const _SLIDES_TAIL = """
+// ── Slate: bind `draw` ──
+#let own = draw.keys()
+#for k in own.filter(k => k not in base-draw) [#metadata((kind: "warning", about: "draw", key: k)) <slate>]
+#let draw = base-draw + draw
+#let mdhtml = slate-html(draw, own)
+#show <slate-figure>: it => draw-kind(draw, own, "figure", (body: it), it)
+
+"""
 
 # Citation rewriting. `cmarker` only honors a bare `[@key]` (it makes the whole bracket the
 # citation label), so Pandoc locators/forms break it. We rewrite citation syntax into a plain-text
@@ -798,59 +886,6 @@ end
 
 const _md_fence_block = ReportEngine._md_fence_block   # the one fence-source reconstruction (widgets.jl)
 
-# ── Admonitions → blockquotes ─────────────────────────────────────────────────────────────────────
-# The live renderer parses `!!! category "Title"` (CommonMark's `AdmonitionRule`) into a coloured
-# callout. `cmarker` is plain CommonMark and has no such rule, so left alone the marker would print
-# as the literal text "!!! answer" followed by the body as a CODE BLOCK — its four-space indent read
-# as one. Rewriting to a blockquote with a bold title keeps the structure and the visual set-off that
-# matter in print; the colour band is the one thing that doesn't survive.
-const _ADM_OPEN_RE = r"^(\s*)!!!\s+(\w+)(?:\s+\"([^\"]*)\")?\s*$"
-
-function _admonitions_to_quotes(src::AbstractString)
-    lines = split(String(src), '\n'; keepempty = true)
-    # Accumulate LINES and join at the end rather than printing: a source with no admonition in it
-    # must come back byte-identical, and `println`ing the final element of a `split` would invent a
-    # trailing newline that was never there.
-    out = String[]
-    i, n = 1, length(lines)
-    infence = false
-    while i <= n
-        ln = lines[i]
-        if occursin(r"^\s*(```|~~~)", ln)          # never touch fenced code
-            infence = !infence
-            push!(out, ln); i += 1; continue
-        end
-        m = infence ? nothing : match(_ADM_OPEN_RE, ln)
-        if m === nothing
-            push!(out, ln); i += 1; continue
-        end
-        cat  = m.captures[2]
-        title = m.captures[3] === nothing ? uppercasefirst(cat) : m.captures[3]
-        push!(out, "> **" * title * "**")
-        # The body is everything indented past the marker, blank lines included — the same rule
-        # `AdmonitionRule` continues on. One tab counts as the four columns CommonMark expands it to.
-        i += 1
-        body = String[]
-        while i <= n
-            l = lines[i]
-            if isempty(strip(l))
-                push!(body, ""); i += 1; continue
-            end
-            (startswith(l, "    ") || startswith(l, "\t")) || break
-            push!(body, startswith(l, "\t") ? l[nextind(l, 1):end] : l[5:end])
-            i += 1
-        end
-        # The blank line that separates the marker from its body is syntax, not content — as is any
-        # trailing run, so neither should become an empty quoted line.
-        while !isempty(body) && isempty(body[1]); popfirst!(body); end
-        while !isempty(body) && isempty(body[end]); pop!(body); end
-        isempty(body) || push!(out, ">")
-        for b in body; push!(out, isempty(b) ? ">" : "> " * b); end
-        push!(out, "")                              # blank line closes the quote against what follows
-    end
-    return join(out, "\n")
-end
-
 # ── Math delimiters ───────────────────────────────────────────────────────────────────────────────
 # KaTeX is configured (core.js) for FOUR spellings — `$…$`, `$$…$$`, `\(…\)`, `\[…\]` — but cmarker's
 # math hook only fires on the dollar forms, so the LaTeX-bracket ones used to reach the PDF as literal
@@ -877,10 +912,12 @@ function _normalize_math_delims(src::AbstractString; tex = identity)
 end
 
 # Markdown source with `{{ expr }}` interpolations resolved (scalars, a text/latex value's TeX, or a
-# component's captured figure), math delimiters normalized, admonitions lowered to blockquotes, and
-# citations rewritten to sentinels for the preamble's cite rule. `compfig(i)` returns the staged
-# filename for the i-th interpolation's component figure, or `nothing` — the caller owns staging
-# because only it has the project dir (see `_build_typst_project`).
+# component's captured figure), math delimiters normalized, each block of a kind in its `<slate-…>`
+# element (`ReportRender._md_blocks`; cmarker has no admonition rule, so the body of an admonition is
+# plain CommonMark there), and citations rewritten to sentinels for the preamble's cite rule.
+# `compfig(i)` returns the staged filename for the i-th interpolation's component figure, or
+# `nothing` — the caller owns staging because only it has the project dir (see
+# `_build_typst_project`). `fignum` is the figure number of a cell with the `caption` tag.
 #
 # `src` may be a FRAGMENT of the cell (a `---`-split slide chunk, or the body left after the hoisted
 # H1 was dropped). `_md_template` numbers a fragment's interpolations from 1, while `c.interp` and
@@ -888,7 +925,7 @@ end
 # that is `interpbase`. Get it wrong and the fragment silently renders an earlier one's value.
 function _md_for_typst(c::Cell, src::AbstractString = c.source; citekeys = Set{String}(),
                        figrefs = Dict{String,Tuple{Int,String}}(), compfig = _ -> nothing,
-                       interpbase::Integer = 0)
+                       interpbase::Integer = 0, fignum::Union{Nothing,Integer} = nothing)
     tmpl, exprs = ReportEngine._md_template(src)
     s = tmpl
     for i in 1:length(exprs)
@@ -897,8 +934,8 @@ function _md_for_typst(c::Cell, src::AbstractString = c.source; citekeys = Set{S
         s = replace(s, ReportEngine._interp_token(i) => _interp_typst_md(exprs[i], o, compfig(g)))
     end
     s = _normalize_math_delims(s)
-    s = _admonitions_to_quotes(s)
     s = _strip_deck_markup(s)
+    s = ReportRender._md_kinds(s; plain = true, caption = :caption in c.flags ? fignum : nothing)
     s = _plain_math_macros(s)
     return _rewrite_citations(s, citekeys; figrefs = figrefs)
 end
@@ -1029,7 +1066,7 @@ function _typst_table(spec; theme::AbstractString = "light")::String
                              _typ_str(ttl), "\")]\n")
     aligns = join((_typalign(_col_align(c)) for c in cols), ", ")
     if deck
-        print(io, "#[#set text(size: settings.table.text-size)\n#table(columns: ", ncol, ", align: (", aligns, ",),\n")
+        print(io, "#(mdhtml.slate-table)((:), [#set text(size: settings.table.text-size)\n#table(columns: ", ncol, ", align: (", aligns, ",),\n")
     else
         print(io, "#table(columns: ", ncol, ", inset: 5pt, align: (", aligns, "), stroke: 0.4pt + $(p.tablestroke),\n")
         # zebra: header shaded (row 0), odd body rows a subtle stripe
@@ -1042,7 +1079,7 @@ function _typst_table(spec; theme::AbstractString = "light")::String
         ri > maxr && break
         print(io, "  ", join([cell(ci <= length(r) ? r[ci] : nothing, cols[ci], fmts[ci]) for ci in 1:ncol], ", "), ",\n")
     end
-    print(io, deck ? ")\n]\n" : ")\n")
+    print(io, deck ? ")\n])\n" : ")\n")
     # accurate truncation: the wire ships at most `maxr` here AND a paged table ships only page 1,
     # so report against opts.nrows (the true total), not the shipped-row count.
     total = Int(get(opts, "nrows", length(rows)))
@@ -1244,8 +1281,8 @@ function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString
     if md !== nothing
         src = _normalize_math_delims(md; tex = _portable_tex)
         if _typst_typesets(:md, src)
-            write(joinpath(dir, base * ".md"), src)
-            print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: mdscope)\n")
+            write(joinpath(dir, base * ".md"), ReportRender._md_kinds(src; plain = true))
+            print(io, "#", _md_render(base * ".md"), "\n")
             return true
         end
     end
@@ -1319,8 +1356,8 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
     md = ReportRender._markdown_output(o)
     if md !== nothing
         # Prose: typeset as a markdown cell's would be, rather than rasterized as HTML.
-        write(joinpath(dir, base * "_out.md"), _admonitions_to_quotes(_normalize_math_delims(md)))
-        print(io, "#cmarker.render(read(\"", base, "_out.md\"), math: mathfn, scope: mdscope)\n\n")
+        write(joinpath(dir, base * "_out.md"), ReportRender._md_kinds(_normalize_math_delims(md); plain = true))
+        print(io, "#", _md_render(base * "_out.md"), "\n\n")
         return
     end
     if texts && isempty(o.display) && !isempty(o.value_repr)
@@ -1448,6 +1485,13 @@ _fit_warnings(records; unit::AbstractString = "Slide") =
     ["$unit $(r["slide"]) does not fit at the smallest text size: its end runs past the page bottom."
      for r in records if r isa AbstractDict && get(r, "kind", "") == "fit" && get(r, "at_floor", false) === true]
 
+# An export warning for each key of the `draw` dictionary of a deck template that is no block kind
+# (the warning records of `_SLIDES_TAIL`).
+_draw_warnings(records) =
+    ["The deck template sets `draw.$(r["key"])`, which is not a block kind (" * join(ReportRender._WRAPPED_KINDS, ", ") *
+     "). Slate does not use it."
+     for r in records if r isa AbstractDict && get(r, "kind", "") == "warning" && get(r, "about", "") == "draw"]
+
 """
     export_pdf(nb; include_source=true, style="article", columns=1,
                theme="light", code="normal", body="normal") -> Vector{UInt8}
@@ -1475,8 +1519,11 @@ function _export_pdf_report(nb::LiveNotebook; kwargs...)
     try
         typ = joinpath(dir, "doc.typ"); pdf = joinpath(dir, "out.pdf")
         _typst_compile(typ, pdf)
-        warns = get(kwargs, :layout, "") == "slides" ?
-            vcat(notebook_deck_settings(nb).warnings, _fit_warnings(_typst_query(typ, "<slate>"); unit = "Page")) : String[]
+        warns = String[]
+        if get(kwargs, :layout, "") == "slides"
+            recs = _typst_query(typ, "<slate>")
+            warns = vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; unit = "Page"))
+        end
         return read(pdf), warns
     finally
         rm(dir; recursive = true, force = true)
@@ -2105,7 +2152,7 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
             if !isempty(strip(fm.abstract))
                 write(joinpath(dir, "abstract.md"),
                       _stage_typst_md_media(_rewrite_citations(fm.abstract, citekeys), dir, "abstract", _proj_root(nb); sizes = mediasz))
-                absarg = "cmarker.render(read(\"abstract.md\"), math: mathfn, scope: mdscope)"
+                absarg = _md_render("abstract.md")
             end
             print(io, "#metablock(", arg(fm.title), ", ", arg(fm.subtitle), ", ", arg(fm.byline), ", ", absarg, ")\n\n")
         end
@@ -2127,6 +2174,7 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                 src, ibase = c.id == fm.titlecell ? _body_after_hoisted_h1(c) : (c.source, 0)
                 md = _md_for_typst(c, src; citekeys = citekeys, figrefs = figidx.labels,
                                    compfig = _compfig_stager(c, dir, base, compfigs, mediasz),
+                                   fignum = get(figidx.numbers, c.id, nothing),
                                    interpbase = ibase)
                 md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = mediasz)   # author-embedded images → staged files
                 if isempty(strip(md))
@@ -2134,10 +2182,9 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                 else
                     write(joinpath(dir, base * ".md"), md)
                     if haskey(figidx.numbers, c.id)  # a caption cell → numbered "Figure N." block
-                        print(io, "#figcaption(\"Figure ", figidx.numbers[c.id],
-                              "\", cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: mdscope))\n\n")
+                        print(io, "#figcaption(\"Figure ", figidx.numbers[c.id], "\", ", _md_render(base * ".md"), ")\n\n")
                     else
-                        print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: mdscope)\n\n")
+                        print(io, "#", _md_render(base * ".md"), "\n\n")
                     end
                 end
             else
@@ -2274,11 +2321,12 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
         end
         md = _md_for_typst(c, src; citekeys = citekeys,
                            compfig = _compfig_stager(c, dir, base, compfigs, sizes),
-                           interpbase = frag.interpbase)
+                           interpbase = frag.interpbase,
+                           fignum = :caption in c.flags ? get(figure_index(nb.report).numbers, c.id, nothing) : nothing)
         md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = sizes)   # author-embedded images → staged files
         isempty(strip(md)) && return
         write(joinpath(dir, base * ".md"), md)
-        print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: mdscope)\n\n")
+        print(io, "#", _md_render(base * ".md"), "\n\n")
     else
         if show_source && !(:hidecode in c.flags) && isempty(c.binds) && !_is_web_cell(c) && !isempty(strip(c.source))
             write(joinpath(dir, base * ".jl"), c.source)
@@ -2343,6 +2391,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
         io = IOBuffer()
         print(io, _typst_preamble_slides(nb.report.title; syntax, code))
         _apply_deck_template!(io, dir, notebook_deck_template(nb))
+        print(io, _SLIDES_TAIL)
         cells = filter(c -> renders(c.kind), nb.report.cells)
         # Role-tagged metadata → a dedicated title slide (metablock); hoisted title/abstract cells
         # are dropped from the body slides.
@@ -2363,8 +2412,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             md = _md_for_typst(bycell[t.cell], t.text; citekeys = citekeys, interpbase = t.interpbase)
             write(joinpath(dir, "s$(si)title.md"),
                   _stage_typst_md_media(md, dir, "s$(si)title", _proj_root(nb); sizes = mediasz))
-            titles[si] = "title: heading(level: $(t.depth), cmarker.render(read(\"s$(si)title.md\"), " *
-                         "math: mathfn, scope: mdscope))"
+            titles[si] = "title: heading(level: $(t.depth), $(_md_render("s$(si)title.md")))"
         end
         for (si, sl) in enumerate(deck)
             frags = [(cell = bycell[b.cell], src = b.src, interpbase = b.interpbase) for b in sl.frags]
@@ -2413,7 +2461,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                 isempty(strip(ntext)) && continue
                 write(joinpath(dir, "notes$(si).md"), ntext)
                 print(io, "#slide(", join(filter(!isempty, ["layout: \"notes\"", titles[si], "n: $(si)"]), ", "), ")[\n",
-                      "#cmarker.render(read(\"notes$(si).md\"), math: mathfn, scope: mdscope)\n]\n\n")
+                      "#", _md_render("notes$(si).md"), "\n]\n\n")
             end
         end
         write(joinpath(dir, "media.json"), JSON.json(mediasz))   # always present: the preamble reads it

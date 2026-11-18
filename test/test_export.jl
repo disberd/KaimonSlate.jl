@@ -2099,31 +2099,30 @@ end
 
 # ── PDF export: admonitions ───────────────────────────────────────────────────────────────────────
 # `cmarker` (the Typst markdown renderer) is plain CommonMark and has no `!!!` rule, so the marker
-# would print literally and the four-space body would typeset as a CODE BLOCK. `_admonitions_to_quotes`
-# lowers each callout to a titled blockquote before the source reaches it.
-@testset "typst export lowers admonitions to titled blockquotes" begin
-    f = NS._admonitions_to_quotes
+# would print literally and the four-space body would typeset as a CODE BLOCK. The Typst export
+# gives it each admonition as a `<slate-admonition>` element with a plain CommonMark body
+# (`ReportRender._md_kinds` with `plain = true`), which a handler of the preamble draws.
+@testset "typst export writes an admonition as an element with a plain body" begin
+    f(s) = KaimonSlate.ReportRender._md_kinds(s; plain = true)
 
-    out = f("!!! answer \"Answer (a)\"\n\n    First para.\n\n    Second para.\n\nAfter.\n")
-    @test occursin("> **Answer (a)**", out)
-    @test occursin("> First para.", out)
-    @test occursin("> Second para.", out)
-    @test occursin("\nAfter.", out)                  # prose after the box leaves the quote
-    @test !occursin("!!!", out)
-    @test !occursin("    First para.", out)          # de-indented, so it can't read as a code block
+    @test f("!!! answer \"Answer (a)\"\n\n    First para.\n\n    Second para.\n\nAfter.\n") ==
+          "<slate-admonition category=\"answer\" heading=\"Answer (a)\">\n\nFirst para.\n\nSecond para.\n\n</slate-admonition>\n\nAfter.\n"
 
     # No title → the category, capitalised.
-    @test occursin("> **Note**", f("!!! note\n\n    Body.\n"))
+    @test occursin("heading=\"Note\"", f("!!! note\n\n    Body.\n"))
 
     # Pluto writes admonition bodies with a TAB; CommonMark expands it to the same four columns.
-    @test occursin("> Tabbed body.", f("!!! tip \"T\"\n\n\tTabbed body.\n"))
+    @test occursin(">\n\nTabbed body.\n\n<", f("!!! tip \"T\"\n\n\tTabbed body.\n"))
 
     # A `!!!` inside a fence is code, not a callout.
     fenced = "```julia\n!!! not a callout\n```\n"
     @test f(fenced) == fenced
 
     # Math rides through untouched for mitex.
-    @test occursin("> Rate \$U>U_n\$ holds.", f("!!! answer \"A\"\n\n    Rate \$U>U_n\$ holds.\n"))
+    @test occursin("\nRate \$U>U_n\$ holds.\n", f("!!! answer \"A\"\n\n    Rate \$U>U_n\$ holds.\n"))
+
+    # An admonition inside an admonition gets its element too.
+    @test count("<slate-admonition", f("!!! note\n    Outer.\n\n    !!! tip\n        Inner.\n")) == 2
 
     # Nothing to do → the source is unchanged.
     @test f("Just prose.\n") == "Just prose.\n"
