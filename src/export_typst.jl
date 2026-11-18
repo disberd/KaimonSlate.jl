@@ -563,8 +563,11 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #let mdscope = (image: mdimage, raw: mdraw)
     // A markdown cell has the padding of a live markdown cell, 16 u on each side; the slide title has it
     // too. It keeps the space below its last block, as a live cell does; the empty block at its end
-    // holds that space. `cellgap` is the gap between the cells of a slide.
-    #let mdcell(body) = context if RHYTHM.get() { pad(x: 16 * u, { body; block(height: 0em, above: settings.text.paragraph-after) }) } else { body }
+    // holds that space. A cell that ends with a key message, an admonition or a table is `tight`: the
+    // live deck puts no space below such a block at the end of a cell, so the empty block is left out
+    // (Typst drops the space below the last block of a container). `cellgap` is the gap between the
+    // cells of a slide.
+    #let mdcell(body, tight: false) = context if RHYTHM.get() { pad(x: 16 * u, { body; if not tight { block(height: 0em, above: settings.text.paragraph-after) } }) } else { body }
     #let cellgap = context if RHYTHM.get() { v(settings.rhythm.cell-gap) }
     // `draw-kind` draws the block `it` of kind `k`. `draw` holds the function of each kind, and `own`
     // the kinds for which the deck template gives the function. Inside `base-rhythm` each kind has its
@@ -2290,14 +2293,16 @@ end
 # that builds one inline rather than pushing it through a `Vector{SlideFrag}`.
 # A markdown cell prints inside one `mdcell`, which gives it the padding of a live markdown cell;
 # `incell` is true for the parts of a cell that a `:::: columns` group splits.
+# Returns `true` when the markdown that it printed ends with a key message, an admonition or a table.
+# On the live deck such a block has no space below it at the end of its cell, so the cell is `tight`.
 function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false)
     c, srcoverride = frag.cell, frag.src     # `frag.src` is a per-frag SOURCE override (String/nothing), NOT the themed-render Bool `override`
     if is_prose(c.kind) && !incell
         cio = IOBuffer()
-        _emit_slide_frag!(cio, dir, base, nb, frag; theme, charttheme, override, show_source, include_params, citekeys,
-                          outputs, sizes, compfigs, incell = true)
-        position(cio) == 0 || print(io, "#mdcell[\n", String(take!(cio)), "]\n\n")
-        return
+        tight = _emit_slide_frag!(cio, dir, base, nb, frag; theme, charttheme, override, show_source, include_params, citekeys,
+                                  outputs, sizes, compfigs, incell = true)
+        position(cio) == 0 || print(io, tight ? "#mdcell(tight: true)[\n" : "#mdcell[\n", String(take!(cio)), "]\n\n")
+        return false
     end
     if is_prose(c.kind)
         src = srcoverride === nothing ? c.source : srcoverride
@@ -2305,28 +2310,31 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
         if !(length(pieces) == 1 && pieces[1] isa AbstractString)    # a `:::: columns` group splits the cell
             kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, compfigs, incell)
             ib = frag.interpbase     # interpolations are numbered across the cell, so each piece starts after the last
+            tight = false
             for (k, p) in enumerate(pieces)
                 pbase = string(base, "p", k)
                 if p isa AbstractString
-                    _emit_slide_frag!(io, dir, pbase, nb, (cell = c, src = String(p), interpbase = ib); kw...)
+                    tight = _emit_slide_frag!(io, dir, pbase, nb, (cell = c, src = String(p), interpbase = ib); kw...)
                     ib += _md_interp_count(p)
                 else
+                    tight = false
                     _print_slidecols(io, p.widths) do j
                         _emit_slide_frag!(io, dir, string(pbase, "c", j), nb, (cell = c, src = p.cols[j], interpbase = ib); kw...)
                         ib += _md_interp_count(p.cols[j])
                     end
                 end
             end
-            return
+            return tight
         end
         md = _md_for_typst(c, src; citekeys = citekeys,
                            compfig = _compfig_stager(c, dir, base, compfigs, sizes),
                            interpbase = frag.interpbase,
                            fignum = :caption in c.flags ? get(figure_index(nb.report).numbers, c.id, nothing) : nothing)
         md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = sizes)   # author-embedded images → staged files
-        isempty(strip(md)) && return
+        isempty(strip(md)) && return false
         write(joinpath(dir, base * ".md"), md)
         print(io, "#", _md_render(base * ".md"), "\n\n")
+        return occursin(r"</slate-(?:key-message|admonition|table)>\s*$", md)
     else
         if show_source && !(:hidecode in c.flags) && isempty(c.binds) && !_is_web_cell(c) && !isempty(strip(c.source))
             write(joinpath(dir, base * ".jl"), c.source)
@@ -2337,7 +2345,7 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
                       outputs = outputs, compfigs = compfigs)
         print(io, "\n")
     end
-    return
+    return false
 end
 
 # Write a deck template's files into the project `dir` and append its source to `io`, after the base

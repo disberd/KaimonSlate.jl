@@ -513,6 +513,25 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
     end
 
+    # A key message, an admonition or a table at the end of a markdown cell has no space of its own
+    # below it, as on the live deck: the next cell starts one cell gap below it.
+    @testset "the base PDF: a cell that ends with a key message or a table" begin
+        mark(k) = "<!--raw-typst #context [#metadata(here().position().y.pt()) <$k>]-->"
+        nb = _mknb("#%% md id=a\n## A\n\n> Key$(mark("k1")) message.\n\n#%% md id=b\nNext$(mark("k2")) cell.\n\n" *
+                   "#%% md id=c\n## B\n\n| a |\n|---|\n| 1 |\n\n#%% md id=d\nNext cell.\n")
+        dir = NS._build_slides_project(nb)
+        try
+            doc = joinpath(dir, "doc.typ")
+            y(k) = only(NS._typst_query(doc, "<$k>")) / (720 / 1920)      # in u
+            s = NS.deck_settings("", "").values
+            line = s["text"]["size"].value * s["text"]["line-height"]
+            @test y("k2") - y("k1") ≈ line + s["key-message"]["pad-y"].value + s["rhythm"]["cell-gap"].value atol = 0.5
+            @test count("#mdcell(tight: true)[", read(doc, String)) == 2  # the cell that ends with the table too
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
     # The base deck font is Inter in the PDF too: the project carries the shipped files, and Typst
     # embeds them on a machine that has no Inter of its own.
     @testset "the base slides PDF is set in the shipped Inter" begin
@@ -646,10 +665,10 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
         tie(r) = (1 + r["s"]) / 2
         fit, cap, recs = query("16:9")
-        @test sort(collect(keys(fit))) == 1:18              # one page per slide: no slide breaks
-        tall, atfloor, fig = fit[17], fit[13], fit[15]      # the added tall slide, fixture "…at the floor"
+        @test sort(collect(keys(fit))) == 1:20              # one page per slide: no slide breaks
+        tall, atfloor, fig = fit[19], fit[13], fit[17]      # the added tall slide, fixture "…at the floor"
         @test 0.62 <= tall["s"] < 1 && tall["f"] >= tie(tall) && !tall["at_floor"]
-        @test fit[18]["s"] < 1 && !fit[18]["at_floor"]      # the table shrinks with the text
+        @test fit[20]["s"] < 1 && !fit[20]["at_floor"]      # the table shrinks with the text
         @test atfloor["at_floor"] && atfloor["s"] == 0.62
         @test count(r -> r["at_floor"], recs) == 1
         @test 0.62 <= fig["s"] < 1 && tie(fig) <= fig["f"] < 1 && !fig["at_floor"]   # the figure shrinks less than the text
