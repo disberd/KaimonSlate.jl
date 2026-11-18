@@ -1428,10 +1428,13 @@ body.wrap-output .output pre { white-space:pre-wrap; word-break:break-word; }
 /* The elements of the block kinds (`<slate-key-message>`, `<slate-caption>`, `<slate-admonition>`,
    `<slate-figure>`, `<slate-table>`, written by block_kinds.jl around a block) make a box only on a
    slide. Here a block looks the same with and without its element. The two rules above reach the
-   block through its element; `:where` keeps their specificity. */
-slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table { display:contents; }
-.md > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table):first-child) > :first-child { margin-top:0; }
-.md > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table):last-child) > :last-child { margin-bottom:0; }
+   block through its element; `:where` keeps their specificity. The elements of the regions of a title
+   slide (`<slate-subtitle>`, `<slate-byline>`, `<slate-abstract>`, written by `_title_cell`) do the
+   same. */
+slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table,
+slate-subtitle, slate-byline, slate-abstract { display:contents; }
+.md > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table, slate-subtitle, slate-byline, slate-abstract):first-child) > :first-child { margin-top:0; }
+.md > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table, slate-subtitle, slate-byline, slate-abstract):last-child) > :last-child { margin-bottom:0; }
 .md h1 { font-size:1.7rem; border-bottom:1px solid var(--border); padding-bottom:.2em; }
 .md table { border-collapse:collapse; } .md td,.md th { border:1px solid var(--border); padding:4px 10px; }
 /* A `---` in prose. Unstyled it falls back to the browser's `1px inset grey`, which is a different
@@ -3160,7 +3163,8 @@ body.presenting { overflow: hidden; }
 .slide-title + .slide-body > .cell:first-child .md { padding-top: 0; }
 .slide-title + .slide-body > .cell:first-child .md > :first-child,
 .slide-title + .slide-body > .cell:first-child .md > :first-child > :first-child { margin-top: 0; }
-.slide-title.role-title + .slide-body > .cell:first-child .md > :is(h2, h3):first-child { margin-top: .08em; }
+.slide-title.role-title + .slide-body > .cell:first-child .md > :is(h2, h3):first-child,
+.slide-title.role-title + .slide-body > .cell:first-child .md > slate-subtitle:first-child > :is(h2, h3) { margin-top: .08em; }
 .slide-body { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: flex-start;
   gap: var(--deck-rhythm-cell-gap); overflow: hidden; }
 .slide-body.scroll { overflow-y: auto; }
@@ -3285,7 +3289,8 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide :where(.md, .markdown) blockquote > :last-child { margin-bottom: 0; }
 /* Block kinds. On a slide the element of a block is a box, so that a build step or the spotlight can
    show and hide the block. The block in it takes the paint of the deck settings. */
-.deck-slide :is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table) { display: block; }
+.deck-slide :is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table,
+  slate-subtitle, slate-byline, slate-abstract) { display: block; }
 /* Key message: a band with a bar on its left. */
 .deck-slide :where(slate-key-message) > blockquote { padding: var(--deck-key-message-pad-y) var(--deck-key-message-pad-x);
   background: var(--deck-key-message-fill); border: none;

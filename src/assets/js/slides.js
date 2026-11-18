@@ -93,7 +93,11 @@
     const md = cell.querySelector('.md'), h = md && md.children[0];
     if (!_isHeading(h)) return;                      // not drawn yet, or already moved
     const box = t || document.createElement('div');
-    if (!t) { box.className = 'slide-title md'; slide.insertBefore(box, slide.querySelector('.slide-body')); }
+    if (!t) {
+      box.className = 'slide-title md';
+      box.dataset.deckRegion = 'title';              // the title region of the slide, for the layout checks
+      slide.insertBefore(box, slide.querySelector('.slide-body'));
+    }
     box.classList.toggle('role-title', cell.classList.contains('role-title'));   // keeps the document-title look
     slide._titleHome = { h, parent: md, next: h.nextSibling };
     [...box.children].forEach(c => c.remove());
