@@ -1307,6 +1307,22 @@ end
     end
 end
 
+# A code cell that stopped with an error and a `{{ }}` that threw give one export warning each, with
+# the slide and the cell, in the slides PDF and in the deck value of an exporter. A `{{ }}` of a title
+# counts too.
+@testset "an error on a slide gives an export warning" begin
+    nb = _hooknb("#%% md id=ea\n## Errors\n\nText {{ slate_no_such_name }} and {{ 1 + 1 }}.\n\n#%% code id=ec\nerror(\"boom\")\n\n" *
+                 "#%% md id=eb\n## Fine {{ slate_no_title }}\n\n{{ 2 + 2 }}\n\n#%% md id=ok\n## Clean\n\n{{ 3 + 3 }}\n")
+    w = String[]
+    NS.exporter_deck(nb; warnings = w)
+    @test length(w) == 3
+    @test startswith(w[1], "Slide 1, cell ea: `{{ slate_no_such_name }}` stopped with an error, so the export leaves its value out: ") &&
+          occursin("UndefVarError", w[1])
+    @test startswith(w[2], "Slide 1, cell ec: the cell stopped with an error, so its output is the error: ") && occursin("boom", w[2])
+    @test startswith(w[3], "Slide 2, cell eb: `{{ slate_no_title }}` stopped with an error")
+    @test issubset(w, last(NS._export_pdf_report(nb; layout = "slides")))
+end
+
 # A markdown video or audio file of the project is a figure whose form is the bytes of the file, for an
 # exporter that asks for its MIME type, in a markdown cell and in a markdown output. The markdown keeps
 # the alt text, and the files of the slides project have no media mark. A file over the cap warns.

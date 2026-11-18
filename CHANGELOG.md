@@ -260,6 +260,10 @@ were written when they went out. They are marked.
   whole compile on it with "file not found". The export shows the alt text of the image in its place,
   or its address when it has no alt text, and gives an export warning with the cell and the image. An
   image in code stays code.
+- A cell on a slide that stopped with an error, and a `{{ }}` on a slide that threw, give an export
+  warning with the slide, the cell and the first line of the error, in the PDF deck and for an
+  exporter. The export left the value of the `{{ }}` out with no message before, so a slide could
+  lose its text silently.
 
 ## [2.2.0] - 2026-11-16
 

@@ -1872,6 +1872,31 @@ _slides_warnings(nb::LiveNotebook, recs, figwarns) =
     vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; unit = "Page"),
          _region_warnings(recs, deck_canvas(String(get(nb.report.meta, "slideratio", "16:9")))), figwarns)
 
+# One export warning for each part of slide `si` that stopped with an error: a code cell whose output
+# is an error, and a `{{ }}` of a markdown cell that threw (the export leaves its value out). `parts`
+# holds `(cell, src, interpbase)` as the fragments of `slide_deck` do; `src === nothing` is the whole
+# cell.
+function _error_warnings!(warnings::Vector{String}, si::Integer, parts)
+    line(e) = (l = first(split(strip(ReportEngine.strip_sgr(e)), '\n')); length(l) > 120 ? first(l, 119) * "…" : l)
+    for (c, src, ib) in parts
+        if is_prose(c.kind)
+            exprs = ReportEngine._md_template(something(src, c.source))[2]
+            for (i, e) in enumerate(exprs)
+                o = get(c.interp, ib + i, nothing)
+                (o === nothing || o.exception === nothing) && continue
+                f = ReportEngine._fence_call(e)
+                what = f === nothing ? string("`{{ ", length(strip(e)) > 60 ? first(strip(e), 59) * "…" : strip(e), " }}`") :
+                       string("the `", f.lang, "` code block")
+                push!(warnings, string("Slide ", si, ", cell ", c.id, ": ", what,
+                                       " stopped with an error, so the export leaves its value out: ", line(o.exception)))
+            end
+        elseif c.output !== nothing && c.output.exception !== nothing
+            push!(warnings, string("Slide ", si, ", cell ", c.id, ": the cell stopped with an error, so its output is the error: ",
+                                   line(c.output.exception)))
+        end
+    end
+end
+
 """
     export_pdf(nb; include_source=true, style="article", columns=1,
                theme="light", code="normal", body="normal") -> Vector{UInt8}
@@ -3128,6 +3153,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             meta = string("metablock(", arg(fm.title), ", ", arg(fm.subtitle), ", ", arg(fm.byline), ", ", arg(fm.abstract), ")")
             print(io, "#SUBLEVEL.update(", fm.sublevel, ")\n")   # the heading level of the subtitle, for `metablock`
             print(io, "#slide(layout: \"title\", ", position(rio) == 0 ? meta : string("metarest(", meta, ", [\n", String(take!(rio)), "])"), ")\n\n")
+            haskey(bycell, fm.rolecell) && _error_warnings!(warnings, tsi, [(bycell[fm.rolecell], nothing, 0)])
             push!(plan.pages, tsi)
             for (name, text) in (("title", fm.title), ("subtitle", fm.subtitle), ("byline", fm.byline), ("abstract", fm.abstract))
                 isempty(strip(text)) || get!(plan.texts, (tsi, name), String(text))
@@ -3146,6 +3172,9 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
         end
         for (si, sl) in enumerate(deck)
             frags = [(cell = bycell[b.cell], src = b.src, interpbase = b.interpbase) for b in sl.frags]
+            parts = Any[(f.cell, f.src, f.interpbase) for f in frags]
+            sl.title === nothing || pushfirst!(parts, (bycell[sl.title.cell], sl.title.text, sl.title.interpbase))
+            _error_warnings!(warnings, si, parts)
             (isempty(frags) && isempty(titles[si])) && continue
             args = filter(!isempty, [sl.layout === nothing ? "" : "layout: \"$(_typ_str(sl.layout))\"", titles[si]])
             print(io, isempty(args) ? "#slide[\n" : "#slide($(join(args, ", ")))[\n")
