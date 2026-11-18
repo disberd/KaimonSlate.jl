@@ -1356,6 +1356,38 @@ end
     end
 end
 
+# A minimal MP4 file: a sound track (0 × 0) and a video track of `w` × `h` px, each with its `tkhd` box.
+function _mp4(w, h)
+    bx(t, p) = vcat(reinterpret(UInt8, [hton(UInt32(8 + length(p)))]), Vector{UInt8}(t), p)
+    trak(w, h) = bx("trak", bx("tkhd", vcat(zeros(UInt8, 76), reinterpret(UInt8, hton.(UInt32[w << 16, h << 16])))))
+    return vcat(bx("ftyp", Vector{UInt8}("isom")), bx("moov", vcat(trak(0, 0), trak(w, h))))
+end
+
+# A markdown video or audio file alone in its paragraph has the box of the live deck, in the slides PDF
+# and in the deck value: a video its natural size (the `tkhd` box of the file), or 300 × 150 when the
+# file gives none; an audio file the 300 × 54 u of the live audio controls. Each is in the centre of its
+# column. The PDF draws a placeholder with the alt text, else the file name.
+@testset "slides PDF: a video or audio file has the box of the live deck" begin
+    root = mktempdir()
+    write(joinpath(root, "wide.mp4"), _mp4(1280, 720))
+    write(joinpath(root, "std.mp4"), _mp4(640, 480))
+    write(joinpath(root, "nosize.mp4"), "not an mp4")
+    write(joinpath(root, "talk.mp3"), "mp3 bytes")
+    @test NS._mp4_size(joinpath(root, "wide.mp4")) == (1280.0, 720.0)
+    @test NS._mp4_size(joinpath(root, "nosize.mp4")) === nothing
+    nb = _hooknb("#%% md id=v\n## V\n\n![The wide clip](wide.mp4)\n\n#%% md id=s\n## S\n\n![](std.mp4)\n\n" *
+                 "#%% md id=n\n## N\n\n![](nosize.mp4)\n\n#%% md id=a\n## A\n\n![The sound](talk.mp3)\n")
+    nb.report.meta["assetbase"] = root
+    boxes = [only(b["box"] for b in s["blocks"] if b["kind"] == "figure") for s in NS.exporter_deck(nb)["slides"]]
+    # The column of a markdown cell of the base deck at 16:9 is 1648 u wide, from x = 136.
+    want = [(320, 1280, 720), (640, 640, 480), (810, 300, 150), (810, 300, 54)]
+    @test all(isapprox.([b[k] for b in boxes, k in ("x", "w", "h")], [w[i] for w in want, i in 1:3]; atol = 0.01))
+    f = tempname() * ".pdf"
+    write(f, NS.export_pdf(nb; layout = "slides"))
+    t = try read(`pdftotext $f -`, String) finally rm(f) end
+    @test all(s -> occursin(s, t), ("The wide clip", "std.mp4", "nosize.mp4", "The sound"))
+end
+
 # The base slides PDF marks list items as the live deck does: `•`, then `◦`, then `▪`.
 @testset "slides PDF: the list markers of the live deck" begin
     f = tempname() * ".pdf"

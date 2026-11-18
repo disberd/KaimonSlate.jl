@@ -1516,9 +1516,11 @@ slate-subtitle, slate-byline, slate-abstract { display:contents; }
 .md .disp.img img { max-width:min(100%, var(--fig-max, 980px)); height:auto; border-radius:4px; }       /* {{ plot }} */
 /* An image (or dropped clip) alone in its paragraph is a figure — centred, like a `{{ plot }}`. One
    sitting in a run of prose stays inline where the author put it. An `{align=…}`/`{width=…}` block
-   writes an inline style, which outranks this. */
+   writes an inline style, which outranks this. An audio element keeps the height of the browser's
+   controls: with `height:auto` it is 0 high and the controls do not show. */
 .md p > img:only-child, .md p > video:only-child, .md p > audio:only-child {
-  display:block; margin-inline:auto; max-width:100%; height:auto; }
+  display:block; margin-inline:auto; max-width:100%; }
+.md p > img:only-child, .md p > video:only-child { height:auto; }
 .md .ichart { height:300px; margin:8px 0; }                                 /* {{ echart(…) }} */
 .md .itable { margin:8px 0; display:block; }                                /* {{ slate_table(…) }} */
 .srcedit { padding:4px 6px; }
@@ -3249,6 +3251,9 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
   max-height: var(--figcap); height: auto; border-radius: var(--deck-figures-radius); }
 .deck-slide :is(.output, .md, .snap) :is(img, video) { max-width: 100%; }
 .deck-slide :is(.output, .md, .snap) :is(img, video)[style*="--fitw"] { max-width: min(100%, var(--fitw)) !important; }
+/* An audio clip has the size of the browser's audio controls at `--u` 1 (300 × 54 CSS pixels in
+   Chrome), in `u`, so the slides PDF can give it the same box. */
+.deck-slide .md audio { width: calc(var(--u) * 300); height: calc(var(--u) * 54); }
 
 /* Typography: one scale, in `em` of the body size, so `--shrink` scales all of it together. A markdown
    output (`.markdown`) is prose and takes the same rhythm as a markdown cell. The body's `gap` is the

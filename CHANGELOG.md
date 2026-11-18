@@ -112,7 +112,8 @@ were written when they went out. They are marked.
   exporter as a figure block with one form: the bytes of the file under the MIME type of its
   extension, when the `figure_mimes` of the exporter has that type. The markdown of the block holds the
   alt text. A file larger than 256 MiB gives no form and an export warning; a missing file gives the
-  warning of a missing image. The PDF exports do not change: they still show the alt text.
+  warning of a missing image. The box of the block is the box that the live deck gives the clip (see
+  Visible changes).
 
 ### Changed
 
@@ -252,6 +253,16 @@ were written when they went out. They are marked.
   `s2f1b2.md`), not one for each cell, and each block is in a `#blk(…)[…]` call. The markdown output
   of a code cell (a `Markdown.MD` value) splits into blocks by the same rules. The pages do not
   change.
+- In the PDF deck a markdown video or audio file alone in its paragraph (`![a clip](clip.mp4)`) has the
+  box that the live deck gives it, with a placeholder in it: a frame, a play mark and the alt text,
+  else the file name. It showed one line of alt text. A video has its natural size, from the `tkhd`
+  box of an MP4 or QuickTime file (300 × 150 when the file gives none, as on the live deck), under the
+  width rule, the figure cap and the fit of a picture. An audio file is 300 × 54 u. An exporter gets
+  this box as the box of the figure block. The document PDF still shows the alt text.
+- An audio file from image syntax (`![](talk.mp3)`) alone in its paragraph shows its controls in the
+  notebook and on the live deck. The rule that centres a figure gave it `height: auto`, so it was 0
+  high and the controls did not show. On the live deck it is 300 × 54 u, the size of the audio
+  controls of Chrome at `--u` 1, so the PDF deck can give it the same box.
 
 ### Fixed
 

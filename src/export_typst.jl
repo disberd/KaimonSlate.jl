@@ -748,6 +748,10 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #let MEDIASZ = json("media.json")
     #let mdlen(e) = if e == none { auto } else if e.at(1) == "%" { e.at(0) * 1% } else if e.at(1) == "em" { e.at(0) * 1em } else { e.at(0) * 1pt }
     #let mdalign(s) = if s == "left" { left } else if s == "right" { right } else { center }
+    // `figrec(body)` gives `body` the label `<slate-figure>` inside a box of its own, so that the figure
+    // record of the marks has the top left corner of `body`. A record in the line of a labelled inline
+    // box has the y of the baseline, and inside `layout` the x of the start of the line.
+    #let figrec(body) = box([#body <slate-figure>])
     // An image alone in its paragraph is a figure — centred, matching the notebook and the HTML export.
     // A centred one with no height is a `<slate-fig>` marker that `fit` sizes, as an image output is
     // (see `figureimg`); its `width` is an upper bound. One sitting in a run of prose stays inline,
@@ -916,13 +920,28 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       let b = read(p, encoding: none)
       b.at(16) * 16777216 + b.at(17) * 65536 + b.at(18) * 256 + b.at(19)
     } else if lower(p).ends-with(".svg") { n.width / (1in / 96) }
+    // A video or audio file of markdown alone in its paragraph (Julia `_clip_typ`). A PDF cannot play
+    // it, so it draws a placeholder in the box that the live deck gives the clip: a frame with a play
+    // mark and `label`. A video is a figure of natural size `w` × `h` (px, which is `u`). An audio file
+    // has the size of the live audio controls, 300 × 54 u, in the centre of its column.
+    #let clipframe(w, h, label) = box(width: w, height: h, inset: 8 * u, clip: true, fill: settings.roles.dim.transparentize(80%), align(center + horizon, {
+        let s = calc.min(0.4 * h, 64 * u)
+        let mark = polygon(fill: settings.roles.dim, (0 * u, 0 * u), (0.87 * s, s / 2), (0 * u, s))
+        let t = text(size: 0.7em, fill: settings.roles.dim, label)
+        if h < 120 * u { grid(columns: 2, column-gutter: 12 * u, align: horizon, mark, t) } else { stack(spacing: 16 * u, align(center, mark), t) }
+      }))
     #let drawfig(v, f) = layout(c => {
-      let n = measure(image(v.p))
-      let nw = natural-w(v.p, n)
+      let clip = v.at("clip", default: none)
+      let n = if clip == none { measure(image(v.p)) } else { (width: clip.w * u, height: clip.h * u) }
+      let nw = if clip == none { natural-w(v.p, n) } else { clip.w }
       let cw = if v.w != none { if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) } } else if nw == none { c.width } else { calc.min(c.width, nw * u) }
-      align(center, [#box(image(v.p, height: calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width))))) <slate-figure>])
+      let h = calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))
+      align(center, if clip == none { [#box(image(v.p, height: h)) <slate-figure>] } else { figrec(clipframe(h * (n.width / n.height), h, clip.label)) })
     })
     #show <slate-fig>: it => drawfig(it.value, 1)
+    #let clipfig(kind, w, h, label) = if kind == "audio" { align(center, figrec(clipframe(300 * u, 54 * u, label))) } else {
+      [#metadata((p: none, w: none, clip: (w: w, h: h, label: label))) <slate-fig>]
+    }
     #let notefig(s) = block(width: 100%, inset: 19 * u, text(size: 0.7em, style: "italic", fill: $(p.parlabel), s))
     #let figcaption(lbl, body) = block(width: 100%, inset: (x: 64 * u, y: 11 * u), text(size: 0.7em, fill: $(p.parlabel))[#text(weight: "bold")[#lbl.] #body])
     #let paramblock(items) = block(width: 100%, inset: (x: 21 * u, y: 13 * u), fill: $(p.parbg), radius: 8 * u, stroke: 1.33 * u + $(p.parborder),
@@ -1590,17 +1609,54 @@ end
 _output_chunk(o, mime) = (i = findfirst(ch -> ch.mime == mime, o.display); i === nothing ? nothing : String(copy(o.display[i].data)))
 _has_figure_bytes(o) = any(ch -> ch.mime in ("application/pdf", "image/svg+xml", "image/png"), o.display)
 
+# The display size `(w, h)` in px of the first video track of an MP4 or QuickTime file: the width and
+# the height of its `tkhd` box (16.16 fixed point). A browser shows a video at this natural size.
+# `nothing` when the file gives no size.
+_mp4_size(path::AbstractString) = try open(io -> _mp4_walk(io, filesize(path)), path) catch; nothing end
+function _mp4_walk(io::IO, stop::Integer)
+    while position(io) + 8 <= stop
+        start = position(io)
+        n, typ = Int(ntoh(read(io, UInt32))), String(read(io, 4))
+        n == 1 && (n = Int(ntoh(read(io, UInt64))))
+        n == 0 && (n = stop - start)
+        n < 8 && return nothing
+        if typ in ("moov", "trak")
+            sz = _mp4_walk(io, start + n)
+            sz === nothing || return sz
+        elseif typ == "tkhd"
+            skip(io, read(io, UInt8) == 1 ? 87 : 75)   # to the width, after the version byte
+            w, h = ntoh(read(io, UInt32)) / 65536, ntoh(read(io, UInt32)) / 65536
+            w > 0 && h > 0 && return (w, h)           # a sound track has 0 × 0
+        end
+        seek(io, start + n)
+    end
+    return nothing
+end
+
+# The Typst text that draws the video or audio file `clip` of a figure block in place of its markdown
+# file `file` (the alt text): `clipfig` of the slides preamble. The label is the alt text, else the file
+# name. A video has the size of the file, else 300 × 150, the size that the live deck gives a video
+# with no known size (the default size of a CSS replaced element).
+function _clip_typ(clip::AbstractString, text::AbstractString, file::AbstractString)
+    audio = startswith(_site_ctype(clip), "audio/")
+    w, h = audio ? (0, 0) : something(_mp4_size(clip), (300, 150))
+    label = isempty(strip(replace(text, r"</?slate-figure>" => ""))) ? string("\"", _typ_str(basename(clip)), "\"") : _md_render(file)
+    return string("#clipfig(\"", audio ? "audio" : "video", "\", ", w, ", ", h, ", ", label, ")")
+end
+
 # Write the markdown `md` of an output (block kinds marked) to `file` and print its `cmarker` call
 # through `blk`, with `tail` after it. On a slide (`blk` is a `_block_printer`) each block of `md` is a
 # block of the layout source, split by the rules of a markdown cell, in a file of its own. A figure
-# block gets the video or audio file of its media mark (`_take_media_marks`) as its `file`.
+# block gets the video or audio file of its media mark (`_take_media_marks`) as its `file`, and draws
+# its placeholder (`_clip_typ`).
 function _emit_output_md!(io::IO, dir, file, md, tail, blk)
     parts = blk === _plain_block ? [(kind = "prose", text = md)] : ReportRender._md_split(md)
     for (k, b) in enumerate(parts)
         f = k == 1 ? file : string(chopsuffix(file, ".md"), "_", k, ".md")
         text, clip = _take_media_marks(b.text)
+        clip = b.kind == "figure" ? clip : nothing
         write(joinpath(dir, f), text)
-        print(io, blk(b.kind, string("#", _md_render(f), tail); src = text, file = b.kind == "figure" ? clip : nothing))
+        print(io, blk(b.kind, string(clip === nothing ? "#" * _md_render(f) : _clip_typ(clip, text, f), tail); src = text, file = clip))
     end
 end
 
@@ -2775,8 +2831,9 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
         for (k, b) in enumerate(ReportRender._md_split(md))
             file = string(base, "b", k, ".md")
             text, clip = _take_media_marks(b.text)
+            clip = b.kind == "figure" ? clip : nothing
             write(joinpath(dir, file), text)
-            print(io, blk(b.kind, string("#", _md_render(file), "\n\n"); src = text, divcolumn, file = b.kind == "figure" ? clip : nothing))
+            print(io, blk(b.kind, string(clip === nothing ? "#" * _md_render(file) : _clip_typ(clip, text, file), "\n\n"); src = text, divcolumn, file = clip))
         end
         return occursin(r"</slate-(?:key-message|admonition|table)>\s*$", md)
     else
