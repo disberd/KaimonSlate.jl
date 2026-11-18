@@ -45,6 +45,35 @@ were written when they went out. They are marked.
 - A deck template's settings and files can be `PkgAsset`s. An edit to one of them reaches the next
   export with no run and no worker restart, as an edit to the template source does.
 - The `export_pdf` tool lists the export warnings of a deck in its answer.
+- Block kinds. Slate finds the kind of each block of markdown in one place and writes it into the
+  markdown as an element: `<slate-key-message>` around a block quote, `<slate-caption>` around a
+  paragraph that is all emphasis (citations can follow it) and around each block of a cell with the
+  `caption` tag, `<slate-admonition category="…" heading="…">` around an admonition,
+  `<slate-figure>` around a paragraph that holds only one image or one figure value, and
+  `<slate-table>` around a table. The elements are in the HTML of the notebook, of the HTML export
+  and of the live deck, and in the markdown of the PDF exports. Outside a slide an element makes no
+  box (`display: contents`), so the notebook and the HTML export look as before. On a slide a
+  stylesheet selects the element and its child, for example `.deck-slide slate-caption > p`.
+- The PDF deck draws each block kind with a function of the `draw` dictionary. The base preamble
+  gives `base-draw` with one function for each kind (`key-message`, `caption`, `admonition`,
+  `figure`, `table`), and each one reads the deck settings. A deck template gives its own function
+  with `#let draw = (caption: it => …)`; `it` holds the `body` of the block and its attributes. A
+  key of `draw` that is no block kind gives an export warning. A deck template that draws its
+  slides with its own rules (it does not call `base-rhythm`) keeps each block as its markdown gives
+  it, unless it gives the function of that kind.
+- A package can draw the picture of its figures for the Typst PDF export (slides, article, report)
+  with a `SlateExtensionsBase.slate_export_figure(io, mime, x, ctx)` method for each format it can
+  write. The export asks for PDF, then SVG, then PNG, on the worker that ran the cell, so it needs no
+  open tab. `ctx` (`FigureContext`) gives the width of the figure's column in px (1 px = 1 u on a
+  slide, 1/96 inch in a document), the figure cap on a slide, the raster scale and the Slate palette of
+  the figures. A method that declines or throws lets the export take the figure as before; a throw
+  adds an export warning. The worker keeps the value of each output whose type has such a method,
+  until the cell runs again or is deleted. A notebook opened from its stored outputs and not run has
+  no values: the export warns "N figures from stored output". A component's `exportFigure` gets the
+  same `width`, `max_height` and `scale` in its `ctx`, beside its old keys. A deck template states
+  the width of its body with `provide_deck_template!(…; body_width)`, in `u`.
+- The deck setting `text.list-marker` sets the colour of list bullets, on the live deck and in the
+  PDF deck. Its base value is the role `accent`.
 
 ### Changed
 
@@ -143,6 +172,25 @@ were written when they went out. They are marked.
   above it. A block quote has no indent and the gap between cells below it. A nested list has the item
   spacing above and below it; it had 0.6 em below it. The padding of a markdown cell is in slide units,
   12 by 16 u, so it no longer changes with the size of the screen.
+- The base deck paints a key message (a block quote) as a band with a bar on its left, on the live
+  deck and in the PDF deck, from the `[key-message]` deck settings.
+- The base deck sets a caption (a paragraph that is all emphasis) at `caption.size` (0.8 em) in
+  `caption.color` (the dim role), on the live deck and in the PDF deck. A deck template with no
+  settings file gets the same on the live deck.
+- On a slide an admonition takes the `[admonition]` deck settings: a box with a bar on its left, the
+  heading in bold above the body. The live deck and the PDF deck draw the same box. In the PDF deck
+  an admonition was a block quote with a bold title.
+- In an article or a report PDF an admonition is a box with its heading. It was a block quote with
+  a bold title.
+- On a slide a figure caption (a cell with the `caption` tag) has the caption size and colour of
+  the deck settings, and the PDF deck prints its "Figure N." label, as the live deck does.
+- The PDF deck rounds the corners of a figure by `figures.radius`, as the live deck does.
+- An output with no picture in the PDF export (an HTML output that no tab captured, or a figure-hook
+  value that the worker does not hold) prints a note in its place, in documents too. Such an output
+  used to print nothing.
+- The export dialog says that the deck template fixes the colours only when no value of the merged
+  deck settings, admonition category accents included, follows the Slate palette. The warning about a
+  fixed `roles.surface` also names the admonition accents that follow the Slate palette.
 
 ### Fixed
 

@@ -213,6 +213,46 @@ own floor.
 - Item 36 of a list that is too long
 """
 
+#%% md id=keyend
+@md"""
+## A key message at the end of a cell
+
+The key message is the last block of this cell. The band has no space of its own below it there.
+
+> **The next cell starts one cell gap below the band.**
+"""
+
+#%% md id=keyend2
+@md"""
+This paragraph is the next cell of the slide.
+"""
+
+#%% md id=tableend
+@md"""
+## A table at the end of a cell
+
+| Block at the end of a cell | Space below it |
+|:---------------------------|---------------:|
+| Paragraph | 0.55 em |
+| Key message | none |
+| Table | none |
+"""
+
+#%% md id=tableend2
+@md"""
+This paragraph is the next cell of the slide. It starts one cell gap below the table.
+"""
+
+#%% md id=hyphen
+@md"""
+## A table with hyphenated words
+
+| Strategy | What it does | Result |
+|:---------|:-------------|:-------|
+| Fairness-based | Gives each terminal a share of the capacity in proportion to its request, so that no terminal stays without service | Every terminal at 0.5 or more |
+| Capacity-first | Serves the cells with the highest capacity first and the low-capacity cells last, until the capacity ends | A higher total, with some terminals at zero |
+"""
+
 #%% md id=thanks layout=section
 @md"""
 ## Thanks

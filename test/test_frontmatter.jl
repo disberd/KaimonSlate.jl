@@ -1011,7 +1011,16 @@ x = 1
             w = wire(RE.deck_template_wire())
             t = RE._decode_deck_template(w)
             @test t.hash == m["deck_template_hash"] && t.source == "#let slide(b) = b" && t.files == files
-            @test t.settings == "[text]\nsize = \"36u\"\n"
+            @test t.settings == "[text]\nsize = \"36u\"\n" && t.body_width === nothing
+
+            # The body width of the template crosses the wire as a number of slide units; any other value
+            # is the base body width (`nothing`).
+            SEB.provide_deck_template!("#let slide(b) = b"; body_width = 1500)
+            bw = wire(RE.deck_template_wire())
+            @test RE._decode_deck_template(bw).body_width == 1500.0
+            for bad in ("1500", -1, 0, 1e9, true)
+                @test RE._decode_deck_template(merge(bw, Dict("body_width" => bad))).body_width === nothing
+            end
 
             for bad in ("/etc/passwd", "../x.typ", "a/../../x", "a//b", "a\\b", "C:/x")
                 hostile = copy(w)

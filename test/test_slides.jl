@@ -339,11 +339,15 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         r = NS.deck_settings("[roles]\nfg = \"dim\"\n", "")
         @test length(r.warnings) == 1 && r.values["roles"]["fg"] == "slate.text"
 
-        # A fixed surface with text roles on the Slate palette warns.
+        # A fixed surface with text roles or admonition accents on the Slate palette warns.
         r = NS.deck_settings("[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\n", "")
         @test length(r.warnings) == 1 && occursin("roles.strong", r.warnings[1]) && occursin("roles.dim", r.warnings[1])
-        @test isempty(NS.deck_settings("[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\nstrong = \"#003247\"\n" *
-                                       "dim = \"#8197a6\"\n", "").warnings)
+        fixedroles = "[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\nstrong = \"#003247\"\ndim = \"#8197a6\"\naccent = \"#0055aa\"\n"
+        r = NS.deck_settings(fixedroles, "")
+        @test length(r.warnings) == 1 && occursin("`admonition.tip.accent`", r.warnings[1]) && !occursin("roles.dim", r.warnings[1])
+        cats = join("[admonition.$c]\naccent = \"#22aa55\"\n" for c in ("tip", "hint", "answer", "solution", "warning",
+                                                                       "caution", "danger", "error", "compat"))
+        @test isempty(NS.deck_settings(fixedroles * cats, "").warnings)
 
         # Text that is not TOML: one warning that gives the line and the reason, and the layer is not used.
         r = NS.deck_settings("[text\n", "")
@@ -401,6 +405,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
                         "slate-palette = \"\"" => "slate-palette = \"daylight\"")
         @test NS.deck_fixes_colours(NS.deck_settings("", fixed).values)
         @test !NS.deck_fixes_colours(NS.deck_settings("", replace(fixed, "\"daylight\"" => "\"\"")).values)
+        # An admonition category accent on the Slate palette is a colour that the picker changes.
+        @test !NS.deck_fixes_colours(NS.deck_settings(fixed, "[admonition.tip]\naccent = \"slate.green\"\n").values)
     end
 
     # A `slate.` colour is a CSS reference on the live deck and a hex value of the export's Slate
@@ -457,14 +463,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         live = read(joinpath(src, "assets", "notebook.css"), String) * read(joinpath(src, "assets", "js", "slides.js"), String)
         typ = read(joinpath(src, "export_typst.jl"), String)
         julia = ("code.syntax", "figures.slate-palette")
-        todo_live = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
-                     "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
-                     "code.fill", "code.font", "key-message.bar-color", "key-message.bar-width", "key-message.fill",
-                     "key-message.pad-x", "key-message.pad-y", "key-message.text-color")
-        todo_typst = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
-                      "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
-                      "figures.radius", "key-message.bar-color", "key-message.bar-width", "key-message.fill",
-                      "key-message.pad-x", "key-message.pad-y", "key-message.text-color")
+        todo_live = ("code.fill", "code.font")
+        todo_typst = ()
         keys_ = ["$g.$k" for (g, d) in NS.deck_settings("", "").values for (k, v) in d if g != "palette" && !(v isa AbstractDict)]
         @test length(keys_) > 50
         reads_live(key) = occursin(Regex(NS._deck_css_name(split(key, '.')...) * "(?![\\w-])"), live)
@@ -479,7 +479,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
     @testset "a deck setting moves the measured text size in the PDF" begin
         sizes = map(("", "[text]\nsize = \"40u\"\n")) do set
             nb = _mknb("#%% md id=a\n## A\n\nbody text\n")
-            nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}())
+            nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}(), body_width = nothing)
             dir = NS._build_slides_project(nb)
             try
                 recs = NS._typst_query(joinpath(dir, "doc.typ"), "<slate>")
@@ -503,7 +503,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         long = join(fill("word", 30), " ")
         wide = "| $long | $long | x |\n|---|---|---|\n| a | b | c |\n"
         nb = _mknb("#%% md id=a\n## A\n\nOne$(mark("p1")) line.\n\nThe$(mark("p2")) next line.\n\n#%% md id=b\n## B\n\n$wide")
-        nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}())
+        nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}(), body_width = nothing)
         dir = NS._build_slides_project(nb)
         try
             doc = joinpath(dir, "doc.typ")
@@ -514,6 +514,41 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
             NS._typst_compile(doc, pdf)
             num = match(r"xMin=\"([\d.]+)\" yMin=\"([\d.]+)\"[^>]*>1</word>", read(`pdftotext -bbox -f 1 -l 1 $pdf -`, String))
             @test num !== nothing && parse(Float64, num[1]) > 680 && parse(Float64, num[2]) > 380
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    # A key message, an admonition or a table at the end of a markdown cell has no space of its own
+    # below it, as on the live deck: the next cell starts one cell gap below it.
+    @testset "the base PDF: a cell that ends with a key message or a table" begin
+        mark(k) = "<!--raw-typst #context [#metadata(here().position().y.pt()) <$k>]-->"
+        nb = _mknb("#%% md id=a\n## A\n\n> Key$(mark("k1")) message.\n\n#%% md id=b\nNext$(mark("k2")) cell.\n\n" *
+                   "#%% md id=c\n## B\n\n| a |\n|---|\n| 1 |\n\n#%% md id=d\nNext cell.\n")
+        dir = NS._build_slides_project(nb)
+        try
+            doc = joinpath(dir, "doc.typ")
+            y(k) = only(NS._typst_query(doc, "<$k>")) / (720 / 1920)      # in u
+            s = NS.deck_settings("", "").values
+            line = s["text"]["size"].value * s["text"]["line-height"]
+            @test y("k2") - y("k1") ≈ line + s["key-message"]["pad-y"].value + s["rhythm"]["cell-gap"].value atol = 0.5
+            @test count("#mdcell(tight: true)[", read(doc, String)) == 2  # the cell that ends with the table too
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    # A table wider than its column: a column of hyphenated words can break after each hyphen, as in a
+    # browser, so it gets less width than a column of words of the same length with no hyphen.
+    @testset "the base PDF: a table column breaks its words after a hyphen" begin
+        long(w) = join(fill(w, 12), " ")
+        nb = _mknb("#%% md id=a\n## A\n\n| $(long("aaaaaaaaaa-bbbbbbbbbb")) | $(long("aaaaaaaaaaxbbbbbbbbbb")) |\n|---|---|\n| x | y |\n")
+        dir = NS._build_slides_project(nb)
+        try
+            out = IOBuffer()
+            NS._typst_run("query", joinpath(dir, "doc.typ"), ["table", "--field", "columns"]; out)
+            w = [parse(Float64, chopsuffix(c, "fr")) for c in last(JSON.parse(String(take!(out))))]   # the table with its widths
+            @test w[1] < 0.9 * w[2]
         finally
             rm(dir; recursive = true, force = true)
         end
@@ -565,7 +600,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         dir = NS._build_slides_project(_mknb(src))
         before = try read(joinpath(dir, "doc.typ"), String) finally rm(dir; recursive = true, force = true) end
         nb = _mknb(src)
-        nb.deck_template = (; hash = "h", source = tpl, settings = "[text]\nfont = [\"DejaVu Sans\"]\n", files)
+        nb.deck_template = (; hash = "h", source = tpl, settings = "[text]\nfont = [\"DejaVu Sans\"]\n", files, body_width = nothing)
         pdf = NS.export_pdf(nb; layout = "slides")
         t = text(pdf)
         @test occursin("TPL layout=\"center\"", t) && occursin("title=Shown", t) && occursin("name=tomlvalue", t)
@@ -588,7 +623,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
 
         # Without a template the preamble is the only prefix; no template text leaks in.
-        @test !occursin("deck template", before)
+        @test !occursin("── deck template ──", before)
 
         # The write site refuses a file name that leaves the project directory, and the name of a file
         # that Slate writes.
@@ -652,10 +687,11 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
         tie(r) = (1 + r["s"]) / 2
         fit, cap, recs = query("16:9")
-        @test sort(collect(keys(fit))) == 1:18              # one page per slide: no slide breaks
-        tall, atfloor, fig = fit[17], fit[13], fit[15]      # the added tall slide, fixture "…at the floor"
+        n = length(fit) - 4                                 # the pages of the fixture; the four added slides follow
+        @test sort(collect(keys(fit))) == 1:n+4             # one page per slide: no slide breaks
+        tall, atfloor, fig = fit[n+3], fit[13], fit[n+1]    # the added tall slide, fixture "…at the floor"
         @test 0.62 <= tall["s"] < 1 && tall["f"] >= tie(tall) && !tall["at_floor"]
-        @test fit[18]["s"] < 1 && !fit[18]["at_floor"]      # the table shrinks with the text
+        @test fit[n+4]["s"] < 1 && !fit[n+4]["at_floor"]    # the table shrinks with the text
         @test atfloor["at_floor"] && atfloor["s"] == 0.62
         @test count(r -> r["at_floor"], recs) == 1
         @test 0.62 <= fig["s"] < 1 && tie(fig) <= fig["f"] < 1 && !fig["at_floor"]   # the figure shrinks less than the text
@@ -672,6 +708,52 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         fit43, cap43, _ = query("4:3")
         @test fit43[2]["size"] ≈ fit[2]["size"] && fit43[2]["s"] == 1
         @test cap43 ≈ 0.7 atol = 0.01
+    end
+
+    # The block kinds in the PDF (the `draw` dictionary of the slides preamble, the handlers of the
+    # document preamble). A mark inside a paragraph records the text size there.
+    @testset "block kinds in the PDF: paint, a template draw function, an unknown key" begin
+        mark(k) = "<!--raw-typst #context [#metadata(text.size / 1pt) <$k>]-->"
+        src = "#%% md id=a\n## A\n\nBody$(mark("body")) text.\n\n*A caption$(mark("cap")) of the figure.*\n\n" *
+              "> A key message.\n\n!!! note \"Heads up\"\n    The body.\n"
+        # The records of a slides project of `src` with the deck template source `tpl`.
+        function records(tpl)
+            nb = _mknb(src)
+            nb.deck_template = (; hash = "h", source = tpl, settings = "", files = Dict{String,Vector{UInt8}}(), body_width = nothing)
+            dir = NS._build_slides_project(nb)
+            try
+                q(label) = NS._typst_query(joinpath(dir, "doc.typ"), label)
+                return (; ratio = only(q("<cap>")) / only(q("<body>")), probe = q("<probe>"), warns = NS._draw_warnings(q("<slate>")))
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+        # The base deck: a caption is `caption.size` of the body text, and no key warns.
+        base = records("")
+        @test base.ratio ≈ 0.8 && isempty(base.warns)
+        # A deck template gives `draw.caption`, and a key that is no block kind gives a warning.
+        mine = records("#let draw = (caption: it => [#metadata(\"mine\") <probe>#it.body], captoin: it => it.body)\n")
+        @test mine.probe == ["mine"] && mine.ratio ≈ 1
+        @test length(mine.warns) == 1 && occursin("draw.captoin", only(mine.warns))
+        # A deck template that draws its slides with its own rules (no `base-rhythm`) and gives no
+        # function keeps each block as its markdown gives it: the base paint does not apply.
+        own = "#let slide(body, layout: none, title: none, n: none) = page(fit(body))\n"
+        @test records(own).ratio ≈ 1
+        @test records(own * "#let draw = (caption: base-draw.caption)\n").ratio ≈ 0.8
+        # An article draws an admonition as its box, not as `!!!` text: the heading and the body are
+        # inside the box, 9 pt to the right of the text around it.
+        dir = NS._build_typst_project(_mknb(src))
+        try
+            pdf = joinpath(dir, "out.pdf")
+            NS._typst_compile(joinpath(dir, "doc.typ"), pdf)
+            words = read(`pdftotext -bbox $pdf -`, String)
+            x(w) = parse(Float64, match(Regex("xMin=\"([\\d.]+)\"[^>]*>$w</word>"), words)[1])
+            @test x("Heads") - x("Body") ≈ 9 atol = 0.1
+            @test x("The") - x("Body") ≈ 9 atol = 0.1
+            @test !occursin("!!!", words)
+        finally
+            rm(dir; recursive = true, force = true)
+        end
     end
 end
 
@@ -707,6 +789,48 @@ end
         s = NS._strip_deck_markup("::: step\nA\n:::\n. . .\nB\n```\n:::\n```")
         @test s == "A\nB\n```\n:::\n```"                     # fenced code untouched
         @test NS._strip_deck_markup("plain") == "plain"
+    end
+    # Each block of markdown has one kind (block_kinds.jl). The detector puts a block of a kind that a
+    # deck paints into a `<slate-…>` element, for the page and for the PDF.
+    @testset "block kinds: the kind of each markup, the elements in the HTML" begin
+        kind(md; kw...) = only(p.kind for p in R._md_blocks(md; kw...) if !isempty(p.kind))
+        for (md, k) in ("> A key message." => "key-message",
+                        "*All of it is emphasis.*" => "caption",
+                        "_Source: X_ [@key]" => "caption",
+                        "*With \$a*b\$ math and [a link](u).*" => "caption",
+                        "*Source:* part of it" => "prose",
+                        "*one* *two*" => "prose",
+                        "!!! note \"Title\"\n    Body.\n\n    | a |\n    |---|\n    | 1 |" => "admonition",
+                        "![alt](pic.png)" => "figure",
+                        "![alt](pic.png){width=300}" => "figure",
+                        "Text with ![alt](pic.png)" => "prose",
+                        "| a | b |\n|---|---|\n| 1 | 2 |" => "table",
+                        "```julia\n> not a quote\n*not a caption*\n```" => "code",
+                        "- a list\n- of items" => "prose",
+                        "\$\$x^2\$\$" => "prose",
+                        "## Heading" => "prose")
+            @test kind(md) == k
+        end
+        # A `{{ }}` value alone in its paragraph is a figure when it draws one.
+        @test kind(RE._interp_token(1); figure = ==(1)) == "figure" && kind(RE._interp_token(1)) == "prose"
+        doc = "Intro.\n\n> Key.\n\n*Caption.*\n\n!!! tip\n    Body.\n\n:::: columns\n::: column\n*In a column.*\n:::\n::::\n\n```\n> code\n```\n"
+        out = R._md_kinds(doc)
+        @test R._md_kinds(out) == out                               # a second run changes nothing
+        @test occursin("```\n> code\n```", out)                    # fenced code stays code
+        @test count("<slate-caption>", out) == 2                    # a block of a `:::` div has its kind too
+        @test R._md_kinds("Plain prose.\n\n- a list\n") == "Plain prose.\n\n- a list\n"
+        h = R.markdown_html(doc)
+        @test occursin("<slate-caption>\n<p><em>Caption.</em></p>\n</slate-caption>", h)
+        @test occursin("<slate-admonition category=\"tip\" heading=\"Tip\">\n<div class=\"admonition tip\">", h)
+        # The elements are the only change to the HTML.
+        bare(s) = replace(s, r"</?slate-[^>]*>" => "", r"\s+" => "")
+        @test bare(h) == bare(R.CommonMark.html(R._md_parser()(doc)))
+        # A cell with the `caption` tag: each block is a caption, and the first one has the figure number.
+        @test R._md_kinds("One.\n\nTwo."; caption = 3) ==
+              "<slate-caption number=\"3\">\n\nOne.\n\n</slate-caption>\n\n<slate-caption>\n\nTwo.\n\n</slate-caption>"
+        # An admonition category with its own values has a rule on its element in the deck CSS.
+        css = NS.deck_settings_css(NS.deck_settings("[admonition.aside]\naccent = \"#123456\"\n", "").values)
+        @test occursin(":where(.deck-slide slate-admonition[category=\"aside\"]) { --deck-admonition-accent: #123456; }", css)
     end
     @testset "SlideSteps" begin
         w = RE.SlideSteps(4)
@@ -903,4 +1027,107 @@ end
     @test isapprox(sum(last.(seq)), 5.0; atol = 1e-9)
     @test first.(seq) == [1, 2, 3, 4] && isapprox(seq[end][2], 2.8; atol = 1e-9)   # the last motion frame holds
     @test NS._vtt_time(3725.5) == "01:02:05.500" && NS._vtt_time(0) == "00:00:00.000"
+end
+
+@testset "deck settings: text.list-marker reaches the live deck and the PDF" begin
+    s = NS.deck_settings("[text]\nlist-marker = \"#123456\"\n", "").values
+    @test occursin("--deck-text-list-marker: #123456;", NS.deck_settings_css(s))
+    @test occursin("\"list-marker\": rgb(\"#123456\")", NS.deck_settings_typ(s; ratio = "16:9", palette = "midnight"))
+    @test occursin("--deck-text-list-marker: var(--deck-accent);", NS.deck_settings_css(NS.deck_settings("", "").values))
+end
+
+# A value whose type has a figure hook (SlateExtensionsBase `slate_export_figure`) prints the picture
+# that the hook draws for its column, with no browser tab. A decline or a throw takes the next path.
+module FigHook
+import SlateExtensionsBase as SEB
+struct Svg end
+struct Decline end
+struct Boom end
+Base.show(io::IO, ::MIME"text/html", ::Svg) = print(io, "<div>live plot</div>")
+SEB.slate_export_figure(io::IO, ::MIME"image/svg+xml", ::Svg, ctx) =
+    (print(io, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"", ctx.width, "\" height=\"100\" data-cap=\"",
+           ctx.max_height, "\" data-palette=\"", ctx.slate_palette, "\"/>"); true)
+const STATIC = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"300\" height=\"100\" id=\"static\"/>"
+Base.show(io::IO, ::MIME"image/svg+xml", ::Union{Decline,Boom}) = print(io, STATIC)
+SEB.slate_export_figure(::IO, ::MIME"image/svg+xml", ::Decline, _) = false
+SEB.slate_export_figure(::IO, ::MIME"image/svg+xml", ::Boom, _) = error("boom\nsecond line")
+end
+
+# A notebook whose cells ran in this process, so that the figure values are kept here.
+function _hooknb(src)
+    nb = _mknb(src)
+    Core.eval(RE.report_module(nb.report), :(const FigHook = $FigHook))
+    foreach(c -> RE.eval_cell!(nb.report, c, nb.kernel), nb.report.cells)
+    return nb
+end
+# The files that `doc.typ` draws as figures, in order, as (name, text).
+_drawn_figs(dir) = [(m[1], read(joinpath(dir, m[1]), String))
+                    for m in eachmatch(r"figureimg\(\"([^\"]+)\"", read(joinpath(dir, "doc.typ"), String))]
+_svg_width(t) = parse(Float64, match(r"width=\"([\d.]+)\"", t)[1])
+
+@testset "figure hook: the picture of a value reaches the PDF with no tab" begin
+    nb = _hooknb("#%% code id=fh1\nFigHook.Svg()\n\n#%% md id=fh2\n{{ FigHook.Svg() }}\n")
+    w = String[]
+    dir = NS._build_slides_project(nb; warnings = w)
+    try
+        figs = _drawn_figs(dir)
+        @test length(figs) == 1 && endswith(figs[1][1], ".svg")
+        @test _svg_width(figs[1][2]) == 1680                      # the base body: 1920 u less 240 u
+        @test occursin("data-cap=\"756.0\"", figs[1][2]) && occursin("data-palette=\"midnight\"", figs[1][2])
+        comp = filter(f -> occursin(r"_comp\d+\.svg$", f), readdir(dir))   # the `{{ }}` value
+        @test length(comp) == 1 && _svg_width(read(joinpath(dir, comp[1]), String)) == 1680 - 32
+        @test isempty(w)
+        NS._typst_compile(joinpath(dir, "doc.typ"), joinpath(dir, "out.pdf"))
+        @test isfile(joinpath(dir, "out.pdf"))
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+@testset "figure hook: the width comes from the columns and the template's body width" begin
+    widths(nb) = (dir = NS._build_slides_project(nb);
+                  try; [_svg_width(t) for (_, t) in _drawn_figs(dir)]; finally; rm(dir; recursive = true, force = true); end)
+    nb = _hooknb("#%% code id=fw1\nFigHook.Svg()\n\n#%% code id=fw2 column=2\nFigHook.Svg()\n")
+    @test widths(nb) == [816, 816]                                # two cells share 1680 u with the 48 u row gap
+    # A deck template with its own body width (the template reaches the hub through the manifest).
+    SEB = RE.SlateExtensionsBase
+    try
+        SEB.provide_deck_template!(""; body_width = 1000)
+        @test widths(nb) == [476, 476]                            # (1000 − 48) / 2
+    finally
+        SEB._DECK_TEMPLATE[] = nothing
+    end
+    # A document: the text width of the A4 page in px at 96 dpi (article margins 2.2 cm).
+    dir = NS._build_typst_project(_hooknb("#%% code id=fw3\nFigHook.Svg()\n"))
+    try
+        @test only(_svg_width(t) for (_, t) in _drawn_figs(dir)) ≈ (210 - 44) / 25.4 * 96
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+@testset "figure hook: a decline and a throw take the next path; a throw warns" begin
+    w = String[]
+    dir = NS._build_slides_project(_hooknb("#%% code id=fd1\nFigHook.Decline()\n\n#%% code id=fd2\nFigHook.Boom()\n");
+                                   warnings = w)
+    try
+        @test [t for (_, t) in _drawn_figs(dir)] == [FigHook.STATIC, FigHook.STATIC]   # the image the cell showed
+        @test length(w) == 1 && occursin("Cell fd2", w[1]) && occursin("Boom", w[1]) && endswith(w[1], ": boom")
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+@testset "figure hook: a notebook from stored output warns and notes the figure" begin
+    nb = _hooknb("#%% code id=fs1\nFigHook.Svg()\n")
+    RE._figure_forget!("fs1")              # the output stays and the value is gone, as after an open from storage
+    w = String[]
+    dir = NS._build_slides_project(nb; warnings = w)
+    try
+        @test w == ["1 figure from stored output: run the notebook for vector figures"]
+        @test occursin("#notefig(\"[figure not captured — run the notebook, then re-export]\")",
+                       read(joinpath(dir, "doc.typ"), String))
+    finally
+        rm(dir; recursive = true, force = true)
+    end
 end

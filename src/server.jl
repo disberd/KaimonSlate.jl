@@ -69,8 +69,10 @@ end
 SseClient(n::Integer) = SseClient(Channel{String}(n), n, Threads.Atomic{Float64}(time()), Threads.Atomic{Bool}(false))
 
 # A deck template held by a notebook: the hash the worker reported, the `.typ` source, the partial
-# deck-settings TOML text (`""` when none) and the other files (relative POSIX name → bytes).
-const DeckTemplate = @NamedTuple{hash::String, source::String, settings::String, files::Dict{String,Vector{UInt8}}}
+# deck-settings TOML text (`""` when none), the other files (relative POSIX name → bytes) and the width
+# of its body in slide units (`nothing`: the base body width).
+const DeckTemplate = @NamedTuple{hash::String, source::String, settings::String, files::Dict{String,Vector{UInt8}},
+                                 body_width::Union{Nothing,Float64}}
 
 mutable struct LiveNotebook
     id::String                           # hub id (unique; used in /n/<id> + /api/<id>/…)
@@ -5282,7 +5284,7 @@ function _eval_one_run!(nb::LiveNotebook, cid::AbstractString, run::ReportEngine
         # code-cell branch below). The lock is taken again only to settle the cell.
         exprs = ReportEngine._md_interp_exprs(cell.source)
         interp = isempty(exprs) ? ReportEngine.CellOutput[] :
-                 ReportEngine.with_run_id(() -> ReportEngine.interpolate(kernel, nb.report, exprs), run.id)
+                 ReportEngine.with_run_id(() -> ReportEngine.interpolate(kernel, nb.report, exprs; cell = cid), run.id)
         _settle!(nb, cid, run) do c
             c.src_hash == run.src_hash || return nothing   # edited meanwhile: stays STALE for the new text
             c.interp = interp

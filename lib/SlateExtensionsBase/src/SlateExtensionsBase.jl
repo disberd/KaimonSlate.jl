@@ -82,6 +82,8 @@ export slate_context, slate_region, slate_regions, slate_side, slate_notebook,
 export slate_bind_widget, slate_bind_value, slate_bind_names, slate_on_bind, slate_bind_observable
 # Rich output (Slate display MIMEs)
 export slate_render, component, html_fragment, SlateComponentMIME, SlateHtmlMIME
+# The picture of a figure for an export (Typst PDF)
+export slate_export_figure, FigureContext
 # Markdown fenced blocks claimed by an extension (```mermaid → that package's value)
 export register_fence_renderer!, fence_renderer, fence_languages, render_fence
 # Binary numeric streaming

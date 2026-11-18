@@ -231,6 +231,66 @@ Base.showable(::SlateHtmlMIME, x)      = _render(x) isa SlateHtml
 Base.show(io::IO, ::SlateComponentMIME, x) = _write_json(io, _render(x))
 Base.show(io::IO, ::SlateHtmlMIME, x)      = print(io, (_render(x)::SlateHtml).html)
 
+# ── Figure export hook ────────────────────────────────────────────────────────
+"""
+    FigureContext
+
+What Slate tells [`slate_export_figure`](@ref) about the place of a figure in an export. Slate makes
+it, and a method reads its fields. A later Slate can add a field, so a method must not make a
+`FigureContext` itself.
+
+- `width::Float64`: the width of the column of the figure, in CSS px. On a slide 1 px is the slide unit
+  `u` (the slide is 1920 u wide at 16:9 and 16:10, 1440 u at 4:3), so text in a figure drawn `width`
+  px wide has the size of the same text on the slide. In a document (article, report) a px is 1/96 in.
+- `max_height::Union{Nothing,Float64}`: on a slide, the largest height of the figure in the same px:
+  the figure cap of the deck, 0.7 of the slide height by default. `nothing` in a document. Select the
+  height of the figure (its aspect) up to this value.
+- `scale::Float64`: the factor for a raster. A PNG for a column `width` px wide is `scale * width`
+  pixels wide. Slate gives 2.
+- `slate_palette::String`: the name of the Slate palette of the figures of the export, for example
+  `"midnight"` or `"daylight"`.
+- `dark::Bool`: `true` when that palette is dark.
+
+Slate computes the size from the columns of the page before the layout. The export then scales the
+picture as one unit to fit the page.
+"""
+Base.@kwdef struct FigureContext
+    width::Float64
+    max_height::Union{Nothing,Float64}
+    scale::Float64
+    slate_palette::String
+    dark::Bool
+end
+
+"""
+    slate_export_figure(io::IO, mime::MIME, x, ctx::FigureContext) -> Bool
+
+Write the picture of `x` in the format `mime` to `io` for an export, then return `true`. Return `false`
+to decline. A package adds one method for each format that it can write:
+
+    function SlateExtensionsBase.slate_export_figure(io::IO, ::MIME"image/svg+xml", p::MyPlot, ctx)
+        write(io, my_svg(p; width = ctx.width, dark = ctx.dark))
+        return true
+    end
+
+Do not give `ctx` a type: nothing dispatches on it. A method that reads nothing from it writes `_`. See
+[`FigureContext`](@ref) for its fields.
+
+Slate calls the hook when an export needs the figure: the Typst PDF of slides, article and report. The
+call runs where the cell ran, on the value that the cell showed, so it needs no browser tab. The hook
+has no effect on the live notebook. The Typst export asks for `application/pdf`, then
+`image/svg+xml`, then `image/png`, and uses the first form that a method writes.
+
+When the hook declines or throws, Slate uses the next source of the figure: the `exportFigure` of a
+component, then the output as the cell showed it (an image, or a raster of its HTML). A throw adds one
+line to the export warnings; the export does not fail.
+
+Slate keeps the value of each output whose type has a method, so that an export can call the hook. A
+run of the cell replaces the value. A notebook that is open from its stored outputs and did not run
+has no values: its export uses the stored outputs and warns.
+"""
+slate_export_figure(::IO, ::MIME, x, ctx) = false
+
 # ── Minimal JSON writer for the descriptor ────────────────────────────────────
 # SEB stays Base+stdlib only, so it can't lean on JSON.jl. The descriptor payload is small and its props
 # are the extension's responsibility to keep JSON-safe, so a tiny writer for the JSON value shapes

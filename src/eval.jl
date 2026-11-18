@@ -294,8 +294,9 @@ end
 # Run a cell and capture its output. The capture machinery lives in `capture.jl`
 # (shared with the gate worker) and returns a wire-form NamedTuple; here we wrap
 # it into the engine's `CellOutput` (mapping mime tuples → `MimeChunk`).
-function _eval_capture(mod::Module, source::AbstractString, filename::AbstractString = "string"; slate_ctx = nothing)
-    r = run_capture(mod, source, filename; slate_ctx = slate_ctx)
+function _eval_capture(mod::Module, source::AbstractString, filename::AbstractString = "string"; slate_ctx = nothing,
+                       figure_key::Union{Nothing,Tuple{String,Int}} = nothing)
+    r = run_capture(mod, source, filename; slate_ctx = slate_ctx, figure_key = figure_key)
     chunks = MimeChunk[MimeChunk(m, bytes) for (m, bytes) in r.mime]
     binds = BindSpec[BindSpec(b.name, b.kind, b.params, b.value) for b in r.binds]
     overflow = hasproperty(r, :overflow) ? collect(r.overflow) : Any[]   # full results saved to disk (gate worker too)
@@ -401,8 +402,10 @@ prepare!(::InProcessKernel, report::Report) = report_module(report)
 "Discard the kernel's namespace (full rebuild); cells are marked stale by the caller."
 reset!(::InProcessKernel, report::Report) = reset_module!(report)
 
-"Fire the given cells' cleanup callbacks in the report's in-process namespace (deleted-cell teardown)."
+"Fire the given cells' cleanup callbacks in the report's in-process namespace (deleted-cell teardown), and
+drop the figures kept for them."
 function run_cleanups!(::InProcessKernel, report::Report, ids)
+    foreach(id -> _figure_forget!(String(id)), ids)
     report.mod === nothing && return nothing
     reg = isdefined(report.mod, :__slate_cleanups) ? getfield(report.mod, :__slate_cleanups) : nothing
     reg === nothing && return nothing
@@ -509,8 +512,8 @@ assign_bind!(k::PendingKernel, report::Report, name::Symbol, value) =
     assign_bind!(_await_real(k), report, name, value)
 table_page(k::PendingKernel, report::Report, table_id::AbstractString, request::AbstractDict) =
     table_page(_await_real(k), report, table_id, request)
-interpolate(k::PendingKernel, report::Report, exprs::Vector{String}) =
-    interpolate(_await_real(k), report, exprs)
+interpolate(k::PendingKernel, report::Report, exprs::Vector{String}; cell::AbstractString = "") =
+    interpolate(_await_real(k), report, exprs; cell)
 harvest_docs(k::PendingKernel, report::Report, mod_names) =
     harvest_docs(_await_real(k), report, mod_names)
 module_help(k::PendingKernel, report::Report, name::AbstractString) =
@@ -589,15 +592,19 @@ table_page(::InProcessKernel, ::Report, table_id::AbstractString, request::Abstr
     _provider_page(table_id, _page_request(request))
 
 """
-    interpolate(kernel, report, exprs) -> Vector{CellOutput}
+    interpolate(kernel, report, exprs; cell = "") -> Vector{CellOutput}
 
 Capture each markdown `{{ expr }}` in the kernel (rich output, like a mini code
-cell). The gate kernel forwards to its worker.
+cell). The gate kernel forwards to its worker. `cell` is the id of the markdown cell: the
+`i`-th value keeps its figure for the export under `(cell, i)` (capture.jl `_figure_remember!`).
 """
-interpolate(k::InProcessKernel, report::Report, exprs::Vector{String}) =
-    _in_notebook_env(k) do
-        CellOutput[_eval_capture(report_module(report), e) for e in exprs]
+function interpolate(k::InProcessKernel, report::Report, exprs::Vector{String}; cell::AbstractString = "")
+    isempty(cell) || _figure_forget!(cell)
+    return _in_notebook_env(k) do
+        CellOutput[_eval_capture(report_module(report), e; figure_key = isempty(cell) ? nothing : (String(cell), i))
+                   for (i, e) in enumerate(exprs)]
     end
+end
 
 # ── cell debugger ─────────────────────────────────────────────────────────────
 #
@@ -1361,7 +1368,7 @@ end
 function eval_cell!(report::Report, cell::Cell, kernel::Kernel = InProcessKernel())
     if is_prose(cell.kind)
         exprs = _md_interp_exprs(cell.source)
-        cell.interp = isempty(exprs) ? CellOutput[] : interpolate(kernel, report, exprs)
+        cell.interp = isempty(exprs) ? CellOutput[] : interpolate(kernel, report, exprs; cell = cell.id)
         mark_fresh!(cell)
         _emit_progress(report.id, cell)   # md renders instantly → patch it live (don't leave it "stale")
         return cell

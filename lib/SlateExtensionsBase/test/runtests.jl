@@ -476,7 +476,22 @@ SlateExtensionsBase.to_palette_command(c::TaggedCmd) = auto_palette_command(c)
         provide_deck_template!("s"; settings = Vector{UInt8}("[text]\nsize = \"38u\"\n"))
         @test deck_template().hash != hs && deck_template().settings == "[text]\nsize = \"38u\"\n"
         provide_deck_template!("s")
-        @test deck_template().settings == ""
+        @test deck_template().settings == "" && deck_template().body_width === nothing
+
+        # The body width is part of the hash, and it must be a number of slide units in (0, 10000].
+        h0 = deck_template().hash
+        provide_deck_template!("s"; body_width = 1500)
+        @test deck_template().body_width === 1500.0 && deck_template().hash != h0
+        for bad in (0, -1, 1e5, Inf, true)
+            @test_throws ArgumentError provide_deck_template!("s"; body_width = bad)
+        end
+        @test deck_template().body_width === 1500.0                # a rejected call changes nothing
+        provide_deck_template!("s")
+        @test deck_template().hash == h0
+
+        # The figure export hook declines by default; a method of a package writes the picture.
+        ctx = FigureContext(; width = 816.0, max_height = 756.0, scale = 2.0, slate_palette = "midnight", dark = true)
+        @test slate_export_figure(IOBuffer(), MIME("image/svg+xml"), 1, ctx) === false
 
         # A file-backed source, settings file or file (`PkgAsset`) follows edits to its file.
         mktempdir() do dir

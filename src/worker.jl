@@ -1258,8 +1258,10 @@ resource it holds (a Bonito `Session`) is released rather than orphaned in the d
 __slate_reset() = (@info "slate: namespace reset (fresh rebuild)"; _run_all_cleanups!(_NS[]); _set_ns!(_new_ns()); true)
 
 "Run the given cells' `slate_on_cleanup` callbacks in the warm namespace — deleted-cell teardown, driven
-by the server (`run_cleanups!` → this) when `update_source!` detects removed cells. Unknown ids no-op."
+by the server (`run_cleanups!` → this) when `update_source!` detects removed cells, and drop the figures
+kept for them. Unknown ids no-op."
 function __slate_cleanup_cells(; ids::Vector = Any[])
+    foreach(id -> _figure_forget!(String(id)), ids)
     reg = isdefined(_NS[], :__slate_cleanups) ? getfield(_NS[], :__slate_cleanups) : nothing
     reg === nothing && return 0
     n = 0
@@ -1832,8 +1834,14 @@ end
 __slate_table_page(table_id::String, page::Int, page_size::Int, sort_col::Int, sort_desc::Bool, search::String) =
     _provider_page(table_id, PageRequest(page, page_size, sort_col, sort_desc, search))
 
-"Capture markdown `{{ }}` interpolation expressions (rich) — one wire-form each."
-__slate_interp(exprs::Vector{String}) = [run_capture(_NS[], e; capture = DemuxCapture()) for e in exprs]
+"""Capture markdown `{{ }}` interpolation expressions (rich): one wire-form each. `cell` is the id of the
+markdown cell: each value keeps its figure under `(cell, i)` for the export, after the figures of the
+cell's last run go."""
+function __slate_interp(exprs::Vector{String}; cell::String = "")
+    isempty(cell) || _figure_forget!(cell)
+    return [run_capture(_NS[], e; capture = DemuxCapture(), figure_key = isempty(cell) ? nothing : (cell, i))
+            for (i, e) in enumerate(exprs)]
+end
 
 # Re-render a native (server-side, e.g. Makie) figure cell under a specific Slate PALETTE, for a themed
 # PDF export that OVERRIDES the notebook's live theme. Makie bakes its theme when the figure is built,
@@ -2956,6 +2964,21 @@ function __slate_figure_vector(; cell::String = "")
     return bytes === nothing ? (; ok = false) : (; ok = true, b64 = Base64.base64encode(bytes))
 end
 
+"""The picture of the figure that output `slot` of `cell` showed, from its figure hook (`figure_export`):
+`(; held, mime, b64, error, type)`. The context fields are those of `SlateExtensionsBase.FigureContext`;
+`max_height` 0 means none (a document). `held` is false when the worker keeps no value for the output;
+`mime` is empty when the hook declines or throws (`error` then holds the first line of the error)."""
+function __slate_export_figure(; cell::String = "", slot::Int = 0, mimes::Vector = Any[], width::Float64 = 0.0,
+                               max_height::Float64 = 0.0, scale::Float64 = 2.0, slate_palette::String = "",
+                               dark::Bool = false)
+    _FIGURE_HOOK_OK || return (; held = false, mime = "", b64 = "", error = "", type = "")
+    ctx = SlateExtensionsBase.FigureContext(; width, max_height = max_height > 0 ? max_height : nothing, scale,
+                                            slate_palette, dark)
+    r = figure_export(cell, slot, String[String(m) for m in mimes], ctx)
+    return (; held = r.held, mime = get(r, :mime, ""), b64 = haskey(r, :bytes) ? Base64.base64encode(r.bytes) : "",
+            error = get(r, :error, ""), type = get(r, :type, ""))
+end
+
 function tools()
     return KaimonGate.GateTool[
         KaimonGate.GateTool("__slate_cluster_status", __slate_cluster_status),
@@ -2964,6 +2987,7 @@ function tools()
         KaimonGate.GateTool("__slate_eval", __slate_eval),
         KaimonGate.GateTool("__slate_rerender_fig", __slate_rerender_fig),
         KaimonGate.GateTool("__slate_figure_vector", __slate_figure_vector),
+        KaimonGate.GateTool("__slate_export_figure", __slate_export_figure),
         KaimonGate.GateTool("__slate_running", __slate_running),
         KaimonGate.GateTool("__slate_run_chunks", __slate_run_chunks),
         KaimonGate.GateTool("__slate_chunk_status", __slate_chunk_status),

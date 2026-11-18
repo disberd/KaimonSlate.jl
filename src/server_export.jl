@@ -1962,6 +1962,9 @@ a.cite{color:var(--accent);text-decoration:none;}a.cite:hover{text-decoration:un
 .exp-tbl-goto{width:3.6em;background:var(--bg3);color:var(--text);border:1px solid var(--accent);border-radius:5px;padding:1px 5px;font-size:.74rem;font-family:inherit;}
 .exp-tblnote{color:var(--dim);font-size:.74rem;margin-top:3px;font-style:italic;}
 .exp-md code{background:var(--bg3);padding:1px 5px;border-radius:4px;}
+/* The elements of the block kinds (block_kinds.jl) make no box here: a block looks the same with and
+   without its element. */
+slate-key-message,slate-caption,slate-admonition,slate-figure,slate-table{display:contents;}
 /* A `---` in prose — themed, or the browser's `1px inset grey` shows through (mirrors `.md hr`). */
 .exp-md hr{border:none;border-top:1px solid var(--border);margin:1.4em 0;}
 /* Admonitions (`!!! category "Title"`). The live page styles these in notebook.css; the export has its
@@ -3297,7 +3300,7 @@ function _export_cell_html!(io::IO, ctx::_ExportCtx, c::Cell)
         mdinterp = mdbase == 0 ? c.interp : c.interp[min(mdbase + 1, length(c.interp) + 1):end]
         if haskey(ctx.figidx.numbers, c.id)     # caption cell → numbered "Figure N." block
             print(io, "<figcaption class=\"exp-figcap\" id=\"fig-", _esc(c.id), "\"><b>Figure ",
-                  ctx.figidx.numbers[c.id], ".</b> ", embed(markdown_html(mdsrc, mdinterp)), "</figcaption>")
+                  ctx.figidx.numbers[c.id], ".</b> ", embed(markdown_html(mdsrc, mdinterp; caption = ctx.figidx.numbers[c.id])), "</figcaption>")
         else
             # A prose sweep is scoped to the cell it swept: the mark id goes on the section so the
             # client writes a position's strings into THIS cell's `.ival` spans and not into another

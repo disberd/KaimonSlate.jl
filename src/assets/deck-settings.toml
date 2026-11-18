@@ -30,6 +30,7 @@ accent2 = "#b392f0"
 surface = "slate.bg"
 ink = "#ff4d6d"
 
+# `list-marker` is the colour of the bullets of a list: a role name, a palette name or a colour.
 [text]
 font = ["Inter"]
 size = "34u"
@@ -37,6 +38,7 @@ line-height = 1.45
 paragraph-after = "0.55em"
 list-item-after = "0.28em"
 list-indent = "1.2em"
+list-marker = "accent"
 
 [heading]
 h1 = "2.6em"
