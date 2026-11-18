@@ -831,16 +831,37 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // it, inside the text size of the region and inside the box that is the area of the region. Slate
     // warns when the region is taller than that box, off the page, or over a block or another region.
     #let region(name, body) = if MARKS { [#metadata((rec: (kind: "region", name: name), body: body, lines: true)) <slate-mark>] } else { body }
-    #let metablock(title, subtitle, byline, abstract) = align(center + horizon)[
-      #text(size: 2.4em, weight: "bold", fill: $(p.title))[#region("title", title)]
-      #if subtitle != none { v(0.42em); text(size: 1.4em, fill: $(p.title))[#region("subtitle", subtitle)] }
-      #if byline != none { v(0.74em); text(size: 0.9em, fill: $(p.parlabel))[#region("byline", byline)] }
-      #if abstract != none { v(0.84em); block(width: 80%, text(size: 0.8em, style: "italic")[#region("abstract", abstract)]) }
-    ]
+    // The base title slide draws the regions of a `title` cell with the sizes and the spacing of the
+    // live title slide. The title is at 0.94 em, weight 800, in the strong colour, with 0.18 em above
+    // it and 0.2 of its size below it. The subtitle is at the size of its heading level in the deck
+    // settings (`SUBLEVEL`, 2 or 3, which the document sets before the title slide), weight 500, in
+    // the dim colour, with 0.08 of its size above it. Both have the line height of a heading
+    // (`HEAD-LH`). The byline is a paragraph of body text with `text.paragraph-after` below it.
+    // `linebox(L, body)` gives `body` the line box of CSS for the line height `L`, as `base-rhythm` does.
+    #let SUBLEVEL = state("slate-subtitle-level", 3)
+    #let linebox(L, body) = context {
+      let m(t, b) = measure(text(top-edge: t, bottom-edge: b, "x")).height / text.size
+      let (A, D) = (m("ascender", "baseline"), m("baseline", "descender"))
+      text(top-edge: (A + (L - A - D) / 2) * 1em, bottom-edge: -(D + (L - A - D) / 2) * 1em, body)
+    }
+    // A region holds a block as wide as the column, so that its mark has the box of the column.
+    #let metablock(title, subtitle, byline, abstract) = align(center, {
+      let line(name, L, body) = region(name, block(width: 100%, linebox(L, body)))
+      if title != none {
+        block(inset: (top: 0.18em), text(size: 0.94em, weight: 800, fill: $(p.title),
+          block(inset: (bottom: 0.2em), line("title", HEAD-LH, title))))
+      }
+      if subtitle != none {
+        context text(size: if SUBLEVEL.get() == 2 { settings.heading.h2 } else { settings.heading.h3 }, weight: 500,
+          fill: settings.roles.dim, block(inset: (top: 0.08em), line("subtitle", HEAD-LH, subtitle)))
+      }
+      if byline != none { region("byline", block(width: 100%, byline)); v(settings.text.paragraph-after) }
+      if abstract != none { v(0.84em); block(width: 80%, text(size: 0.8em, style: "italic")[#region("abstract", abstract)]) }
+    })
     // `metarest(m, rest)` adds `rest`, the blocks of the title cell that are no region, to the result
-    // `m` of `metablock`: one paragraph space after it when it is content, as the field `rest` when a
-    // deck template makes it a dictionary.
-    #let metarest(m, rest) = if type(m) == dictionary { m + (rest: rest) } else { m + v(settings.text.paragraph-after) + align(center, rest) }
+    // `m` of `metablock`: below it when it is content, as the field `rest` when a deck template makes
+    // it a dictionary.
+    #let metarest(m, rest) = if type(m) == dictionary { m + (rest: rest) } else { m + align(center, rest) }
     #let codeblock(s) = block(width: 100%, fill: $(p.codebg), inset: 21 * u, radius: 11 * u, text(size: $(_slide_code_size(code)), raw(block: true, lang: "julia", s)))
     #let outblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.outbg), radius: 8 * u, text(size: 0.7em, fill: $(p.outfg), raw(s)))
     #let valblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.valbg), radius: 8 * u, text(size: 0.7em, fill: $(p.valfg), raw(s)))
@@ -1993,7 +2014,7 @@ end
 # the cell with the subtitle in a `<slate-subtitle>` element and the byline in a `<slate-byline>`
 # element. The live deck draws `marked`, and each target reads the regions of the title slide from
 # this one function. `rest` is the markdown of the lines that are no region: the body blocks of the
-# title slide.
+# title slide. `sublevel` is the heading level of the subtitle, 2 or 3 (3 when there is no subtitle).
 function _title_cell(src)
     # The byline/subtitle are usually authored with markdown emphasis (`*A pipeline over…*`), but
     # the title block renders them as PLAIN Typst text — literal asterisks in the PDF. The block
@@ -2008,7 +2029,7 @@ function _title_cell(src)
         return t
     end
     lines = split(String(src), '\n')
-    title = ""; subtitle = ""; byline = ""
+    title = ""; subtitle = ""; byline = ""; sublevel = 3
     marked = String[]; rest = String[]
     region!(tag, ls) = append!(marked, ["", "<slate-$tag>", "", ls..., "", "</slate-$tag>", ""])
     plain(l) = !isempty(strip(l)) && !startswith(strip(l), "#")
@@ -2018,8 +2039,9 @@ function _title_cell(src)
         if isempty(title) && (m = match(r"^#\s+(.+?)\s*#*$", ln)) !== nothing
             title = unemph(m.captures[1])
             push!(marked, ln)
-        elseif isempty(subtitle) && (m = match(r"^#{2,3}\s+(.+?)\s*#*$", ln)) !== nothing
-            subtitle = unemph(m.captures[1])
+        elseif isempty(subtitle) && (m = match(r"^(#{2,3})\s+(.+?)\s*#*$", ln)) !== nothing
+            subtitle = unemph(m.captures[2])
+            sublevel = length(m.captures[1])
             region!("subtitle", [ln])
         elseif isempty(byline) && plain(ln)
             j = i                                    # the paragraph runs to an empty line or a heading
@@ -2032,7 +2054,7 @@ function _title_cell(src)
         end
         i += 1
     end
-    return (; title, subtitle, byline, marked = join(marked, "\n"), rest = String(strip(join(rest, "\n"))))
+    return (; title, subtitle, byline, sublevel, marked = join(marked, "\n"), rest = String(strip(join(rest, "\n"))))
 end
 _parse_title_cell(src) = (t = _title_cell(src); (t.title, t.subtitle, t.byline))
 
@@ -2041,12 +2063,13 @@ _parse_title_cell(src) = (t = _title_cell(src); (t.title, t.subtitle, t.byline))
 
 function report_frontmatter(report)
     cells = report.cells
-    title = report.title; subtitle = ""; byline = ""; abstract = ""
+    title = report.title; subtitle = ""; byline = ""; abstract = ""; sublevel = 3
     skip = Set{String}(); titlecell = ""; rolecell = ""; rest = ""
     titlei = findfirst(c -> :title in c.flags, cells)
     if titlei !== nothing
         tc = _title_cell(cells[titlei].source)
         isempty(tc.title) || (title = tc.title); subtitle = tc.subtitle; byline = tc.byline; rest = tc.rest
+        sublevel = tc.sublevel
         rolecell = cells[titlei].id
         push!(skip, rolecell)
     else
@@ -2068,7 +2091,7 @@ function report_frontmatter(report)
     end
     bibcells = Cell[c for c in cells if :bibliography in c.flags]
     has = titlei !== nothing || !isempty(strip(abstract))
-    return (; title, subtitle, byline, abstract, skip, bibcells, titlecell, has, rolecell, rest)
+    return (; title, subtitle, byline, sublevel, abstract, skip, bibcells, titlecell, has, rolecell, rest)
 end
 
 # ── Figure captions + numbering ───────────────────────────────────────────────────────────────
@@ -2882,6 +2905,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                                   blk = _block_printer(plan, tsi, 0, (cell = tc.id, row = 1, column = 1)), fragkw...)
             end
             meta = string("metablock(", arg(fm.title), ", ", arg(fm.subtitle), ", ", arg(fm.byline), ", ", arg(fm.abstract), ")")
+            print(io, "#SUBLEVEL.update(", fm.sublevel, ")\n")   # the heading level of the subtitle, for `metablock`
             print(io, "#slide(layout: \"title\", ", position(rio) == 0 ? meta : string("metarest(", meta, ", [\n", String(take!(rio)), "])"), ")\n\n")
             push!(plan.pages, tsi)
         end

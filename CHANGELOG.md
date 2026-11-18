@@ -178,6 +178,11 @@ were written when they went out. They are marked.
   the bottom right, and the title below the 12 u padding of the live title. Headings take the sizes
   of the deck settings and the weights of the live deck, and a level-2 heading has the accent bar of
   the live deck under it.
+- The base title slide of the PDF deck (from a `title` cell) takes the sizes and the spacing of the
+  live title slide. The title is at 0.94 em of the body text (it was 2.4 em), in bold 800. The
+  subtitle is at the size of its heading level in the deck settings, in the dim colour (it was
+  1.4 em in the title colour). The byline is at the body size in the text colour (it was 0.9 em,
+  dimmed). The gaps between them are the margins of the live title slide.
 - The PDF deck spaces lines and blocks as the live deck does. Each line has the line box of CSS: the
   ascender to the descender of the font, as Typst measures it, with half of the rest of the line
   height above and below. Paragraphs, lists and headings take the spacing of the deck settings, the

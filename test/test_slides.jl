@@ -822,7 +822,16 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test [x.name for x in r] == ["title", "subtitle", "byline", "abstract"]
         @test all(x -> x.page == 1, r)
         @test all(r[i].box.y + r[i].box.h <= r[i+1].box.y + 1 for i in 1:3)
-        @test r[1].size > r[2].size > r[3].size
+        # The sizes and the spacing of the live title slide: the title at 0.94 em with 0.2 of its size
+        # below it, the subtitle at the size of its heading level with 0.08 of its size above it, the
+        # byline at the body size just below the subtitle.
+        s = NS.deck_settings("", "").values
+        S, h3 = s["text"]["size"].value, s["heading"]["h3"].value
+        @test r[1].size ≈ 0.94S && r[2].size ≈ h3 * S && r[3].size ≈ S
+        @test r[2].box.y - (r[1].box.y + r[1].box.h) ≈ 0.2 * 0.94S + 0.08 * h3 * S atol = 0.1
+        @test r[3].box.y ≈ r[2].box.y + r[2].box.h atol = 0.1
+        L2 = NS.slide_layout(_mknb(replace(src, "### The subtitle" => "## The subtitle")))
+        @test L2[1].regions[2].size ≈ s["heading"]["h2"].value * S
         # The line of the title cell that is no region is a block of the title slide, below the regions.
         rest = only(L[1].blocks)
         @test (rest.cell, rest.frag, rest.page, rest.kind) == ("t", 0, 1, "prose") && occursin("One more line", rest.src)
