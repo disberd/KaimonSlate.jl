@@ -716,8 +716,9 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       show raw.where(block: true): set text(..edges(settings.text.line-height / CODE-INLINE))
       set par(leading: 0em, spacing: settings.text.paragraph-after)
       set block(spacing: 0em)
+      // Typst counts the list depth from 0: a top-level item gets "•", as on the live deck.
       set list(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
-        marker: depth => box(width: settings.text.list-indent - 0.5em, align(right, text(fill: settings.text.list-marker, ("•", "◦", "▪").at(calc.rem(depth - 1, 3))))))
+        marker: depth => box(width: settings.text.list-indent - 0.5em, align(right, text(fill: settings.text.list-marker, ("•", "◦", "▪").at(calc.rem(depth, 3))))))
       set enum(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
         numbering: n => box(width: settings.text.list-indent - 0.5em, align(right, [#n.])))
       show list: set block(above: settings.text.paragraph-after, below: 0.6em)

@@ -208,6 +208,8 @@ were written when they went out. They are marked.
   markdown cell centres its cells, as on the live deck. The default `slide` draws its body in the new
   `base-rhythm(body)`; a deck template that draws its own pages keeps its own rules, or calls
   `base-rhythm` around its `fit`.
+- In the PDF deck a top-level list item gets the marker `•`, a nested item `◦` and the next level
+  `▪`, as on the live deck. A top-level item got `▪`.
 - Base tables, on the live deck and in the PDF deck, take the `[table]` deck settings: the full width
   of their column, text at 0.8 em, a line height of 1.2, padding in em, a bold header row on a fill
   and a rule under each row. In the PDF deck the column widths follow the automatic table layout of

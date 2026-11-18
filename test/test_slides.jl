@@ -1273,6 +1273,14 @@ end
     @test only(v)["markdown"] == "````\n\"a ``` b\"\n````\n"   # the fence is longer than a run of backticks in the text
 end
 
+# The base slides PDF marks list items as the live deck does: `•`, then `◦`, then `▪`.
+@testset "slides PDF: the list markers of the live deck" begin
+    f = tempname() * ".pdf"
+    write(f, NS.export_pdf(_mknb("#%% md id=l\n## List\n\n- top\n  - nested\n    - third\n"); layout = "slides"))
+    t = try read(`pdftotext $f -`, String) finally rm(f) end
+    @test occursin(r"•\s*top", t) && occursin(r"◦\s*nested", t) && occursin(r"▪\s*third", t)
+end
+
 @testset "figure hook: the width comes from the columns and the template's body width" begin
     widths(nb) = (dir = NS._build_slides_project(nb);
                   try; [_svg_width(t) for (_, t) in _drawn_figs(dir)]; finally; rm(dir; recursive = true, force = true); end)
