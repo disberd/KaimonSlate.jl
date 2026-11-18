@@ -1307,6 +1307,39 @@ end
     end
 end
 
+# A markdown video or audio file of the project is a figure whose form is the bytes of the file, for an
+# exporter that asks for its MIME type, in a markdown cell and in a markdown output. The markdown keeps
+# the alt text, and the files of the slides project have no media mark. A file over the cap warns.
+@testset "a markdown video or audio file gives a figure form" begin
+    root = mktempdir()
+    write(joinpath(root, "clip.mp4"), "mp4 bytes")
+    write(joinpath(root, "talk.mp3"), "mp3 bytes")
+    open(io -> truncate(io, NS._EXPORT_MAX_BYTES + 1), joinpath(root, "big.mp4"), "w")   # sparse
+    nb = _hooknb("#%% md id=mv\n## Media\n\n![a clip](clip.mp4)\n\n![](talk.mp3)\n\nText ![inline](talk.mp3) here.\n\n![big](big.mp4)\n\n" *
+                 "#%% code id=mo\nimport Markdown\nMarkdown.parse(\"![out clip](clip.mp4)\")\n")
+    nb.report.meta["assetbase"] = root
+    w = String[]
+    b = only(NS.exporter_deck(nb; figure_mimes = ["image/png", "video/mp4", "audio/mpeg"], warnings = w)["slides"])["blocks"]
+    @test [x["kind"] for x in b] == ["figure", "figure", "prose", "figure", "figure"]
+    @test b[1]["forms"] == [("video/mp4", Vector{UInt8}("mp4 bytes"))] && b[1]["markdown"] == "<slate-figure>\n\na clip\n\n</slate-figure>"
+    @test b[2]["forms"] == [("audio/mpeg", Vector{UInt8}("mp3 bytes"))]
+    @test b[3]["markdown"] == "Text inline here." && !haskey(b[3], "forms")
+    @test isempty(b[4]["forms"])
+    @test w == ["Cell mv: the file `big.mp4` is larger than 256 MiB, so the export shows its alt text in its place."]
+    @test b[5]["forms"] == [("video/mp4", Vector{UInt8}("mp4 bytes"))] && occursin("out clip", b[5]["markdown"])
+    @test !any(x -> occursin('\x1f', something(x["markdown"], "")), b)
+    # An exporter that does not ask for the type gets no form and no warning.
+    w = String[]
+    b = only(NS.exporter_deck(nb; warnings = w)["slides"])["blocks"]
+    @test all(isempty(x["forms"]) for x in b if x["kind"] == "figure") && isempty(w)
+    dir = NS._build_slides_project(nb)
+    try
+        @test !any(f -> occursin('\x1f', read(joinpath(dir, f), String)), filter(endswith(".md"), readdir(dir)))
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
 # The base slides PDF marks list items as the live deck does: `•`, then `◦`, then `▪`.
 @testset "slides PDF: the list markers of the live deck" begin
     f = tempname() * ".pdf"

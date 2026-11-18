@@ -758,7 +758,8 @@ header `X-Slate-Warnings`, and the tool lists them in its answer. The file is wr
 - `label`: the text of the entry in the export dialog.
 - `ext`: 1 to 8 lowercase letters or digits, with no dot.
 - `mime`: a `type/subtype` MIME type.
-- `figure_mimes`: the MIME types of the figure pictures that `f` can use, in preference order.
+- `figure_mimes`: the MIME types of the figure pictures that `f` can use, in preference order. A video
+  or audio type (`"video/mp4"`, `"audio/mpeg"`, …) asks for the video and audio files of markdown.
 
 The hub checks `name`, `ext`, `mime` and each of `figure_mimes`, and drops an exporter that fails, with
 a warning in its log. Call this from `__init__`. A later call with the same `name` replaces the
@@ -807,7 +808,7 @@ Each block:
 | `"markdown"` | Its markdown, with `{{ }}` values resolved and each block of a kind in its `<slate-<kind>>` element. An output of a code cell has `nothing`, with two exceptions: a markdown output splits into blocks as a markdown cell does, and the `text/plain` value of the cell is a fenced code block of its text. |
 | `"box"`, `"size"`, `"lineheight"` | Its box, its text size in `u` and its line height in `u`; `nothing` when the slides PDF does not draw it. The box of a figure is the picture, the box of a table is the table, the box of each other block is as wide as its column. The text size and the line height of a table are those of its cells, and those of a code block are those of its code text. |
 | `"cols"`, `"rows"` | Only on a table: the widths of its columns and the heights of its rows in `u`, a `Vector{Float64}`. |
-| `"forms"` | Only on a figure: a `Vector` of `(mime, bytes)` pairs, in the order of `figure_mimes`, one for each MIME type that Slate has a picture of. It can be empty. |
+| `"forms"` | Only on a figure: a `Vector` of `(mime, bytes)` pairs, in the order of `figure_mimes`, one for each MIME type that Slate has a picture of. It can be empty. A markdown video or audio file of the project (`![a clip](clip.mp4)`) gives a figure with one form: the bytes of the file under the MIME type of its extension (`video/mp4`, `audio/mpeg`, `audio/mp4` for `.m4a`, `audio/wav`, …), when `figure_mimes` has that type. Its `"markdown"` holds its alt text. A file larger than 256 MiB gives no form and an export warning. |
 
 A region, and so its text, is in the deck value only where the Typst source calls `region(name, body)`
 of the slides preamble. The base deck calls it for the regions of its title slide and for the title of

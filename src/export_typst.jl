@@ -1592,13 +1592,15 @@ _has_figure_bytes(o) = any(ch -> ch.mime in ("application/pdf", "image/svg+xml",
 
 # Write the markdown `md` of an output (block kinds marked) to `file` and print its `cmarker` call
 # through `blk`, with `tail` after it. On a slide (`blk` is a `_block_printer`) each block of `md` is a
-# block of the layout source, split by the rules of a markdown cell, in a file of its own.
+# block of the layout source, split by the rules of a markdown cell, in a file of its own. A figure
+# block gets the video or audio file of its media mark (`_take_media_marks`) as its `file`.
 function _emit_output_md!(io::IO, dir, file, md, tail, blk)
     parts = blk === _plain_block ? [(kind = "prose", text = md)] : ReportRender._md_split(md)
     for (k, b) in enumerate(parts)
         f = k == 1 ? file : string(chopsuffix(file, ".md"), "_", k, ".md")
-        write(joinpath(dir, f), b.text)
-        print(io, blk(b.kind, string("#", _md_render(f), tail); src = b.text))
+        text, clip = _take_media_marks(b.text)
+        write(joinpath(dir, f), text)
+        print(io, blk(b.kind, string("#", _md_render(f), tail); src = text, file = b.kind == "figure" ? clip : nothing))
     end
 end
 
@@ -1669,7 +1671,7 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
     put(kind, parts...) = print(io, blk(kind, string(parts...)))
     # The images of a markdown output are staged as those of a markdown cell (`warnings` gets a line
     # for each image whose file is not in the project).
-    stage(md) = _stage_typst_md_media(md, dir, base * "_out", _proj_root(nb); warnings, cell = c.id)
+    stage(md) = _stage_typst_md_media(md, dir, base * "_out", _proj_root(nb); warnings, cell = c.id, media = true)
     o = c.output
     (o === nothing || !_outputs_any(outputs)) && return
     texts = _outputs_text_ok(outputs)
@@ -2743,12 +2745,13 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
                            compfig = _compfig_stager(c, dir, base, compfigs, sizes),
                            interpbase = frag.interpbase,
                            fignum = :caption in c.flags ? get(figure_index(nb.report).numbers, c.id, nothing) : nothing)
-        md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes, warnings, cell = c.id)   # author-embedded images → staged files
-        isempty(strip(md)) && return false
+        md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes, warnings, cell = c.id, media = true)   # author-embedded images → staged files
+        isempty(strip(first(_take_media_marks(md)))) && return false
         for (k, b) in enumerate(ReportRender._md_split(md))
             file = string(base, "b", k, ".md")
-            write(joinpath(dir, file), b.text)
-            print(io, blk(b.kind, string("#", _md_render(file), "\n\n"); src = b.text, divcolumn))
+            text, clip = _take_media_marks(b.text)
+            write(joinpath(dir, file), text)
+            print(io, blk(b.kind, string("#", _md_render(file), "\n\n"); src = text, divcolumn, file = b.kind == "figure" ? clip : nothing))
         end
         return occursin(r"</slate-(?:key-message|admonition|table)>\s*$", md)
     else
@@ -2770,9 +2773,10 @@ end
 # (0 for the title page of a notebook with no `title` cell); the pages after `pages` hold no slide of
 # the model (the references, the notes). `blocks` holds each block in the order of the document:
 # `(slide, frag, index, kind, cell, row, column, divcolumn, src, file)`; `file` is the picture of a figure
-# output in the project directory, else `nothing`. `texts` holds the markdown of each region, by
-# `(slide, name)`. For an exporter (`exporter_deck`), `mimes` are its figure MIME types and `forms` the
-# pictures of the figure hooks in those types, by output `(cell, slot)`.
+# output in the project directory, or the video or audio file of a figure of markdown, else `nothing`.
+# `texts` holds the markdown of each region, by `(slide, name)`. For an exporter (`exporter_deck`),
+# `mimes` are its figure MIME types and `forms` the pictures of the figure hooks in those types, by
+# output `(cell, slot)`.
 mutable struct _SlidePlan
     deck::Vector{NamedTuple}
     pages::Vector{Int}
@@ -2923,11 +2927,14 @@ _deck_box(b) = b === nothing ? nothing : Dict{String,Any}("x" => b.x, "y" => b.y
 # The `forms` of figure block `b`, in the order of `plan.mimes`. For each MIME type: the picture of the
 # figure hook, else a chunk of that type of the output, else the picture that the slides project
 # staged when it has that type. `file` is the staged picture of an output; a figure of a markdown cell
-# names its staged picture in its markdown, and a `{{ }}` value has its number in that name.
-function _figure_forms(plan::_SlidePlan, b, file, cells, dir)
+# names its staged picture in its markdown, and a `{{ }}` value has its number in that name. A figure
+# of markdown with a video or audio file has that file as `file` (see `_media_forms`).
+function _figure_forms(plan::_SlidePlan, b, file, cells, dir, warnings)
     slot, o = 0, nothing
     if b.src === nothing
         o = cells[b.cell].output
+    elseif file !== nothing
+        return _media_forms(plan, file, b.cell, warnings)
     else
         m = match(r"!\[[^\]]*\]\(<?([^)\s>]+)", b.src)
         file = m === nothing ? nothing : String(m[1])
@@ -2950,17 +2957,30 @@ function _figure_forms(plan::_SlidePlan, b, file, cells, dir)
     return forms
 end
 
-function _deck_block(si, b, plan::_SlidePlan, files, cells, dir)
+# The form of the video or audio file `path` of a markdown figure: its bytes under the MIME type of its
+# extension, when `plan.mimes` has that type. A file over the size cap gives no form and a warning.
+function _media_forms(plan::_SlidePlan, path, cell, warnings)
+    mime = first(split(_site_ctype(path), ';'))
+    mime in plan.mimes || return Tuple{String,Vector{UInt8}}[]
+    if filesize(path) > _EXPORT_MAX_BYTES
+        push!(warnings, string("Cell ", cell, ": the file `", basename(path), "` is larger than ", _EXPORT_MAX_BYTES >> 20,
+                               " MiB, so the export shows its alt text in its place."))
+        return Tuple{String,Vector{UInt8}}[]
+    end
+    return [(mime, read(path))]
+end
+
+function _deck_block(si, b, plan::_SlidePlan, files, cells, dir, warnings)
     d = Dict{String,Any}("kind" => b.kind, "cell" => b.cell, "frag" => b.frag, "index" => b.index, "row" => b.row,
                          "column" => b.column, "divcolumn" => b.divcolumn,
                          "markdown" => b.src === nothing ? nothing : _exporter_markdown(b.src),
                          "box" => _deck_box(b.box), "size" => b.size, "lineheight" => b.lineheight)
     b.kind == "table" && (d["cols"] = b.cols; d["rows"] = b.rows)
-    b.kind == "figure" && (d["forms"] = _figure_forms(plan, b, get(files, (si, b.frag, b.index), nothing), cells, dir))
+    b.kind == "figure" && (d["forms"] = _figure_forms(plan, b, get(files, (si, b.frag, b.index), nothing), cells, dir, warnings))
     return d
 end
 
-function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir)
+function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir, warnings)
     t = sl.title
     return Dict{String,Any}(
         "layout" => sl.layout, "transition" => sl.transition, "auto" => sl.auto,
@@ -2969,7 +2989,7 @@ function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir)
         "regions" => Any[Dict{String,Any}("name" => r.name, "text" => get(plan.texts, (si, r.name), nothing),
                                           "box" => _deck_box(r.box), "size" => r.size, "lineheight" => r.lineheight)
                  for r in sl.regions],
-        "blocks" => Any[_deck_block(si, b, plan, files, cells, dir) for b in sl.blocks])
+        "blocks" => Any[_deck_block(si, b, plan, files, cells, dir, warnings) for b in sl.blocks])
 end
 
 """
@@ -2997,7 +3017,7 @@ function exporter_deck(nb::LiveNotebook; figure_mimes = ["image/png"], theme::Ab
         W, H = deck_canvas(ratio)
         return Dict{String,Any}("title" => title, "size" => (Float64(W), Float64(H)), "ratio" => ratio,
             "settings" => deck_settings_dict(notebook_deck_settings(nb).values; palette = _chart_theme(charttheme, theme)),
-            "slides" => Any[_deck_slide(si, sl, plan, files, cells, dir) for (si, sl) in enumerate(_slide_layout(plan, recs))])
+            "slides" => Any[_deck_slide(si, sl, plan, files, cells, dir, warnings) for (si, sl) in enumerate(_slide_layout(plan, recs))])
     finally
         rm(dir; recursive = true, force = true)
     end

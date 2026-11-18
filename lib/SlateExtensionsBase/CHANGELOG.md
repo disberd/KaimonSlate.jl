@@ -37,7 +37,9 @@ Two things to know about the published GitHub releases for this package:
   boxes, text sizes and line heights of the slides PDF, figure forms in the order of `figure_mimes`), and calls
   `f(deck)` on the worker; `f` gives the bytes of the file, or the tuple `(bytes, warnings)` with its
   export warnings as a `Vector{String}`. `extension_manifest()` gains an `exporters`
-  field with the name, label, extension and MIME types of each exporter.
+  field with the name, label, extension and MIME types of each exporter. A video or audio type in
+  `figure_mimes` asks for the video and audio files of markdown: each one is a figure with the bytes of
+  the file as its form.
 
 ## [0.11.3] - 2026-11-05
 

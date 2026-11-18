@@ -108,6 +108,11 @@ were written when they went out. They are marked.
   its query to the exporter, and refuses a file of more than 256 MiB. An exporter can give export
   warnings with its file (`f` returns `(bytes, warnings)`). The export warnings of the slides PDF, then
   those of the exporter, show in the dialog, in the header `X-Slate-Warnings` and in the tool answer.
+- A markdown video or audio file of the project (`![a clip](clip.mp4)`, `![](talk.mp3)`) reaches an
+  exporter as a figure block with one form: the bytes of the file under the MIME type of its
+  extension, when the `figure_mimes` of the exporter has that type. The markdown of the block holds the
+  alt text. A file larger than 256 MiB gives no form and an export warning; a missing file gives the
+  warning of a missing image. The PDF exports do not change: they still show the alt text.
 
 ### Changed
 
