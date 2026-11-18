@@ -3619,10 +3619,12 @@ body.is-presenter > .page { position: absolute !important; left: -20000px; top: 
    exports produce. The `.md` body holds rendered markdown. Reuses theme vars. */
 .cell.role-title .md { text-align: center; padding: 6px 0 2px; }
 .cell.role-title .md h1 { font-size: 2rem; margin: 0; color: var(--strong); }
-.cell.role-title .md h2, .cell.role-title .md h3 { font-weight: 400; color: var(--dim); margin: 4px 0 0; }
+/* The subtitle and the deck title set only their vertical margins: the title layout centres a heading
+   with `margin-left/right: auto`. */
+.cell.role-title .md h2, .cell.role-title .md h3 { font-weight: 400; color: var(--dim); margin-top: 4px; margin-bottom: 0; }
 .deck-slide .slide-title.role-title { text-align: center; padding: .18em 0 .06em; }
-.deck-slide .slide-title.role-title h1 { font-size: .94em; margin: 0; color: var(--strong); }
-.deck-slide .slide-title.role-title :is(h2, h3) { font-weight: 400; color: var(--dim); margin: .12em 0 0; }
+.deck-slide .slide-title.role-title h1 { font-size: .94em; margin-top: 0; margin-bottom: 0; color: var(--strong); }
+.deck-slide .slide-title.role-title :is(h2, h3) { font-weight: 400; color: var(--dim); margin-top: .12em; margin-bottom: 0; }
 .cell.role-abstract .md { position: relative; margin: 2px 0 2px 14px; padding: 8px 14px;
   border-left: 3px solid var(--accent); background: var(--ovl); border-radius: 0 8px 8px 0;
   font-size: .94em; font-style: italic; color: var(--text); }

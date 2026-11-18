@@ -183,6 +183,8 @@ were written when they went out. They are marked.
   subtitle is at the size of its heading level in the deck settings, in the dim colour (it was
   1.4 em in the title colour). The byline is at the body size in the text colour (it was 0.9 em,
   dimmed). The gaps between them are the margins of the live title slide.
+- On the live deck, the title and the subtitle of the title slide (from a `title` cell) are centred on
+  the slide, as in the PDF deck. They started at the left edge of the column of the title slide.
 - The PDF deck spaces lines and blocks as the live deck does. Each line has the line box of CSS: the
   ascender to the descender of the font, as Typst measures it, with half of the rest of the line
   height above and below. Paragraphs, lists and headings take the spacing of the deck settings, the
