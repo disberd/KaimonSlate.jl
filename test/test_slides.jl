@@ -1676,6 +1676,10 @@ _plain(_) = false
             deck = NS.exporter_deck(tnb)
             @test deck["title"] == "The deck"
             @test startswith(String(first(_outline(deck))), "<!-- 16:9, 1920.0 × 1080.0 u -->\n\n# The deck\n")
+            # With no title in the notebook it is "", also when the report has the file name as its title.
+            unb = _mknb("#%% md id=b\n## Body\n\nText.\n")
+            unb.report.title = "slidetest"
+            @test NS.exporter_deck(unb)["title"] == ""
         end
         @testset "figure forms follow figure_mimes" begin
             forms(mimes) = [[f[1] for f in b["forms"]] for b in NS.exporter_deck(nb; figure_mimes = mimes)["slides"][1]["blocks"]

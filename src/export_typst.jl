@@ -2216,11 +2216,12 @@ end
 _parse_title_cell(src) = (t = _title_cell(src); (t.title, t.subtitle, t.byline))
 
 # `report_frontmatter` adds `rolecell`, the id of the `title` cell ("" with none), and `rest`, the
-# markdown of that cell that is no region.
+# markdown of that cell that is no region. `untitled` is the title when no cell gives one: the title of
+# the report (a loaded notebook has its file name there) for a document, "" for the deck value.
 
-function report_frontmatter(report)
+function report_frontmatter(report; untitled::AbstractString = report.title)
     cells = report.cells
-    title = report.title; subtitle = ""; byline = ""; abstract = ""; sublevel = 3
+    title = untitled; subtitle = ""; byline = ""; abstract = ""; sublevel = 3
     skip = Set{String}(); titlecell = ""; rolecell = ""; rest = ""
     titlei = findfirst(c -> :title in c.flags, cells)
     if titlei !== nothing
@@ -3112,7 +3113,8 @@ function exporter_deck(nb::LiveNotebook; figure_mimes = ["image/png"], theme::Ab
         recs = _typst_query(joinpath(dir, "doc.typ"), "<slate>"; marks = true)
         append!(warnings, _slides_warnings(nb, recs, figwarns, plan))
         files = Dict((b.slide, b.frag, b.index) => b.file for b in plan.blocks)
-        cells, title = lock(() -> (Dict(c.id => c for c in nb.report.cells), String(report_frontmatter(nb.report).title)), nb.lock)
+        cells, title = lock(() -> (Dict(c.id => c for c in nb.report.cells),
+                                   String(report_frontmatter(nb.report; untitled = "").title)), nb.lock)
         W, H = deck_canvas(ratio)
         return Dict{String,Any}("title" => title, "size" => (Float64(W), Float64(H)), "ratio" => ratio,
             "settings" => deck_settings_dict(notebook_deck_settings(nb).values; palette = _chart_theme(charttheme, theme)),
