@@ -456,22 +456,19 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
 
     # Each key of the base file reaches the live deck (`--deck-<group>-<key>` in notebook.css or
     # slides.js) and the slides PDF (`settings.<group>.<key>` in export_typst.jl). Julia reads the keys
-    # in `julia`. The two `todo` lists hold the keys that a target does not read yet: a key must leave
-    # its list when a target starts to read it, so the lists only get shorter.
+    # in `julia`.
     @testset "deck settings: each key has a reader on each target" begin
         src = joinpath(@__DIR__, "..", "src")
         live = read(joinpath(src, "assets", "notebook.css"), String) * read(joinpath(src, "assets", "js", "slides.js"), String)
         typ = read(joinpath(src, "export_typst.jl"), String)
         julia = ("code.syntax", "figures.slate-palette")
-        todo_live = ("code.fill", "code.font")
-        todo_typst = ()
         keys_ = ["$g.$k" for (g, d) in NS.deck_settings("", "").values for (k, v) in d if g != "palette" && !(v isa AbstractDict)]
         @test length(keys_) > 50 && "table.rule-width" in keys_
         reads_live(key) = occursin(Regex(NS._deck_css_name(split(key, '.')...) * "(?![\\w-])"), live)
         reads_typst(key) = occursin(Regex("settings\\." * replace(key, "." => "\\.") * "(?![\\w-])"), typ)
         checked = filter(!in(julia), keys_)
-        @test isempty(filter(key -> reads_live(key) == (key in todo_live), checked))
-        @test isempty(filter(key -> reads_typst(key) == (key in todo_typst), checked))
+        @test filter(!reads_live, checked) == []
+        @test filter(!reads_typst, checked) == []
     end
 
     # The Typst preamble reads the deck settings: a template's `text.size` moves the body text size that
