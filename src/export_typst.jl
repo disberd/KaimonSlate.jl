@@ -1854,22 +1854,18 @@ end
 # as a font path. `rest` follows the input file; the command's stdout goes to `out`.
 # Every stream is given explicitly: a detached host process can have its stdin/stdout closed, and
 # a child that inherits a closed descriptor fails to spawn (EBADF).
+# Typst_jll is used in its `Cmd` form, which carries its own environment: the do-block form changes
+# the process `ENV` and restores it, so two runs at the same time (the compile and the query of a
+# slides PDF) can restore each other's `ENV`.
 function _typst_run(sub::String, typ::String, rest::Vector{String}; out::Union{IO,Nothing} = nothing)
     root = dirname(typ)
     fonts = joinpath(root, "fonts")
     fontflags = isdir(fonts) ? ["--font-path", fonts] : String[]
     sys = Sys.which("typst")
+    exe = sys === nothing ? Typst_jll.typst() : `$sys`
     err = IOBuffer()
-    go(exe) = run(pipeline(`$exe $sub --root $root $fontflags $typ $rest`; stdin = devnull,
-                           stdout = something(out, err), stderr = err))
     try
-        if sys !== nothing
-            go(sys)
-        else
-            Typst_jll.typst() do exe
-                go(exe)
-            end
-        end
+        run(pipeline(`$exe $sub --root $root $fontflags $typ $rest`; stdin = devnull, stdout = something(out, err), stderr = err))
     catch e
         # `run` throws only `ProcessExited(1)` — useless on its own. Surface Typst's actual diagnostic
         # (the source line + reason) so an export failure is debuggable instead of opaque.
@@ -1997,19 +1993,32 @@ export_pdf(nb::LiveNotebook; kwargs...) = first(_export_pdf_report(nb; kwargs...
 # `export_pdf` and the export warnings of the PDF: the figure warnings of every layout (a figure hook
 # that threw, figures from stored output) and, for slides, the checks of the deck settings, the
 # slides at the fit floor and the regions that are out of place.
+# For slides, the query of the marks runs as a second Typst process beside the compile. The compile
+# always waits for it, so no `typst` process stays behind, and a compile error is the error of the
+# export. A query that fails does not stop the export: it gives one warning, with the reason from
+# Typst.
 function _export_pdf_report(nb::LiveNotebook; kwargs...)
     figwarns = String[]
     plan = _SlidePlan()                                    # a slides project writes its pages here
     dir = _build_typst_project(nb; warnings = figwarns, plan, kwargs...)
     try
         typ = joinpath(dir, "doc.typ"); pdf = joinpath(dir, "out.pdf")
-        _typst_compile(typ, pdf)
-        warns = figwarns
-        if get(kwargs, :layout, "") == "slides"
-            recs = _typst_query(typ, "<slate>"; marks = true)
-            warns = _slides_warnings(nb, recs, figwarns, plan)
+        slides = get(kwargs, :layout, "") == "slides"
+        query = slides ? @async(try _typst_query(typ, "<slate>"; marks = true) catch e; e end) : nothing
+        try
+            _typst_compile(typ, pdf)
+        finally
+            query === nothing || wait(query)
         end
-        return read(pdf), warns
+        slides || return read(pdf), figwarns
+        recs = fetch(query)
+        recs isa Exception || return read(pdf), _slides_warnings(nb, recs, figwarns, plan)
+        # The reason is the first `error:` line of Typst (its warnings come first), else the first line.
+        lines = split(replace(sprint(showerror, recs), r"^typst query failed:\n" => ""), '\n')
+        why = strip(lines[something(findfirst(startswith("error:"), lines), 1)])
+        qwarn = "The layout check of the slides did not run, so the export cannot warn about a slide that does not fit " *
+                "or a region that is out of place. Typst says: " * (length(why) > 200 ? first(why, 199) * "…" : why)
+        return read(pdf), _slides_warnings(nb, Any[], [qwarn; figwarns], plan)
     finally
         rm(dir; recursive = true, force = true)
     end

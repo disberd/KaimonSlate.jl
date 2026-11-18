@@ -895,6 +895,22 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         # slide 2: the warning names the slide.
         @test warns(over, "#%% md id=h\n# Deck\n\n#%% md id=a\n## A\n\nText.\n") == ["Slide 2: the title region is over a block of cell a."]
     end
+
+    # The layout check of the warnings is a second Typst run (a query with the marks on). When only
+    # that run fails, the export still gives the PDF, the other warnings, and one warning with the
+    # reason. When the compile fails, its error is the error of the export.
+    @testset "a slides PDF whose layout check fails is still made, with a warning" begin
+        nb = _mknb("#%% md id=a\n## A\n\nText.\n")
+        # A deck template that stops Typst only with the marks on, and a deck setting that warns.
+        tpl = "#if sys.inputs.at(\"slate-marks\", default: \"0\") == \"1\" { panic(\"slate-probe-marks\") }\n"
+        nb.deck_template = (; hash = "q", source = tpl, settings = "[text]\nslate_no_key = 1\n", files = Dict{String,Vector{UInt8}}(),
+                            body_width = nothing)
+        pdf, ws = NS._export_pdf_report(nb; layout = "slides")
+        @test String(pdf[1:4]) == "%PDF"
+        @test length(ws) == 2 && occursin("slate_no_key", ws[1]) && occursin("slate-probe-marks", ws[2])
+        nb.deck_template = (; nb.deck_template..., source = "#panic(\"slate-probe-all\")\n")
+        @test_throws r"typst compile failed.*slate-probe-all"s NS._export_pdf_report(nb; layout = "slides")
+    end
 end
 
 @testset "deck markup" begin
