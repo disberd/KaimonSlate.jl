@@ -626,14 +626,16 @@ function _pdfSyncThemeWarn() {
   if (row) row.style.display = (_exFormat() === 'pdf' && !_pdfPresent() && pick && pick !== 'asis') ? '' : 'none';
 }
 // Show the speaker-notes row only for the slides layout (PDF only), and the line that says the deck
-// template fixes the colours (the Theme picker changes nothing then) for both deck layouts.
+// template fixes the colours (the Theme picker changes nothing then) for both deck layouts and for an
+// exporter, whose deck value takes the colours of the Theme picker too.
 function _pdfSyncSlides() {
   const lay = document.getElementById('pdflayout').value || '';
   const slides = lay.startsWith('slides');
   const row = document.getElementById('pdfnotesrow');
   if (row) row.style.display = (_exFormat() === 'pdf' && slides) ? '' : 'none';
   const fixed = document.getElementById('pdffixedrow');
-  if (fixed) fixed.style.display = (_exFormat() === 'pdf' && (slides || _pdfPresent()) && nbState && nbState.deckFixesColours) ? '' : 'none';
+  const deck = _exFormat().startsWith('x:') || (_exFormat() === 'pdf' && (slides || _pdfPresent()));
+  if (fixed) fixed.style.display = (deck && nbState && nbState.deckFixesColours) ? '' : 'none';
 }
 // Show only the rows for the selected format.
 function _exSyncRows() {
@@ -655,6 +657,7 @@ function _exSyncRows() {
     document.getElementById('pdfratiorow').style.display = deck ? '' : 'none';
     document.getElementById('pdfratio').value = (nbState && nbState.slideRatio) || '16:9';
   }
+  if (f === 'exporter') _pdfSyncSlides();
   if (f === 'docs') _docsPrefill();
   // A write's log row is part of its format's rows, but has nothing to show until something is written.
   [['appoutrow', 'appout'], ['docsoutrow', 'docsout'], ['pdfwarnrow', 'pdfwarns']].forEach(([r, o]) => {
