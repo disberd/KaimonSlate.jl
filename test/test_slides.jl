@@ -940,6 +940,11 @@ end
         end
         # A `{{ }}` value alone in its paragraph is a figure when it draws one.
         @test kind(RE._interp_token(1); figure = ==(1)) == "figure" && kind(RE._interp_token(1)) == "prose"
+        # A `Markdown.MD` value alone in its paragraph is prose on the page and in the PDF, not a figure.
+        nb = _mknb("#%% code id=u\nusing Markdown\n\n#%% md id=m\n{{ Markdown.parse(\"Some *text*.\") }}\n")
+        foreach(c -> RE.eval_cell!(nb.report, c, nb.kernel), nb.report.cells)
+        @test !occursin("<slate-figure>", NS.cell_json(nb.report.cells[2])["output"])
+        @test [b.kind for sl in NS.slide_layout(nb) for b in sl.blocks if b.cell == "m"] == ["prose"]
         doc = "Intro.\n\n> Key.\n\n*Caption.*\n\n!!! tip\n    Body.\n\n:::: columns\n::: column\n*In a column.*\n:::\n::::\n\n```\n> code\n```\n"
         out = R._md_kinds(doc)
         @test R._md_kinds(out) == out                               # a second run changes nothing

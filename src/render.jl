@@ -430,6 +430,19 @@ function _markdown_output(o)
     return ch.mime == "text/markdown" ? String(copy(ch.data)) : nothing
 end
 
+# True when the output `o` draws a figure: a picture, an HTML display, a component, or a chart. The
+# MIME types of its chunks decide, as `_render_chunks` draws them. A `Markdown.MD` value (its HTML,
+# then its markdown form) is prose, and so is math.
+function _is_figure_value(o)
+    o.exception === nothing || return false
+    isempty(o.display) && return !isempty(o.echarts)
+    return any(pairs(o.display)) do (i, ch)
+        startswith(ch.mime, "image/") || ch.mime in _FIGURE_CHUNK_MIMES ||
+            (ch.mime == "text/html" && !_is_md_value_html(o.display, i))
+    end
+end
+const _FIGURE_CHUNK_MIMES = ("application/vnd.kaimonslate.component+json", "application/vnd.kaimonslate.html+html")
+
 # The markdown template with each markdown-valued `{{ expr }}` capture's text in place (passed through
 # `prose`); the other interpolations stay as tokens. Returns `(template, exprs)`.
 function _md_spliced(src::AbstractString, interps = CellOutput[]; prose = identity)
@@ -496,9 +509,8 @@ function _md_html(src::AbstractString, interps = CellOutput[]; prose = identity,
     end
     # Each block of a kind gets its `<slate-…>` element (block_kinds.jl). The markdown values are in
     # the source already, so this one call covers them. A `{{ }}` value alone in its paragraph is a
-    # figure when it draws a picture, a chart or a component.
-    isfig(i) = i <= length(frags) && (startswith(frags[i], "<div class=\"ichart\"") ||
-        (startswith(frags[i], "<div class=\"disp ") && !startswith(frags[i], "<div class=\"disp latex\"")))
+    # figure when it draws a picture, a chart or a component (`_is_figure_value`).
+    isfig(i) = i <= length(interps) && _is_figure_value(interps[i])
     s = _md_kinds(String(take!(b)); caption, figure = isfig)
     html = CommonMark.html(_md_parser()(s))
     for (i, m) in enumerate(math)
