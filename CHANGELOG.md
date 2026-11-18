@@ -18,7 +18,8 @@ were written when they went out. They are marked.
   worker manifest carries only a hash of the template. The hub keeps the template for each notebook and
   asks the worker for the bytes only when the hash changes, so 1 to 3 MB of template does not cross the
   gate on each run. A notebook that pins an older `SlateExtensionsBase` has no hash and no template, and
-  still gets every other manifest field. This needs a `SlateExtensionsBase` newer than 0.11.3.
+  still gets every other manifest field. This needs `SlateExtensionsBase` 0.11.4, and KaimonSlate
+  now requires at least that version.
 - The PDF deck export applies the deck template of the notebook. The template source goes after the
   default Typst preamble, so a `#let slide` in it replaces the default one. The template files are
   written into the Typst project directory, which is the `--root` of the compile. When the project
