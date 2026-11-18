@@ -3293,12 +3293,10 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide .md strong { color: var(--deck-strong); }
 .deck-slide .md code { font-size: .85em; }
 .deck-slide .md pre { font-size: var(--deck-code-size); }
-/* Code takes `code.font` and `code.fill` of the deck settings, as in the slides PDF: a code block of a
-   markdown cell has the fill, the inset and the corners of the PDF `codeblock`, and the text blocks of
-   an output (stdout, value, error) have the fill. */
+/* Code takes `code.font` and `code.fill` of the deck settings, as in the slides PDF: all code text is in
+   the code font, and the text blocks of an output (stdout, value, error) have the fill of the PDF
+   `outblock`, `valblock` and `errblock`. A code block of a markdown cell has no fill in the PDF. */
 .deck-slide :is(.md pre, .output pre, .output .err) { font-family: var(--deck-code-font); }
-.deck-slide .md pre { background: var(--deck-code-fill); padding: calc(var(--u) * 21); border-radius: calc(var(--u) * 11); }
-.deck-slide .md pre code { background: none; padding: 0; }
 .deck-slide .output :is(.out, .val, .err) { background: var(--deck-code-fill); }
 /* A block quote has the gap between cells below it. `:where` keeps the rule below a deck template's
    own. */
