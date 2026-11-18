@@ -466,7 +466,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         todo_live = ("code.fill", "code.font")
         todo_typst = ()
         keys_ = ["$g.$k" for (g, d) in NS.deck_settings("", "").values for (k, v) in d if g != "palette" && !(v isa AbstractDict)]
-        @test length(keys_) > 50
+        @test length(keys_) > 50 && "table.rule-width" in keys_
         reads_live(key) = occursin(Regex(NS._deck_css_name(split(key, '.')...) * "(?![\\w-])"), live)
         reads_typst(key) = occursin(Regex("settings\\." * replace(key, "." => "\\.") * "(?![\\w-])"), typ)
         checked = filter(!in(julia), keys_)
@@ -1152,6 +1152,30 @@ end
     @test occursin("--deck-text-list-marker: #123456;", NS.deck_settings_css(s))
     @test occursin("\"list-marker\": rgb(\"#123456\")", NS.deck_settings_typ(s; ratio = "16:9", palette = "midnight"))
     @test occursin("--deck-text-list-marker: var(--deck-accent);", NS.deck_settings_css(NS.deck_settings("", "").values))
+end
+
+# `table.rule-width = "0u"` gives rows with no rule and no room for it, on the live deck and in the PDF.
+@testset "deck settings: table.rule-width 0u removes the rule and its room" begin
+    s = NS.deck_settings("", "[table]\nrule-width = \"0u\"\n").values
+    @test occursin("--deck-table-rule-width: calc(0 * var(--u));", NS.deck_settings_css(s))
+    css = read(joinpath(@__DIR__, "..", "src", "assets", "notebook.css"), String)
+    @test occursin(":is(th, td) { border: none; border-bottom: var(--deck-table-rule-width) solid", css)
+    mark = "<!--raw-typst #context [#metadata(here().position().y.pt()) <after>]-->"
+    got = map(("", "[table]\nrule-width = \"0u\"\n")) do set
+        nb = _mknb("#%% md id=a\n## A\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nAfter$mark the table.\n")
+        nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}(), body_width = nothing)
+        dir = NS._build_slides_project(nb)
+        try
+            doc, pdf = joinpath(dir, "doc.typ"), joinpath(dir, "out.pdf")
+            y = only(NS._typst_query(doc, "<after>")) / (720 / 1920)     # in u
+            NS._typst_compile(doc, pdf)
+            (y, count("stroke-width", read(`pdftocairo -svg -f 1 -l 1 $pdf -`, String)))
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+    @test got[1][1] - got[2][1] ≈ 2 * 2 atol = 0.01      # two rows, each 2 u shorter
+    @test got[1][2] > 0 && got[2][2] == 0                # the base rules, then none
 end
 
 # A value whose type has a figure hook (SlateExtensionsBase `slate_export_figure`) prints the picture

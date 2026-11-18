@@ -3324,7 +3324,7 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
    `full-width` is on. */
 .deck-slide :is(.md, .markdown) table { font-size: var(--deck-table-text-size); line-height: var(--deck-table-line-height);
   min-width: calc(var(--deck-table-full-width) * 100%); margin-bottom: var(--deck-rhythm-after-table); }
-.deck-slide :is(.md, .markdown) :is(th, td) { border: none; border-bottom: calc(var(--u) * 2) solid var(--deck-table-rule-color);
+.deck-slide :is(.md, .markdown) :is(th, td) { border: none; border-bottom: var(--deck-table-rule-width) solid var(--deck-table-rule-color);
   padding: var(--deck-table-body-pad-y) var(--deck-table-pad-x); }
 .deck-slide :is(.md, .markdown) th { padding-block: var(--deck-table-header-pad-y); background: var(--deck-table-header-fill);
   color: var(--deck-table-header-color); }

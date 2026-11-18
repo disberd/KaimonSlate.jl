@@ -560,7 +560,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // the difference, and the inset half of it on each side. A rule of `TRULE` under each row adds its
     // width to the row, as a CSS border does.
     #let TL = settings.table.line-height
-    #let TRULE = 2 * u
+    #let TRULE = settings.table.rule-width
     #let tinset(pad) = pad - (settings.text.line-height - TL) / 2 * 1em
     // The plain text of a table cell, for its widest word.
     #let plaintext(c) = if type(c) == str { c } else if c.has("text") and type(c.text) == str { c.text } else if c.has("children") { c.children.map(plaintext).sum(default: "") } else if c.has("body") { plaintext(c.body) } else if c.has("child") { plaintext(c.child) } else { " " }

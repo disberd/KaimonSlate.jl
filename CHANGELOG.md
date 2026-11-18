@@ -86,6 +86,9 @@ were written when they went out. They are marked.
   with `--input slate-marks=1` writes them as metadata under the label `<slate>`, in the slide unit
   `u`: read them with `typst query doc.typ "<slate>" --input slate-marks=1`. A compile with no such
   input writes none, and the pages are the same.
+- The deck setting `table.rule-width` sets the width of the rule under each table row, on the live
+  deck and in the PDF deck. Its base value is 2 u. With `0u` the rows have no rule and take no room
+  for it.
 
 ### Changed
 

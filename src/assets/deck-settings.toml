@@ -65,11 +65,14 @@ pad-y = "20u"
 size = "0.8em"
 color = "dim"
 
+# `rule-width` is the width of the rule under each row. With "0u" the rows have no rule and take no
+# room for it.
 [table]
 header-fill = "slate.bg2"
 header-color = "strong"
 stripe-fill = "none"
 rule-color = "slate.border"
+rule-width = "2u"
 text-size = "0.8em"
 line-height = 1.2
 pad-x = "0.6em"
