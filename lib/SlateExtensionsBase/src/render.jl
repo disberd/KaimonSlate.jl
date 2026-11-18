@@ -296,8 +296,10 @@ component, then the output as the cell showed it (an image, or a raster of its H
 line to the export warnings; the export does not fail.
 
 Slate keeps the value of each output whose type has a method, so that an export can call the hook. A
-run of the cell replaces the value. A notebook that is open from its stored outputs and did not run
-has no values: its export uses the stored outputs and warns.
+run of the cell replaces the value. A cell that Slate restored from its memo, or that a notebook open
+from its stored outputs did not run, has no value: the export uses the stored output and warns with
+the names of those cells. A run of the notebook restores them from the memo again; a forced run of
+each cell (its ▶ button) computes the value.
 """
 slate_export_figure(::IO, ::MIME, x, ctx) = false
 

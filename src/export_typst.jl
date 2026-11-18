@@ -166,9 +166,12 @@ _figure_roles(s, palette::AbstractString) =
     Dict{String,String}(k => String(v) for (k, v) in deck_settings_dict(s; palette)["roles"])
 
 # Ask the figure hook for the picture of each marked output and keep it in `figs`. A hook that throws
-# adds a line to `warnings`. The outputs whose worker keeps no value add one line together: their
-# notebook opened from its stored outputs and did not run, or its worker is not running. Called before
-# the caller takes `nb.lock`, like the other warm passes.
+# adds a line to `warnings`. The cells whose worker keeps no value for an output add one line together,
+# with their ids. Their output comes from storage: the hub restored it from the memo, or the notebook
+# opened from its stored outputs and did not run, or its worker is not running. A run of the notebook
+# restores such a cell from the memo again; only a forced run of the cell (its ▶, or the route
+# `POST /api/<notebook>/cell/<cell>` with `force: true`) computes the value. Called before the caller
+# takes `nb.lock`, like the other warm passes.
 function _warm_hook_figs!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{String}, geo; progress = nothing)
     targets = lock(nb.lock) do
         out = Tuple{String,Int,String}[]
@@ -184,23 +187,32 @@ function _warm_hook_figs!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{St
         end
         out
     end
-    stored = 0
+    stored = String[]
     for (cid, slot, region) in targets
         k = _running_kernel(nb, region)
-        k === nothing && (stored += 1; continue)
+        k === nothing && (push!(stored, cid); continue)
         progress === nothing || (try; progress(cid); catch; end)
         r = try; ReportEngine.export_figure(k, cid, slot, _TYPST_FIGURE_MIMES, _figure_ctx(geo, cid, slot)); catch; nothing; end
         r === nothing && continue
         if !r.held
-            stored += 1
+            push!(stored, cid)
         elseif !isempty(r.mime)
             figs[(cid, _hook_slot(slot))] = (r.bytes, _FIGURE_MIME_EXT[r.mime])
         elseif !isempty(r.error)
             push!(warnings, "Cell $cid: the figure hook of $(r.type) threw an error, so the output prints as it shows: $(r.error)")
         end
     end
-    stored > 0 && push!(warnings, "$stored figure$(stored == 1 ? "" : "s") from stored output: run the notebook for vector figures")
+    isempty(stored) || push!(warnings, _stored_figs_warning(unique!(stored)))
     return figs
+end
+
+function _stored_figs_warning(cells::Vector{String})
+    one = length(cells) == 1
+    return string(one ? "Cell " : "Cells ", join(cells, ", "), ": the output comes from storage (the memo or the ",
+                  "saved notebook), so the figure hook has no value to draw and the PDF has the output as it shows. ",
+                  "A run of the notebook restores ", one ? "this cell" : "these cells", " from the memo again. Run ",
+                  one ? "it" : "each of them", " with its ▶ button (`POST /api/<notebook>/cell/<cell>` with ",
+                  "`force: true`), then export again.")
 end
 
 # The width of each `{{ }}` value of the markdown `src` (numbered from `ib + 1`) in a column `w` px wide,
@@ -1654,7 +1666,7 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
     elseif _has_component(o)
         put("prose", "#notefig(\"[component not captured — open this notebook in a browser, then re-export]\")\n")
     elseif _hook_output(o)
-        put("prose", "#notefig(\"[figure not captured — run the notebook, then re-export]\")\n")
+        put("prose", "#notefig(\"[figure not captured — run this cell with its ▶ button, then re-export]\")\n")
     elseif _has_html_output(c)
         put("prose", "#notefig(\"[figure not captured — open this notebook in a browser, then re-export]\")\n")
     end

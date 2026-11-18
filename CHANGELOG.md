@@ -70,10 +70,12 @@ were written when they went out. They are marked.
   roles as hex (`roles`: on a slide, those of the deck settings of the notebook). A method that
   declines or throws lets the export take the figure as before; a throw adds an export warning. The
   worker keeps the value of each output whose type has such a method, until the cell runs again or
-  is deleted. A notebook opened from its stored outputs and not run has no values: the export warns
-  "N figures from stored output". A component's `exportFigure` gets the same `width`, `max_height`,
-  `scale`, `text_size` and `roles` in its `ctx`, beside its old keys. A deck template states the
-  width of its body with `provide_deck_template!(…; body_width)`, in `u`.
+  is deleted. A cell that the hub restored from the memo, or that a notebook opened from its stored
+  outputs has not run, has no value. A run of the notebook restores such a cell from the memo again,
+  so the export warning names the cells and says to run each of them with its ▶ button (a forced
+  run). A component's `exportFigure` gets the same `width`, `max_height`, `scale`, `text_size` and
+  `roles` in its `ctx`, beside its old keys. A deck template states the width of its body with
+  `provide_deck_template!(…; body_width)`, in `u`.
 - The deck setting `text.list-marker` sets the colour of list bullets, on the live deck and in the
   PDF deck. Its base value is the role `accent`.
 - Regions of a slide. The base Typst preamble of the PDF deck gives `region(name, body)`: a deck

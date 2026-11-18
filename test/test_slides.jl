@@ -1275,8 +1275,9 @@ end
     w = String[]
     dir = NS._build_slides_project(nb; warnings = w)
     try
-        @test w == ["1 figure from stored output: run the notebook for vector figures"]
-        @test occursin("#notefig(\"[figure not captured — run the notebook, then re-export]\")",
+        @test length(w) == 1 && startswith(w[1], "Cell fs1: the output comes from storage")
+        @test occursin("Run it with its ▶ button (`POST /api/<notebook>/cell/<cell>` with `force: true`)", w[1])
+        @test occursin("#notefig(\"[figure not captured — run this cell with its ▶ button, then re-export]\")",
                        read(joinpath(dir, "doc.typ"), String))
     finally
         rm(dir; recursive = true, force = true)
