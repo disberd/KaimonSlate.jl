@@ -2208,10 +2208,11 @@ end
 
 # The checks of an exporter (`register_exporter!`). Its name goes into a URL path, its file extension
 # and MIME type into HTTP headers, so each must match a strict pattern. A MIME type is `type/subtype`
-# with the characters of RFC 6838.
-const _EXPORTER_NAME_RE = r"^[a-z0-9][a-z0-9-]{0,31}$"
-const _EXPORTER_EXT_RE = r"^[a-z0-9]{1,8}$"
-const _MIME_RE = r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$"
+# with the characters of RFC 6838. The patterns end in `\z`, not `$`, which also matches before a last
+# line feed.
+const _EXPORTER_NAME_RE = r"\A[a-z0-9][a-z0-9-]{0,31}\z"
+const _EXPORTER_EXT_RE = r"\A[a-z0-9]{1,8}\z"
+const _MIME_RE = r"\A[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\z"
 const _EXPORTER_WARNED = Set{String}()   # each reason is logged once in a hub session: a manifest comes with each drain
 const _EXPORTER_WARNED_LOCK = ReentrantLock()
 

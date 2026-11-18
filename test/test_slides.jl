@@ -1594,8 +1594,14 @@ _plain(_) = false
                                 merge(ok, (; name = "badmime", mime = "text")),
                                 merge(ok, (; name = "badfig", figure_mimes = ["image/png\r\nX: y"]))])
             xnb = _mknb("#%% md id=a\nText.\n")
+            empty!(NS._EXPORTER_WARNED)                       # each reason is logged once in a hub session
             @test_logs (:warn, r"Bad Name") (:warn, r"file extension \"m.d\"") (:warn, r"\"text\" is not a type/subtype") (:warn, r"figure MIME type") NS._merge_exporters!(xnb, m)
             @test [e.name for e in xnb.exporters] == ["good"]
+            @test_logs min_level = Base.CoreLogging.Warn NS._merge_exporters!(xnb, m)   # the next drain logs nothing
+            # A value that ends in a line feed fails too: it must not reach a header or a URL path.
+            @test all(e -> NS._check_exporter(e) isa String, [merge(ok, (; name = "good\n")), merge(ok, (; ext = "md\n")),
+                                                               merge(ok, (; mime = "text/markdown\n")),
+                                                               merge(ok, (; figure_mimes = ["image/png\n"]))])
             @test NS._merge_exporters!(xnb, (; frontend = [])) && isempty(xnb.exporters)   # an older SEB: none
         end
         @testset "the size cap holds" begin
