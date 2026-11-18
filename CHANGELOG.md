@@ -86,10 +86,10 @@ were written when they went out. They are marked.
   `<slate-abstract>` elements. The elements make no box outside a slide.
 - The export dialog shows a warning for each region of a PDF deck that is out of its area, or over
   another region or a block.
-- The PDF deck can give the box of each block and of each region. A compile of the Typst project
-  with `--input slate-marks=1` writes them as metadata under the label `<slate>`, in the slide unit
-  `u`: read them with `typst query doc.typ "<slate>" --input slate-marks=1`. A compile with no such
-  input writes none, and the pages are the same.
+- The PDF deck can give the box, the text size and the line height of each block and of each region.
+  A compile of the Typst project with `--input slate-marks=1` writes them as metadata under the label
+  `<slate>`, in the slide unit `u`: read them with `typst query doc.typ "<slate>" --input slate-marks=1`.
+  A compile with no such input writes none, and the pages are the same.
 - The deck setting `table.rule-width` sets the width of the rule under each table row, on the live
   deck and in the PDF deck. Its base value is 2 u. With `0u` the rows have no rule and take no room
   for it.
@@ -99,7 +99,8 @@ were written when they went out. They are marked.
   and so does the new tool `export(notebook; format, path)`. The hub compiles the slides PDF with its
   marks, builds the deck value (deck title, slide size and ratio, deck settings in the palette of the Theme picker,
   slides with their layout, title, notes, transition, regions and blocks, each block with its markdown
-  or its figure forms, its box and its text size), and the worker calls `f(deck)` through the gate tool
+  or its figure forms, its box, its text size and its line height; regions with their text, box, text
+  size and line height), and the worker calls `f(deck)` through the gate tool
   `__slate_export`. The hub checks the name (`^[a-z0-9][a-z0-9-]{0,31}$`), the file extension
   (`^[a-z0-9]{1,8}$`) and each MIME type (`type/subtype`), and drops an exporter that fails with a
   warning in its log. The route serves only registered names (404 for another name), passes nothing of

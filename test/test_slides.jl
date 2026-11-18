@@ -1436,6 +1436,15 @@ _plain(_) = false
             t = only(s2["blocks"])
             @test t["kind"] == "table" && length(t["cols"]) == 2 && length(t["rows"]) == 2
             @test !haskey(s1["blocks"][1], "forms") && !haskey(s1["blocks"][1], "cols")
+            # Line heights in `u`: prose in the base rhythm has the CSS line height of the deck settings.
+            @test all(b["lineheight"] isa Float64 && b["lineheight"] > 0 for s in deck["slides"] for b in s["blocks"])
+            @test only(s1["regions"])["lineheight"] > 0
+            p = s1["blocks"][1]
+            @test p["lineheight"] ≈ deck["settings"]["text"]["line-height"] * p["size"]
+            # The title of the base title slide has the line height of a heading (`HEAD-LH`, 1.1).
+            c = first(NS.exporter_deck(_mknb("#%% md id=t title\n# The deck\n\n#%% md id=b\n## Body\n\nText.\n"))["slides"])
+            ct = only(r for r in c["regions"] if r["name"] == "title")
+            @test ct["lineheight"] ≈ 1.1 * ct["size"]
         end
         @testset "the deck title is the title of the front matter" begin
             tnb = _mknb("#%% md id=t title\n# The deck\n\n### A subtitle\n\n#%% md id=b\n## Body\n\nText.\n")

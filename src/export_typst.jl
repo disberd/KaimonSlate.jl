@@ -795,14 +795,15 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // each region (`region`) of a slide writes records under the label `<slate>`; without it they
     // draw their body and nothing else. All lengths of a record are in `u`, from the top left corner
     // of the page.
-    // - `(kind: "block", frag, cell, i, block, page, x, y, w, h, nw, ah, size)`: block `i` of the cell
+    // - `(kind: "block", frag, cell, i, block, page, x, y, w, h, nw, ah, size, lh)`: block `i` of the cell
     //   fragment `frag` ("s<slide>f<fragment>") of cell `cell`, of block kind `block`. `x`, `y` and `w` are the left
     //   edge, the top and the width of its column, `h` its height and `nw` the width of its content.
-    //   `ah` is the height of its container, when that has one. `size` is the text size at its place.
-    // - `(kind: "region", name, page, x, y, w, h, nw, ah, size)`: the same for a region.
-    // - `(kind: "text", size, page, …)`: the text size of a paragraph, a heading, a list or a code
-    //   block inside a block or a region, with the `frag` and `i` of the block or the `name` of the
-    //   region. The first one of a block is the text size of the block.
+    //   `ah` is the height of its container, when that has one. `size` is the text size at its place,
+    //   `lh` the line pitch `P` at its place (see below).
+    // - `(kind: "region", name, page, x, y, w, h, nw, ah, size, lh)`: the same for a region.
+    // - `(kind: "text", size, lh, page, …)`: the text size and the line pitch of a paragraph, a heading,
+    //   a list or a code block inside a block or a region, with the `frag` and `i` of the block or the
+    //   `name` of the region. The first one of a block is the text size and the line pitch of the block.
     // - `(kind: "figure", page, x, y, w, h, frag, i)`: the picture of a figure block, after the fit.
     // - `(kind: "cell", col, row, end, page, x, y, size, frag, i)`: a corner of a cell in the first
     //   row or the first column of a table block: the top left one (`end` false) and the bottom right
@@ -810,26 +811,29 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // The box of prose, of a caption and of a region holds whole line boxes of CSS (`lines`): a line
     // of pitch `P` (its top edge, its bottom edge and the leading) has `(P - (A + D)) / 2` above its
     // ascender `A` and below its descender `D`, measured on the font in use. Inside `base-rhythm` a
-    // line has those edges already, so nothing is added.
+    // line has those edges already, so nothing is added, and `P` is the CSS line height.
     // The mark is placed, so it takes no space: the layout is the same with and without marks. The
     // measured copies of `fit` draw the body with no mark.
     #let MARKS = sys.inputs.at("slate-marks", default: "0") == "1"
     #let slate-mark(rec, body, lines: false) = {
       let id = rec + (kind: "text")
       let here-u() = { let p = here().position(); (page: p.page, x: p.x / u, y: p.y / u) }
-      let sized(it) = context { [#metadata(id + (page: here().page(), size: text.size / u)) <slate>]; it }
+      // The line pitch `P` in force, in `u`. Call it inside `context`.
+      let pitch() = (measure(text(bottom-edge: "baseline", "x")).height + measure(text(top-edge: "baseline", "x")).height
+        + par.leading.to-absolute()) / u
+      let sized(it) = context { [#metadata(id + (page: here().page(), size: text.size / u, lh: pitch())) <slate>]; it }
       place(layout(c => context {
         let (above, below) = if lines {
           let m(t, b) = measure(text(top-edge: t, bottom-edge: b, "x")).height
           let (A, D) = (m("ascender", "baseline"), m("baseline", "descender"))
           let (t, b) = (measure(text(bottom-edge: "baseline", "x")).height, measure(text(top-edge: "baseline", "x")).height)
-          let half = (t + b + par.leading.to-absolute() - A - D) / 2
+          let half = (pitch() * u - A - D) / 2
           (A + half - t, D + half - b)
         } else { (0 * u, 0 * u) }
         let sz = measure(width: c.width, body)
         let p = here-u()
         [#metadata(rec + p + (y: p.y - above / u, w: c.width / u, h: (sz.height + above + below) / u, nw: sz.width / u,
-          ah: if c.height < 100 * SLIDE_H { c.height / u }, size: text.size / u)) <slate>]
+          ah: if c.height < 100 * SLIDE_H { c.height / u }, size: text.size / u, lh: pitch())) <slate>]
       }))
       show par: sized
       show heading: sized
@@ -869,9 +873,10 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       let (A, D) = (m("ascender", "baseline"), m("baseline", "descender"))
       text(top-edge: (A + (L - A - D) / 2) * 1em, bottom-edge: -(D + (L - A - D) / 2) * 1em, body)
     }
-    // A region holds a block as wide as the column, so that its mark has the box of the column.
+    // A region holds a block as wide as the column, so that its mark has the box of the column. The
+    // line box is set outside the region, so that its mark records the line height of its lines.
     #let metablock(title, subtitle, byline, abstract) = align(center, {
-      let line(name, L, body) = region(name, block(width: 100%, linebox(L, body)))
+      let line(name, L, body) = linebox(L, region(name, block(width: 100%, body)))
       if title != none {
         block(inset: (top: 0.18em), text(size: 0.94em, weight: 800, fill: $(p.title),
           block(inset: (bottom: 0.2em), line("title", HEAD-LH, title))))
@@ -2787,12 +2792,14 @@ compiled with the block and region marks on (`slate-mark` of the slides preamble
 other options of the slides PDF (`theme`, `charttheme`, `outputs`, …). Internal: it is not exported.
 
 A box is `(x, y, w, h)` in the slide unit `u`, from the top left corner of the page. The box of prose,
-of a caption and of a region holds whole line boxes of CSS. A text size is in `u`.
+of a caption and of a region holds whole line boxes of CSS. A text size is in `u`. A line height is
+the line pitch of the text in `u`, from the top of a line to the top of the next line: inside the base
+rhythm, the CSS line height times the text size.
 
-- `regions`: each region that the PDF draws, as `(name, page, box, size)`. `name` is "title",
-  "subtitle", "byline" or "abstract".
+- `regions`: each region that the PDF draws, as `(name, page, box, size, lineheight)`. `name` is
+  "title", "subtitle", "byline" or "abstract".
 - `blocks`: each block of the body, in reading order, as
-  `(kind, cell, frag, index, row, column, divcolumn, src, page, box, size, cols, rows)`.
+  `(kind, cell, frag, index, row, column, divcolumn, src, page, box, size, lineheight, cols, rows)`.
   - `kind`: one of `ReportRender.BLOCK_KINDS`.
   - `cell`, `row`, `column`: the cell, the row and the `column=` value of its fragment, as in `frags`.
   - `frag`: the index of its fragment in `frags`; 0 for a block of the `title` cell.
@@ -2800,9 +2807,9 @@ of a caption and of a region holds whole line boxes of CSS. A text size is in `u
     column 1 come before the blocks of column 2. `divcolumn` is the number of that column, or 0.
   - `src`: its markdown, with `{{ }}` resolved and the block kinds marked; `nothing` for an output
     of a code cell, except a markdown output: it splits into blocks as a markdown cell does.
-  - `page`, `box`, `size`: its page in the PDF, its box and its text size; `nothing` when the PDF
-    does not draw it. The box of a figure is the picture, the box of a table is the table, the box
-    of each other block is as wide as its column.
+  - `page`, `box`, `size`, `lineheight`: its page in the PDF, its box, its text size and its line
+    height; `nothing` when the PDF does not draw it. The box of a figure is the picture, the box of a
+    table is the table, the box of each other block is as wide as its column.
   - `cols`, `rows`: the column widths and the row heights of a table, in `u`; else `nothing`.
 """
 function slide_layout(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slidelevel", 2),
@@ -2843,18 +2850,20 @@ function _slide_layout(plan::_SlidePlan, records)
         si = get(plan.pages, r["page"], 0)
         si == 0 && continue
         t = findfirst(t -> get(t, "name", nothing) == r["name"] && t["page"] == r["page"], of("text"))
+        tr = t === nothing ? r : of("text")[t]
         push!(regions[si], (name = String(r["name"]), page = Int(r["page"]), box = _mark_box(r),
-                            size = Float64((t === nothing ? r : of("text")[t])["size"])))
+                            size = Float64(tr["size"]), lineheight = Float64(tr["lh"])))
     end
     blocks = [NamedTuple[] for _ in plan.deck]
     for b in plan.blocks
         b.slide == 0 && continue
         k = ("s$(b.slide)f$(b.frag)", b.index)
         r = get(marks, k, nothing)
-        page = box = size = cols = rows = nothing
+        page = box = size = lineheight = cols = rows = nothing
         if r !== nothing
             page, box = Int(r["page"]), _mark_box(r)
-            size = Float64(get(texts, k, r)["size"])
+            tr = get(texts, k, r)
+            size, lineheight = Float64(tr["size"]), Float64(tr["lh"])
             tc = get(cells, k, Any[])
             if b.kind == "figure" && haskey(figs, k)
                 box = _mark_box(figs[k])
@@ -2866,7 +2875,8 @@ function _slide_layout(plan::_SlidePlan, records)
                 size = Float64(first(tc)["size"])
             end
         end
-        push!(blocks[b.slide], (; b.kind, b.cell, b.frag, b.index, b.row, b.column, b.divcolumn, b.src, page, box, size, cols, rows))
+        push!(blocks[b.slide], (; b.kind, b.cell, b.frag, b.index, b.row, b.column, b.divcolumn, b.src, page, box, size,
+                                lineheight, cols, rows))
     end
     return [merge(sl, (regions = regions[si], blocks = blocks[si])) for (si, sl) in enumerate(plan.deck)]
 end
@@ -2925,7 +2935,7 @@ function _deck_block(si, b, plan::_SlidePlan, files, cells, dir)
     d = Dict{String,Any}("kind" => b.kind, "cell" => b.cell, "frag" => b.frag, "index" => b.index, "row" => b.row,
                          "column" => b.column, "divcolumn" => b.divcolumn,
                          "markdown" => b.src === nothing ? nothing : _exporter_markdown(b.src),
-                         "box" => _deck_box(b.box), "size" => b.size)
+                         "box" => _deck_box(b.box), "size" => b.size, "lineheight" => b.lineheight)
     b.kind == "table" && (d["cols"] = b.cols; d["rows"] = b.rows)
     b.kind == "figure" && (d["forms"] = _figure_forms(plan, b, get(files, (si, b.frag, b.index), nothing), cells, dir))
     return d
@@ -2938,7 +2948,8 @@ function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir)
         "title" => t === nothing ? nothing : Dict{String,Any}("text" => String(t.text), "depth" => Int(t.depth), "cell" => String(t.cell)),
         "notes" => String[cells[id].source for id in sl.notes],
         "regions" => Any[Dict{String,Any}("name" => r.name, "text" => get(plan.texts, (si, r.name), nothing),
-                                          "box" => _deck_box(r.box), "size" => r.size) for r in sl.regions],
+                                          "box" => _deck_box(r.box), "size" => r.size, "lineheight" => r.lineheight)
+                 for r in sl.regions],
         "blocks" => Any[_deck_block(si, b, plan, files, cells, dir) for b in sl.blocks])
 end
 

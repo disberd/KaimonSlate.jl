@@ -765,8 +765,10 @@ exporter. `f` gets no options: it reads its other options from the state of its 
 `Vector`, `Tuple`, `NamedTuple`, `String`, `Symbol`, `Float64`, `Int`, `Bool`, `nothing` and
 `Vector{UInt8}`. A length is in the slide unit `u`: the slide is 1920 u wide at 16:9 and 16:10, 1440 u
 at 4:3. A box is a `Dict` with the keys `"x"`, `"y"`, `"w"` and `"h"`, in `u` from the top left corner
-of the slide. The boxes and the text sizes come from the slides PDF of the notebook. A later Slate can
-add keys, so an exporter must not fail on a key that it does not know.
+of the slide. The boxes, the text sizes and the line heights come from the slides PDF of the notebook.
+A line height is the line pitch of the text in `u`, from the top of a line to the top of the next line:
+divide it by the text size to get the line height as a ratio. A later Slate can add keys, so an
+exporter must not fail on a key that it does not know.
 
 | Key | Value |
 |:----|:------|
@@ -784,7 +786,7 @@ Each slide:
 | `"title"` | `nothing`, or a `Dict` for the heading that the slide starts with: `"text"` (its markdown), `"depth"` (its level, an `Int`) and `"cell"` (the id of its cell). The heading is not a block. |
 | `"notes"` | A `Vector{String}`: the markdown of each `notes` cell of the slide, as the author wrote it. |
 | `"transition"`, `"auto"` | The values of the `transition=` and `auto=` tags of the slide, or `nothing`. |
-| `"regions"` | A `Vector` of `Dict`s, one for each region that the slides PDF draws from notebook content: `"name"` (`"title"`, `"subtitle"`, `"byline"` or `"abstract"`), `"text"` (its markdown), `"box"` and `"size"` (its text size in `u`). |
+| `"regions"` | A `Vector` of `Dict`s, one for each region that the slides PDF draws from notebook content: `"name"` (`"title"`, `"subtitle"`, `"byline"` or `"abstract"`), `"text"` (its markdown), `"box"`, `"size"` (its text size in `u`) and `"lineheight"` (its line height in `u`). |
 | `"blocks"` | A `Vector` of `Dict`s, one for each block of the body, in reading order. |
 
 Each block:
@@ -798,7 +800,7 @@ Each block:
 | `"row"`, `"column"` | The row of cells of the slide that holds it, from 1, and the `column=` value of its cell. |
 | `"divcolumn"` | The number of the `::: column` that holds it, or 0. |
 | `"markdown"` | Its markdown, with `{{ }}` values resolved and each block of a kind in its `<slate-<kind>>` element; `nothing` for an output of a code cell that is not markdown. |
-| `"box"`, `"size"` | Its box, and its text size in `u`; `nothing` when the slides PDF does not draw it. The box of a figure is the picture, the box of a table is the table, the box of each other block is as wide as its column. |
+| `"box"`, `"size"`, `"lineheight"` | Its box, its text size in `u` and its line height in `u`; `nothing` when the slides PDF does not draw it. The box of a figure is the picture, the box of a table is the table, the box of each other block is as wide as its column. |
 | `"cols"`, `"rows"` | Only on a table: the widths of its columns and the heights of its rows in `u`, a `Vector{Float64}`. |
 | `"forms"` | Only on a figure: a `Vector` of `(mime, bytes)` pairs, in the order of `figure_mimes`, one for each MIME type that Slate has a picture of. It can be empty. |
 
