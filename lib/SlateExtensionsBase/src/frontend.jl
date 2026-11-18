@@ -805,7 +805,7 @@ Each block:
 | `"row"`, `"column"` | The row of cells of the slide that holds it, from 1, and the `column=` value of its cell. |
 | `"divcolumn"` | The number of the `::: column` that holds it, or 0. |
 | `"markdown"` | Its markdown, with `{{ }}` values resolved and each block of a kind in its `<slate-<kind>>` element. An output of a code cell has `nothing`, with two exceptions: a markdown output splits into blocks as a markdown cell does, and the `text/plain` value of the cell is a fenced code block of its text. |
-| `"box"`, `"size"`, `"lineheight"` | Its box, its text size in `u` and its line height in `u`; `nothing` when the slides PDF does not draw it. The box of a figure is the picture, the box of a table is the table, the box of each other block is as wide as its column. The text size and the line height of a table are those of its cells. |
+| `"box"`, `"size"`, `"lineheight"` | Its box, its text size in `u` and its line height in `u`; `nothing` when the slides PDF does not draw it. The box of a figure is the picture, the box of a table is the table, the box of each other block is as wide as its column. The text size and the line height of a table are those of its cells, and those of a code block are those of its code text. |
 | `"cols"`, `"rows"` | Only on a table: the widths of its columns and the heights of its rows in `u`, a `Vector{Float64}`. |
 | `"forms"` | Only on a figure: a `Vector` of `(mime, bytes)` pairs, in the order of `figure_mimes`, one for each MIME type that Slate has a picture of. It can be empty. |
 

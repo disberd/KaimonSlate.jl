@@ -841,7 +841,9 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       show heading: sized
       show list: sized
       show enum: sized
-      show raw.where(block: true): it => { show raw.line.where(number: 1): sized; it }
+      // An output of a code cell (`outblock`, `valblock`, `errblock`) is inline raw text, with no
+      // paragraph: in a code block the first line of any raw text gives the record.
+      show raw: it => if it.block or rec.at("block", default: none) == "code" { show raw.line.where(number: 1): sized; it } else { it }
       show <slate-figure>: it => { context { let s = measure(it); [#metadata(id + here-u() + (kind: "figure", w: s.width / u, h: s.height / u)) <slate>] }; it }
       show table.cell: it => if rec.at("block", default: none) == "table" and (it.x == 0 or it.y == 0) {
         let corner(end) = context [#metadata(id + here-u() + (kind: "cell", col: it.x, row: it.y, end: end, size: text.size / u, lh: pitch())) <slate>]
@@ -2818,7 +2820,7 @@ rhythm, the CSS line height times the text size.
   - `page`, `box`, `size`, `lineheight`: its page in the PDF, its box, its text size and its line
     height; `nothing` when the PDF does not draw it. The box of a figure is the picture, the box of a
     table is the table, the box of each other block is as wide as its column. The text size and the
-    line height of a table are those of its cells.
+    line height of a table are those of its cells, and those of a code block are those of its code text.
   - `cols`, `rows`: the column widths and the row heights of a table, in `u`; else `nothing`.
 """
 function slide_layout(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slidelevel", 2),
