@@ -248,6 +248,14 @@ were written when they went out. They are marked.
   of a code cell (a `Markdown.MD` value) splits into blocks by the same rules. The pages do not
   change.
 
+### Fixed
+
+- A markdown image whose file is not in the project (a missing file, a file outside the project, a
+  remote address) does not stop the PDF export, the PDF deck or an exporter now. Typst stopped the
+  whole compile on it with "file not found". The export shows the alt text of the image in its place,
+  or its address when it has no alt text, and gives an export warning with the cell and the image. An
+  image in code stays code.
+
 ## [2.2.0] - 2026-11-16
 
 ### Added

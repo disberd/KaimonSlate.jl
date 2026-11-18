@@ -1111,25 +1111,28 @@ function _rewrite_text_citations(text, citekeys, emit; figrefs = Dict{String,Tup
         end
     end)
 end
-# Rewrite citations across a markdown source, skipping fenced code blocks AND inline `code` spans
-# (so a literal `[@key]` shown in backticks is left untouched). `emit` selects sentinel vs HTML link;
-# `figrefs`/`figemit` handle `[@fig:label]` figure cross-references.
-function _rewrite_citations(md::AbstractString, citekeys = Set{String}(); emit = _cite_sentinel,
-                            figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text)
+# Apply `f` to the text of a markdown source outside its fenced code blocks and inline `code` spans:
+# `f` gets one line at a time, with each code span masked, and the spans come back after it.
+function _map_outside_code(f, md::AbstractString)
     out = IOBuffer(); infence = false
     for (li, ln) in enumerate(split(md, '\n'))
         li == 1 || print(out, '\n')
         if occursin(r"^\s*(```|~~~)", ln); infence = !infence; print(out, ln); continue; end
         if infence; print(out, ln); continue; end
-        # Protect inline `code` spans, rewrite the text between them, then restore the spans.
         spans = SubString{String}[]
         masked = replace(ln, r"`[^`]*`" => s -> (push!(spans, s); "\x00$(length(spans))\x00"))
-        done = _rewrite_text_citations(masked, citekeys, emit; figrefs = figrefs, figemit = figemit)
+        done = f(masked)
         for (i, s) in enumerate(spans); done = replace(done, "\x00$(i)\x00" => s); end
         print(out, done)
     end
     return String(take!(out))
 end
+# Rewrite citations across a markdown source, skipping fenced code blocks AND inline `code` spans
+# (so a literal `[@key]` shown in backticks is left untouched). `emit` selects sentinel vs HTML link;
+# `figrefs`/`figemit` handle `[@fig:label]` figure cross-references.
+_rewrite_citations(md::AbstractString, citekeys = Set{String}(); emit = _cite_sentinel,
+                   figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text) =
+    _map_outside_code(t -> _rewrite_text_citations(t, citekeys, emit; figrefs = figrefs, figemit = figemit), md)
 
 # Bare text of a `{{ expr }}` interpolation for the Typst export — mirrors the live renderer's
 # `_math_value`: a scalar's text, else a `text/latex` chunk's TeX with its `$`/`$$` delimiters
@@ -1600,13 +1603,14 @@ function _emit_output_md!(io::IO, dir, file, md, tail, blk)
 end
 
 # Emit an output's markdown or math form natively; false if it has neither, or Typst can't set it.
-function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString, o; blk = _plain_block)
+# `stage` gets the markdown before it is written (see `_emit_output!`).
+function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString, o; blk = _plain_block, stage = identity)
     _has_figure_bytes(o) && return false
     md = _output_chunk(o, "text/markdown")
     if md !== nothing
         src = _normalize_math_delims(md; tex = _portable_tex)
         if _typst_typesets(:md, src)
-            _emit_output_md!(io, dir, base * ".md", ReportRender._md_kinds(src; plain = true), "\n", blk)
+            _emit_output_md!(io, dir, base * ".md", stage(ReportRender._md_kinds(src; plain = true)), "\n", blk)
             return true
         end
     end
@@ -1661,8 +1665,11 @@ _plain_block(kind, typ; kw...) = typ
 function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::LiveNotebook, c::Cell;
                        theme::AbstractString = "light", charttheme::AbstractString = "",
                        override::Bool = false, outputs::AbstractString = "all",
-                       compfigs::_CompFigs = _NO_COMPFIGS, blk = _plain_block)
+                       compfigs::_CompFigs = _NO_COMPFIGS, blk = _plain_block, warnings = nothing)
     put(kind, parts...) = print(io, blk(kind, string(parts...)))
+    # The images of a markdown output are staged as those of a markdown cell (`warnings` gets a line
+    # for each image whose file is not in the project).
+    stage(md) = _stage_typst_md_media(md, dir, base * "_out", _proj_root(nb); warnings, cell = c.id)
     o = c.output
     (o === nothing || !_outputs_any(outputs)) && return
     texts = _outputs_text_ok(outputs)
@@ -1686,7 +1693,7 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
     md = hooked ? nothing : ReportRender._markdown_output(o)
     if md !== nothing
         # Prose: typeset as a markdown cell's would be, rather than rasterized as HTML.
-        _emit_output_md!(io, dir, base * "_out.md", ReportRender._md_kinds(_normalize_math_delims(md); plain = true), "\n\n", blk)
+        _emit_output_md!(io, dir, base * "_out.md", stage(ReportRender._md_kinds(_normalize_math_delims(md); plain = true)), "\n\n", blk)
         return
     end
     if texts && isempty(o.display) && !isempty(o.value_repr)
@@ -1697,7 +1704,7 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
                       src = strip(ReportEngine._md_fence_block("", val), '\n') * "\n"))
     end
     # Math, and HTML with a markdown form, print as text and formulas — ahead of any page snapshot.
-    if !hooked && _emit_typeset_output!(io, dir, base, o; blk)
+    if !hooked && _emit_typeset_output!(io, dir, base, o; blk, stage)
         for spec in _table_specs(c)
             put("table", _typst_table(spec; theme = theme))
         end
@@ -2556,7 +2563,8 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
             absarg = "none"
             if !isempty(strip(fm.abstract))
                 write(joinpath(dir, "abstract.md"),
-                      _stage_typst_md_media(_rewrite_citations(fm.abstract, citekeys), dir, "abstract", _proj_root(nb); sizes = mediasz))
+                      _stage_typst_md_media(_rewrite_citations(fm.abstract, citekeys), dir, "abstract", _proj_root(nb);
+                                            sizes = mediasz, warnings, cell = fm.rolecell))
                 absarg = _md_render("abstract.md")
             end
             print(io, "#metablock(", arg(fm.title), ", ", arg(fm.subtitle), ", ", arg(fm.byline), ", ", absarg, ")\n\n")
@@ -2581,7 +2589,7 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                                    compfig = _compfig_stager(c, dir, base, compfigs, mediasz),
                                    fignum = get(figidx.numbers, c.id, nothing),
                                    interpbase = ibase)
-                md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = mediasz)   # author-embedded images → staged files
+                md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = mediasz, warnings, cell = c.id)   # author-embedded images → staged files
                 if isempty(strip(md))
                     inrow || continue                # empty markdown: standalone → skip; in a row → empty slot
                 else
@@ -2602,7 +2610,7 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                 end
                 include_params && print(io, _emit_controls(c))   # frozen @bind controls — off by default
                 _emit_output!(io, dir, base, nb, c; theme = theme, charttheme = ct, override = override,
-                              outputs = outputs, compfigs = compfigs)
+                              outputs = outputs, compfigs = compfigs, warnings)
                 print(io, "\n")
             end
             if inrow                                  # close this grid slot; the row's last cell closes the grid
@@ -2700,12 +2708,12 @@ end
 # Each block of the fragment goes through `blk` (`_block_printer`): a markdown fragment is split into
 # its blocks (`ReportRender._md_split`), each in a file of its own, and each output of a code cell is
 # one block. `divcolumn` is the number of the `::: column` that holds the markdown, or 0.
-function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false, blk = _plain_block, divcolumn::Integer = 0)
+function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, warnings = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false, blk = _plain_block, divcolumn::Integer = 0)
     c, srcoverride = frag.cell, frag.src     # `frag.src` is a per-frag SOURCE override (String/nothing), NOT the themed-render Bool `override`
     if is_prose(c.kind) && !incell
         cio = IOBuffer()
         tight = _emit_slide_frag!(cio, dir, base, nb, frag; theme, charttheme, override, show_source, include_params, citekeys,
-                                  outputs, sizes, compfigs, blk, divcolumn, incell = true)
+                                  outputs, sizes, warnings, compfigs, blk, divcolumn, incell = true)
         position(cio) == 0 || print(io, tight ? "#mdcell(tight: true)[\n" : "#mdcell[\n", String(take!(cio)), "]\n\n")
         return false
     end
@@ -2713,7 +2721,7 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
         src = srcoverride === nothing ? c.source : srcoverride
         pieces = _split_columns(src)
         if !(length(pieces) == 1 && pieces[1] isa AbstractString)    # a `:::: columns` group splits the cell
-            kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, compfigs, incell, blk)
+            kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, warnings, compfigs, incell, blk)
             ib = frag.interpbase     # interpolations are numbered across the cell, so each piece starts after the last
             tight = false
             for (k, p) in enumerate(pieces)
@@ -2735,7 +2743,7 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
                            compfig = _compfig_stager(c, dir, base, compfigs, sizes),
                            interpbase = frag.interpbase,
                            fignum = :caption in c.flags ? get(figure_index(nb.report).numbers, c.id, nothing) : nothing)
-        md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = sizes)   # author-embedded images → staged files
+        md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes, warnings, cell = c.id)   # author-embedded images → staged files
         isempty(strip(md)) && return false
         for (k, b) in enumerate(ReportRender._md_split(md))
             file = string(base, "b", k, ".md")
@@ -2751,7 +2759,7 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
         ctl = include_params ? _emit_controls(c) : ""
         isempty(ctl) || print(io, blk("prose", ctl))
         _emit_output!(io, dir, base, nb, c; theme = theme, charttheme = charttheme, override = override,
-                      outputs = outputs, compfigs = compfigs, blk)
+                      outputs = outputs, compfigs = compfigs, blk, warnings)
         print(io, "\n")
     end
     return false
@@ -3083,7 +3091,8 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
         deck = slide_deck(nb; level = level, drop = c -> c.id in fm.skip || :bibliography in c.flags)
         plan.deck = deck
         fragkw = (; theme = "deck", charttheme = ct, override = override, show_source = show_source,
-                  include_params = include_params, citekeys = citekeys, outputs = outputs, sizes = mediasz, compfigs = compfigs)
+                  include_params = include_params, citekeys = citekeys, outputs = outputs, sizes = mediasz, warnings,
+                  compfigs = compfigs)
         if fm.has
             # The title page belongs to the slide of the model that holds the `title` cell. The lines of
             # that cell that are no region are the blocks of fragment 0 of that slide.
@@ -3111,7 +3120,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             (t === nothing || (t.cell == fm.titlecell && t.depth == 1)) && continue
             md = _md_for_typst(bycell[t.cell], t.text; citekeys = citekeys, interpbase = t.interpbase)
             write(joinpath(dir, "s$(si)title.md"),
-                  _stage_typst_md_media(md, dir, "s$(si)title", _proj_root(nb); sizes = mediasz))
+                  _stage_typst_md_media(md, dir, "s$(si)title", _proj_root(nb); sizes = mediasz, warnings, cell = t.cell))
             titles[si] = "title: heading(level: $(t.depth), $(_md_render("s$(si)title.md")))"
             get!(plan.texts, (si, "title"), String(t.text))
         end
@@ -3157,7 +3166,8 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             for (si, sl) in enumerate(deck)
                 isempty(sl.notes) && continue
                 ntext = join((_md_for_typst(bycell[id]; citekeys = citekeys) for id in sl.notes), "\n\n")
-                ntext = _stage_typst_md_media(ntext, dir, "notes$(si)", _proj_root(nb); sizes = mediasz)   # embedded images → staged files
+                ntext = _stage_typst_md_media(ntext, dir, "notes$(si)", _proj_root(nb); sizes = mediasz, warnings,
+                                              cell = join(sl.notes, ", "))   # embedded images → staged files
                 isempty(strip(ntext)) && continue
                 write(joinpath(dir, "notes$(si).md"), ntext)
                 print(io, "#slide(", join(filter(!isempty, ["layout: \"notes\"", titles[si], "n: $(si)"]), ", "), ")[\n",

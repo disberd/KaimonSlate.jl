@@ -1287,6 +1287,26 @@ end
     @test v5["box"]["h"] - v1["box"]["h"] ≈ 4 * v1["lineheight"]
 end
 
+# A markdown image whose file is not in the project shows its alt text, or its address, and warns, in
+# a markdown cell and in a markdown output. The slides PDF, the document PDF and the deck value of an
+# exporter are made all the same. An image in code is code.
+@testset "a markdown image with no file warns and does not stop the export" begin
+    nb = _hooknb("#%% md id=mi\n## Pic\n\n![a clip](slate-no-clip.mp4)\n\nText ![](slate-no-pic.png) and `![x](c.png)`.\n\n```\n![y](f.png)\n```\n\n" *
+                 "#%% code id=mo\nimport Markdown\nMarkdown.parse(\"Out ![an output](slate-no-out.png)\")\n")
+    w = String[]
+    b = only(NS.exporter_deck(nb; warnings = w)["slides"])["blocks"]
+    @test w == ["Cell mi: the file of the image `slate-no-clip.mp4` is not in the project, so the export shows its alt text in its place.",
+                "Cell mi: the file of the image `slate-no-pic.png` is not in the project, so the export shows its address in its place.",
+                "Cell mo: the file of the image `slate-no-out.png` is not in the project, so the export shows its alt text in its place."]
+    @test [x["markdown"] for x in b][1:3] == ["<slate-figure>\n\na clip\n\n</slate-figure>", "Text slate-no-pic.png and `![x](c.png)`.",
+                                              "```\n![y](f.png)\n```"]
+    @test occursin("Out an output", b[end]["markdown"])
+    for kw in ((; layout = "slides"), (;))
+        pdf, ws = NS._export_pdf_report(nb; kw...)
+        @test String(pdf[1:4]) == "%PDF" && issubset(w, ws)
+    end
+end
+
 # The base slides PDF marks list items as the live deck does: `•`, then `◦`, then `▪`.
 @testset "slides PDF: the list markers of the live deck" begin
     f = tempname() * ".pdf"
@@ -1505,6 +1525,8 @@ _plain(_) = false
             @test only(s1["regions"])["lineheight"] > 0
             p = s1["blocks"][1]
             @test p["lineheight"] ≈ deck["settings"]["text"]["line-height"] * p["size"]
+            # A table has the line height of its cells (`table.line-height`), not of the body around it.
+            @test t["lineheight"] ≈ deck["settings"]["table"]["line-height"] * t["size"]
             # The title of the base title slide has the line height of a heading (`HEAD-LH`, 1.1).
             c = first(NS.exporter_deck(_mknb("#%% md id=t title\n# The deck\n\n#%% md id=b\n## Body\n\nText.\n"))["slides"])
             ct = only(r for r in c["regions"] if r["name"] == "title")
@@ -1529,5 +1551,3 @@ _plain(_) = false
         delete!(SEB._EXPORTERS, "outline")
     end
 end
-            # A table has the line height of its cells (`table.line-height`), not of the body around it.
-            @test t["lineheight"] ≈ deck["settings"]["table"]["line-height"] * t["size"]
