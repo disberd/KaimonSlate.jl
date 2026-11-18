@@ -1515,3 +1515,5 @@ _plain(_) = false
         delete!(SEB._EXPORTERS, "outline")
     end
 end
+            # A table has the line height of its cells (`table.line-height`), not of the body around it.
+            @test t["lineheight"] ≈ deck["settings"]["table"]["line-height"] * t["size"]

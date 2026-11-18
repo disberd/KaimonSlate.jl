@@ -806,9 +806,10 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     //   a list or a code block inside a block or a region, with the `frag` and `i` of the block or the
     //   `name` of the region. The first one of a block is the text size and the line pitch of the block.
     // - `(kind: "figure", page, x, y, w, h, frag, i)`: the picture of a figure block, after the fit.
-    // - `(kind: "cell", col, row, end, page, x, y, size, frag, i)`: a corner of a cell in the first
+    // - `(kind: "cell", col, row, end, page, x, y, size, lh, frag, i)`: a corner of a cell in the first
     //   row or the first column of a table block: the top left one (`end` false) and the bottom right
-    //   one (`end` true). They give the start and the end of each column and of each row.
+    //   one (`end` true). They give the start and the end of each column and of each row, and the text
+    //   size and the line pitch of the cells.
     // The box of prose, of a caption and of a region holds whole line boxes of CSS (`lines`): a line
     // of pitch `P` (its top edge, its bottom edge and the leading) has `(P - (A + D)) / 2` above its
     // ascender `A` and below its descender `D`, measured on the font in use. Inside `base-rhythm` a
@@ -843,7 +844,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       show raw.where(block: true): it => { show raw.line.where(number: 1): sized; it }
       show <slate-figure>: it => { context { let s = measure(it); [#metadata(id + here-u() + (kind: "figure", w: s.width / u, h: s.height / u)) <slate>] }; it }
       show table.cell: it => if rec.at("block", default: none) == "table" and (it.x == 0 or it.y == 0) {
-        let corner(end) = context [#metadata(id + here-u() + (kind: "cell", col: it.x, row: it.y, end: end, size: text.size / u)) <slate>]
+        let corner(end) = context [#metadata(id + here-u() + (kind: "cell", col: it.x, row: it.y, end: end, size: text.size / u, lh: pitch())) <slate>]
         place(top + left, corner(false))
         place(bottom + right, corner(true))
         it
@@ -2816,7 +2817,8 @@ rhythm, the CSS line height times the text size.
     does. The `text/plain` value is a fenced code block of its text.
   - `page`, `box`, `size`, `lineheight`: its page in the PDF, its box, its text size and its line
     height; `nothing` when the PDF does not draw it. The box of a figure is the picture, the box of a
-    table is the table, the box of each other block is as wide as its column.
+    table is the table, the box of each other block is as wide as its column. The text size and the
+    line height of a table are those of its cells.
   - `cols`, `rows`: the column widths and the row heights of a table, in `u`; else `nothing`.
 """
 function slide_layout(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slidelevel", 2),
@@ -2879,7 +2881,7 @@ function _slide_layout(plan::_SlidePlan, records)
                 box = (x = minimum(xs), y = minimum(ys), w = maximum(xs) - minimum(xs), h = maximum(ys) - minimum(ys))
                 cols = _tracks([c for c in tc if c["row"] == 0], "col", "x")
                 rows = _tracks([c for c in tc if c["col"] == 0], "row", "y")
-                size = Float64(first(tc)["size"])
+                size, lineheight = Float64(first(tc)["size"]), Float64(first(tc)["lh"])
             end
         end
         push!(blocks[b.slide], (; b.kind, b.cell, b.frag, b.index, b.row, b.column, b.divcolumn, b.src, page, box, size,
