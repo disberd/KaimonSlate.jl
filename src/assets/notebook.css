@@ -1422,9 +1422,11 @@ body.wrap-output .output pre { white-space:pre-wrap; word-break:break-word; }
 .kindbtn.foreign { cursor:default; color:var(--dim); }
 /* Collapse the first/last block's OWN margin into the padding: a markdown cell that opens with a
    heading/paragraph otherwise stacks that element's default margin on top of the padding, doubling the
-   space above (and below) the block — reads as too much air, worst in a reading pass. */
-.md > :first-child { margin-top:0; }
-.md > :last-child { margin-bottom:0; }
+   space above (and below) the block — reads as too much air, worst in a reading pass. On a slide a
+   markdown output (`.disp.md`) keeps these margins: in the slides PDF the blocks of an output are in
+   the flow of the slide, with their space above and below. */
+.md:where(:not(.deck-slide .disp)) > :first-child { margin-top:0; }
+.md:where(:not(.deck-slide .disp)) > :last-child { margin-bottom:0; }
 /* The elements of the block kinds (`<slate-key-message>`, `<slate-caption>`, `<slate-admonition>`,
    `<slate-figure>`, `<slate-table>`, written by block_kinds.jl around a block) make a box only on a
    slide. Here a block looks the same with and without its element. The two rules above reach the
@@ -1433,8 +1435,8 @@ body.wrap-output .output pre { white-space:pre-wrap; word-break:break-word; }
    same. */
 slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table,
 slate-subtitle, slate-byline, slate-abstract { display:contents; }
-.md > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table, slate-subtitle, slate-byline, slate-abstract):first-child) > :first-child { margin-top:0; }
-.md > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table, slate-subtitle, slate-byline, slate-abstract):last-child) > :last-child { margin-bottom:0; }
+.md:where(:not(.deck-slide .disp)) > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table, slate-subtitle, slate-byline, slate-abstract):first-child) > :first-child { margin-top:0; }
+.md:where(:not(.deck-slide .disp)) > :where(:is(slate-key-message, slate-caption, slate-admonition, slate-figure, slate-table, slate-subtitle, slate-byline, slate-abstract):last-child) > :last-child { margin-bottom:0; }
 .md h1 { font-size:1.7rem; border-bottom:1px solid var(--border); padding-bottom:.2em; }
 .md table { border-collapse:collapse; } .md td,.md th { border:1px solid var(--border); padding:4px 10px; }
 /* A `---` in prose. Unstyled it falls back to the browser's `1px inset grey`, which is a different
@@ -3161,8 +3163,8 @@ body.presenting { overflow: hidden; }
 .slide-title.md { padding: calc(var(--u) * 12) calc(var(--u) * 16) 0; }
 .deck-slide .slide-title.md.role-title { padding-bottom: 0; }
 .slide-title + .slide-body > .cell:first-child .md { padding-top: 0; }
-.slide-title + .slide-body > .cell:first-child .md > :first-child,
-.slide-title + .slide-body > .cell:first-child .md > :first-child > :first-child { margin-top: 0; }
+.slide-title + .slide-body > .cell:first-child .md:where(:not(.disp)) > :first-child,
+.slide-title + .slide-body > .cell:first-child .md:where(:not(.disp)) > :first-child > :first-child { margin-top: 0; }
 .slide-title.role-title + .slide-body > .cell:first-child .md > :is(h2, h3):first-child,
 .slide-title.role-title + .slide-body > .cell:first-child .md > slate-subtitle:first-child > :is(h2, h3) { margin-top: .08em; }
 .slide-body { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: flex-start;
@@ -3228,8 +3230,11 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide.show-code .cell.slide-split > .output, .deck-slide.show-code .cell.slide-split > .tables,
 .deck-slide.show-code .cell.slide-split > .echarts, .deck-slide.show-code .cell.slide-split > .anim { grid-column: 2; min-width: 0; }
 .deck-slide .output { max-height: none !important; font-size: .7em; }
-/* A markdown output is prose: body size, as in the PDF deck. */
-.deck-slide .output:has(> .dispwrap > .disp > .markdown) { font-size: 1em; }
+/* A markdown output is prose: body size, as in the PDF deck. A `Markdown.MD` value renders as
+   `.disp.md`; `.markdown` is Julia's HTML of markdown inside another HTML output. A markdown output,
+   also a `{{ }}` value in a markdown cell, has no padding of its own. */
+.deck-slide .output:has(> .dispwrap > .disp.md, > .dispwrap > .disp > .markdown) { font-size: 1em; }
+.deck-slide .slide-body .disp.md { padding: 0; }
 /* A cell that held only the slide's heading is empty once the heading is in `.slide-title`. */
 .deck-slide .slide-body > .cell.md:not(:has(> .md > *)) { display: none; }
 .deck-slide .output > .out, .deck-slide .output > .val, .deck-slide .output > .dispwrap { border-top: none; }
@@ -3308,7 +3313,7 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide slate-admonition > .admonition { margin: 0 0 var(--deck-rhythm-cell-gap); border: none;
   border-left: var(--deck-admonition-bar-width) solid var(--deck-admonition-accent); border-radius: var(--deck-admonition-radius);
   background: var(--deck-admonition-fill); padding: var(--deck-admonition-pad-y) var(--deck-admonition-pad-x); }
-.deck-slide .md > slate-admonition:last-child > .admonition { margin-bottom: 0; }
+.deck-slide .md:where(:not(.disp)) > slate-admonition:last-child > .admonition { margin-bottom: 0; }
 .deck-slide slate-admonition > .admonition > .admonition-title { margin: 0 0 var(--deck-text-paragraph-after); padding: 0;
   background: none; border: none; color: var(--deck-admonition-title-color); font-weight: 700; letter-spacing: 0; }
 .deck-slide slate-admonition > .admonition > .admonition-title:empty { display: none; }

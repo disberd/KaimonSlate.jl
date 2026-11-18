@@ -135,6 +135,12 @@ were written when they went out. They are marked.
   of a markdown cell. A markdown cell and an output add no space above or below them: the gap
   between the cells of a slide is the only space between them. A cell that held only the slide
   heading is not drawn once the heading is in the slide title.
+- A `Markdown.MD` value of a code cell (`md"…"`, `Markdown.parse`, `@doc`) now shows its markdown
+  form, rendered as a markdown cell is, on the live deck, in the notebook and in the HTML export. It
+  takes the markdown look of Slate in place of the HTML of Julia's `Markdown`, and its blocks get their
+  kinds: a block quote in it is a key message, a paragraph that is all emphasis a caption, and its
+  tables and admonitions take the deck settings on a slide, as in the PDF deck. A `[name](@ref)` link
+  of a docstring stays a link to the docs panel.
 - The export dialog shows a warning for each slide of a PDF deck that does not fit at the smallest
   text size. The PDF is written all the same.
 - In the PDF deck, the slide unit `u` is 1/1920 of the page width at 16:9 and 16:10 and 1/1440 at

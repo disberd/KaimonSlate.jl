@@ -687,16 +687,32 @@ _gallery_cols(n) = n == 2 || n == 4 ? 2 : n <= 9 ? 3 : 4
 const _RESTATED_MIMES = ("text/html", "text/latex", "application/vnd.kaimonslate.component+json",
                          "application/vnd.kaimonslate.html+html")
 
+# Julia's HTML of a `Markdown.MD` value starts with this tag.
+const _MD_VALUE_HTML = codeunits("<div class=\"markdown\">")
+
+# True when chunk `i` is the HTML of a `Markdown.MD` value and its markdown form comes next.
+function _is_md_value_html(chunks, i)
+    d = chunks[i].data
+    return chunks[i].mime == "text/html" && i < lastindex(chunks) && chunks[i + 1].mime == "text/markdown" &&
+           length(d) >= length(_MD_VALUE_HTML) && view(d, 1:length(_MD_VALUE_HTML)) == _MD_VALUE_HTML
+end
+
 function _render_chunks(chunks)
     io = IOBuffer()
     grid = 0                                   # images still to place in an open gallery grid
     prev = ""
-    for ch in chunks
+    for (i, ch) in pairs(chunks)
         # Markdown right after a value's HTML, LaTeX or Slate display is that value's other form, kept
         # for export (capture.jl `_capture_export_markdown!`); markdown on its own is the value's display.
         alt = ch.mime == "text/markdown" && prev in _RESTATED_MIMES
         prev = ch.mime
         alt && continue
+        # A `Markdown.MD` value shows its markdown form, not Julia's HTML: the markdown renders as a
+        # markdown cell does, so its blocks get their kinds (`<slate-key-message>` and the others).
+        if _is_md_value_html(chunks, i)
+            prev = ""
+            continue
+        end
         if ch.mime == "application/vnd.kaimonslate.gallery"
             n = something(tryparse(Int, String(copy(ch.data))), 0)
             n > 0 || continue
@@ -736,8 +752,11 @@ function _render_chunks(chunks)
             # A self-contained HTML fragment (the `slate_render` escape hatch) — trusted, injected as-is.
             print(io, "<div class=\"disp html\">", String(copy(ch.data)), "</div>")
         elseif ch.mime == "text/markdown"
-            # Prose, rendered as a markdown cell's would be.
-            print(io, "<div class=\"disp md\">", _md_html(String(copy(ch.data))), "</div>")
+            # Prose, rendered as a markdown cell's would be. A `[name](@ref)` link of a docstring becomes
+            # the inert docs link that an HTML output gets (capture.jl `_fix_at_refs`).
+            html = _md_html(String(copy(ch.data)))
+            occursin("\"@ref", html) && (html = replace(html, ReportEngine._ATREF_RE => ReportEngine._atref_span))
+            print(io, "<div class=\"disp md\">", html, "</div>")
         end
     end
     grid > 0 && print(io, "</div>")
