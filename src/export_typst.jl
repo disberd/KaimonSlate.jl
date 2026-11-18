@@ -1887,8 +1887,9 @@ _mark_box(r) = (x = Float64(r["x"]), y = Float64(r["y"]), w = Float64(r["w"]), h
 # An export warning for each region of a slide (a `region` record of the marks) that is out of its
 # area, or over another region or a block. A region is out of its area when it is taller than its
 # container, or when it is not inside the page; `canvas` is the page size in `u`. Boxes that only
-# touch are not over each other: the check lets them share 1 u.
-function _region_warnings(records, canvas)
+# touch are not over each other: the check lets them share 1 u. `label(p)` names page `p` in the
+# warning (`_page_label`).
+function _region_warnings(records, canvas, label)
     W, H = canvas
     of(kind) = [r for r in records if r isa AbstractDict && get(r, "kind", "") == kind]
     over(a, b) = a.x < b.x + b.w - 1 && b.x < a.x + a.w - 1 && a.y < b.y + b.h - 1 && b.y < a.y + a.h - 1
@@ -1898,23 +1899,29 @@ function _region_warnings(records, canvas)
         b, p, name = _mark_box(r), r["page"], r["name"]
         ah = get(r, "ah", nothing)
         (b.x < -1 || b.y < -1 || b.x + b.w > W + 1 || b.y + b.h > H + 1 || (ah !== nothing && b.h > ah + 1)) &&
-            push!(out, "Page $p: the $name region is out of its area.")
+            push!(out, "$(label(p)): the $name region is out of its area.")
         for q in @view regions[i+1:end]
-            q["page"] == p && over(b, _mark_box(q)) && push!(out, "Page $p: the $name region is over the $(q["name"]) region.")
+            q["page"] == p && over(b, _mark_box(q)) && push!(out, "$(label(p)): the $name region is over the $(q["name"]) region.")
         end
         for k in blocks
-            k["page"] == p && over(b, _mark_box(k)) && push!(out, "Page $p: the $name region is over a block of cell $(k["cell"]).")
+            k["page"] == p && over(b, _mark_box(k)) && push!(out, "$(label(p)): the $name region is over a block of cell $(k["cell"]).")
         end
     end
     return out
 end
 
-# An export warning for each slide that a fit record marks at the floor. `unit` names the number of the
-# record: "Slide" for the live index of the deck print, "Page" for the PDF page of the slides preamble
-# `fit` (the PDF drops a slide with no content, so a page number is not always the slide number).
-_fit_warnings(records; unit::AbstractString = "Slide") =
-    ["$unit $(r["slide"]) does not fit at the smallest text size: its end runs past the page bottom."
+# An export warning for each slide that a fit record marks at the floor. `label(n)` names the number
+# `n` of the record: the deck print gives the live index of the slide, the slides preamble `fit` the
+# page of the PDF (`_page_label`).
+_fit_warnings(records; label = n -> "Slide $n") =
+    ["$(label(r["slide"])) does not fit at the smallest text size: its end runs past the page bottom."
      for r in records if r isa AbstractDict && get(r, "kind", "") == "fit" && get(r, "at_floor", false) === true]
+
+# The name of page `p` of a slides PDF in a warning: "Slide N", with N the number of its slide in the
+# deck (`plan.pages`). The PDF drops a slide with no content and gives a title cell its own page, so a
+# page number is not always the slide number. A page that holds no slide of the deck (the references,
+# the notes) is "Page p".
+_page_label(plan, p) = (si = get(plan.pages, p, 0); si > 0 ? "Slide $si" : "Page $p")
 
 # An export warning for each key of the `draw` dictionary of a deck template that is no block kind
 # (the warning records of `_SLIDES_TAIL`).
@@ -1925,9 +1932,12 @@ _draw_warnings(records) =
 
 # The export warnings of a slides PDF from the records of its marks compile: the checks of the deck
 # settings, the `draw` keys, the slides at the fit floor, the regions out of place, then `figwarns`.
-_slides_warnings(nb::LiveNotebook, recs, figwarns) =
-    vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; unit = "Page"),
-         _region_warnings(recs, deck_canvas(String(get(nb.report.meta, "slideratio", "16:9")))), figwarns)
+# `plan` is the plan of the slides project (`_SlidePlan`): it maps a page to its slide.
+function _slides_warnings(nb::LiveNotebook, recs, figwarns, plan)
+    label = p -> _page_label(plan, p)
+    return vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; label),
+                _region_warnings(recs, deck_canvas(String(get(nb.report.meta, "slideratio", "16:9"))), label), figwarns)
+end
 
 # One export warning for each part of slide `si` that stopped with an error: a code cell whose output
 # is an error, and a `{{ }}` of a markdown cell that threw (the export leaves its value out). `parts`
@@ -1979,14 +1989,15 @@ export_pdf(nb::LiveNotebook; kwargs...) = first(_export_pdf_report(nb; kwargs...
 # slides at the fit floor and the regions that are out of place.
 function _export_pdf_report(nb::LiveNotebook; kwargs...)
     figwarns = String[]
-    dir = _build_typst_project(nb; warnings = figwarns, kwargs...)
+    plan = _SlidePlan()                                    # a slides project writes its pages here
+    dir = _build_typst_project(nb; warnings = figwarns, plan, kwargs...)
     try
         typ = joinpath(dir, "doc.typ"); pdf = joinpath(dir, "out.pdf")
         _typst_compile(typ, pdf)
         warns = figwarns
         if get(kwargs, :layout, "") == "slides"
             recs = _typst_query(typ, "<slate>"; marks = true)
-            warns = _slides_warnings(nb, recs, figwarns)
+            warns = _slides_warnings(nb, recs, figwarns, plan)
         end
         return read(pdf), warns
     finally
@@ -2605,11 +2616,11 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                               body::AbstractString = "", include_params::Bool = false,
                               layout::AbstractString = "article", notes::Bool = false,
                               level::Integer = 2, outputs::AbstractString = "all",
-                              warnings::Vector{String} = String[])
+                              warnings::Vector{String} = String[], plan = _SlidePlan())
     # Slide-deck layout takes a wholly different page geometry/flow — dispatch early.
     layout == "slides" && return _build_slides_project(nb; theme = theme, charttheme = charttheme, override = override,
         code = code, include_source = include_source, include_params = include_params, notes = notes,
-        level = level, ratio = get(nb.report.meta, "slideratio", "16:9"), outputs = outputs, warnings = warnings)
+        level = level, ratio = get(nb.report.meta, "slideratio", "16:9"), outputs = outputs, warnings = warnings, plan)
     show_source = include_source && code != "hidden"
     cols = clamp(Int(columns), 1, 2)
     body = isempty(body) ? (cols == 2 ? "compact" : "normal") : body   # narrow columns → smaller default
@@ -3095,7 +3106,7 @@ function exporter_deck(nb::LiveNotebook; figure_mimes = ["image/png"], theme::Ab
                                 warnings = figwarns)
     try
         recs = _typst_query(joinpath(dir, "doc.typ"), "<slate>"; marks = true)
-        append!(warnings, _slides_warnings(nb, recs, figwarns))
+        append!(warnings, _slides_warnings(nb, recs, figwarns, plan))
         files = Dict((b.slide, b.frag, b.index) => b.file for b in plan.blocks)
         cells, title = lock(() -> (Dict(c.id => c for c in nb.report.cells), String(report_frontmatter(nb.report).title)), nb.lock)
         W, H = deck_canvas(ratio)

@@ -696,8 +696,8 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test count(r -> r["at_floor"], recs) == 1
         @test 0.62 <= fig["s"] < 1 && tie(fig) <= fig["f"] < 1 && !fig["at_floor"]   # the figure shrinks less than the text
         @test cap ≈ 0.7 atol = 0.01                          # a tall figure takes at most 0.7 of the slide height
-        warns = NS._fit_warnings(recs; unit = "Page")        # the export dialog's warnings: a PDF page number
-        @test length(warns) == 1 && startswith(only(warns), "Page 13 ")
+        warns = NS._fit_warnings(recs)                       # the deck print's warnings: the number of the record
+        @test length(warns) == 1 && startswith(only(warns), "Slide 13 ")
         # The header that carries the warnings to the page is ASCII, at most 21 lines of at most 300
         # characters.
         h = NS._warnings_header(vcat(["tëst"], fill("x"^400, 30)))
@@ -869,18 +869,22 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
     end
 
-    @testset "layout source: a region that is out of place gives an export warning" begin
-        function warns(tpl)
-            nb = _mknb("#%% md id=a\n## A\n\nText.\n")
+    @testset "layout source: a region that is out of place gives an export warning that names its slide" begin
+        function warns(tpl, src = "#%% md id=a\n## A\n\nText.\n")
+            nb = _mknb(src)
             nb.deck_template = (; hash = "h", source = tpl, settings = "", files = Dict{String,Vector{UInt8}}(), body_width = nothing)
             return last(NS._export_pdf_report(nb; layout = "slides"))
         end
         @test isempty(warns(""))
         # A deck template that draws the title over the first block of the body.
         slide(title) = "#let slide(body, layout: none, title: none, n: none) = page({ $title; fit(body) })\n"
-        @test warns(slide("place(top + left, block(width: 100%, region(\"title\", title)))")) == ["Page 1: the title region is over a block of cell a."]
+        over = slide("place(top + left, block(width: 100%, region(\"title\", title)))")
+        @test warns(over) == ["Slide 1: the title region is over a block of cell a."]
         # A title in a box that is too low for it.
-        @test "Page 1: the title region is out of its area." in warns(slide("box(width: 100%, height: 10 * u, region(\"title\", title))"))
+        @test "Slide 1: the title region is out of its area." in warns(slide("box(width: 100%, height: 10 * u, region(\"title\", title))"))
+        # The PDF draws no page for a slide that holds only the H1 of the document title, so page 1 holds
+        # slide 2: the warning names the slide.
+        @test warns(over, "#%% md id=h\n# Deck\n\n#%% md id=a\n## A\n\nText.\n") == ["Slide 2: the title region is over a block of cell a."]
     end
 end
 
