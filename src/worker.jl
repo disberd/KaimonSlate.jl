@@ -2981,8 +2981,8 @@ function __slate_export_figure(; cell::String = "", slot::Int = 0, mimes::Vector
 end
 
 """The file that the exporter `name` (`SlateExtensionsBase.register_exporter!`) makes of the deck value
-`deck` that the hub built: `(; ok, bytes)`, or `(; ok = false, error)`. A file of more than `maxbytes`
-bytes is an error and does not cross the gate."""
+`deck` that the hub built: `(; ok, bytes, warnings)` with the export warnings of the exporter, or
+`(; ok = false, error)`. A file of more than `maxbytes` bytes is an error and does not cross the gate."""
 __slate_export(; name::String = "", deck = Dict{String,Any}(), maxbytes::Int = 0) = exporter_wire(name, deck, maxbytes)
 
 function tools()

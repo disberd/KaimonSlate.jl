@@ -104,8 +104,9 @@ were written when they went out. They are marked.
   `__slate_export`. The hub checks the name (`^[a-z0-9][a-z0-9-]{0,31}$`), the file extension
   (`^[a-z0-9]{1,8}$`) and each MIME type (`type/subtype`), and drops an exporter that fails with a
   warning in its log. The route serves only registered names (404 for another name), passes nothing of
-  its query to the exporter, and refuses a file of more than 256 MiB. The export warnings of the slides
-  PDF show in the dialog and in the tool answer.
+  its query to the exporter, and refuses a file of more than 256 MiB. An exporter can give export
+  warnings with its file (`f` returns `(bytes, warnings)`). The export warnings of the slides PDF, then
+  those of the exporter, show in the dialog, in the header `X-Slate-Warnings` and in the tool answer.
 
 ### Changed
 

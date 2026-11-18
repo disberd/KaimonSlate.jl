@@ -3617,7 +3617,8 @@ function create_tools(GateTool::Type)
     and WRITE the file. `format` is the name of the exporter; an unknown name lists the registered
     ones. The exporter gets the slides with the boxes and the text sizes of the slides PDF, in the
     default palette of the slides PDF. `path` overrides the output file (default: a temp path with the
-    file extension of the exporter). Returns the written path and the export warnings of the dialog.
+    file extension of the exporter). Returns the written path and the export warnings of the dialog:
+    those of the slides PDF, then those that the exporter gives.
     """
     function export_tool(notebook::String; format::String = "", path::String = "")::String
         nb, err = _nb(notebook); nb === nothing && return err

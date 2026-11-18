@@ -749,6 +749,11 @@ the file, and so does the tool `export(notebook; format = name)`. On an export, 
 value on the hub and calls `f(deck)` on the worker of the notebook. `f` gives the bytes of the file, as
 a `Vector{UInt8}` or a `String`. The file name ends in `.<ext>`, and the hub sends it as `mime`.
 
+`f` can also give the tuple `(bytes, warnings)`, where `warnings` is a `Vector{String}` with one line
+for each export warning, for example for content that the format cannot show. Slate adds them after
+the export warnings of the slides PDF: the export dialog shows them, the route sends them in the
+header `X-Slate-Warnings`, and the tool lists them in its answer. The file is written all the same.
+
 - `name`: 1 to 32 lowercase letters, digits and `-`. The first is a letter or a digit.
 - `label`: the text of the entry in the export dialog.
 - `ext`: 1 to 8 lowercase letters or digits, with no dot.
@@ -806,12 +811,13 @@ Each block:
 
 # Example
 
-A Markdown outline of the deck:
+A Markdown outline of the deck, with one export warning when the deck has figures:
 
 ```julia
 register_exporter!("outline"; label = "Markdown outline", ext = "md", mime = "text/markdown",
                    figure_mimes = ["image/svg+xml", "image/png"]) do deck
     io = IOBuffer()
+    nfig = 0
     w, h = deck["size"]
     println(io, "<!-- ", deck["ratio"], ", ", w, " × ", h, " u -->")
     isempty(deck["title"]) || println(io, "\\n# ", deck["title"])
@@ -820,6 +826,7 @@ register_exporter!("outline"; label = "Markdown outline", ext = "md", mime = "te
         println(io, "\\n## ", i, ". ", t === nothing ? "(no title)" : t["text"])
         for b in s["blocks"]
             if b["kind"] == "figure"
+                nfig += 1
                 println(io, "\\n[figure: ", join(first.(b["forms"]), ", "), "]")
             elseif b["markdown"] !== nothing
                 println(io, "\\n", strip(b["markdown"]))
@@ -827,7 +834,7 @@ register_exporter!("outline"; label = "Markdown outline", ext = "md", mime = "te
         end
         foreach(n -> println(io, "\\n> Notes: ", strip(n)), s["notes"])
     end
-    return take!(io)
+    return take!(io), nfig == 0 ? String[] : ["The outline names \$nfig figures but does not show them."]
 end
 ```
 """
@@ -839,12 +846,15 @@ function register_exporter!(f, name; label, ext, mime, figure_mimes = ["image/pn
     return nothing
 end
 
-# The bytes of the file that the exporter `name` makes of `deck`. Slate calls this on the worker.
+# The file that the exporter `name` makes of `deck`, as `(; bytes, warnings)`. Slate calls this on the
+# worker.
 function run_exporter(name, deck)
     e = lock(() -> get(_EXPORTERS, String(name), nothing), _EXPORTERS_LOCK)
     e === nothing && throw(ArgumentError("no exporter is registered with the name `$name`"))
     out = Base.invokelatest(e.f, deck)
-    return out isa AbstractString ? Vector{UInt8}(codeunits(out)) : Vector{UInt8}(out)
+    file, warnings = out isa Tuple{Any,Any} ? out : (out, String[])
+    return (; bytes = file isa AbstractString ? Vector{UInt8}(codeunits(file)) : Vector{UInt8}(file),
+            warnings = String[String(w) for w in warnings])
 end
 
 """

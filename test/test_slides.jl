@@ -1345,6 +1345,7 @@ end
 # The exporter hook (`register_exporter!`). The outline exporter is the example of its docstring.
 function _outline(deck)
     io = IOBuffer()
+    nfig = 0
     w, h = deck["size"]
     println(io, "<!-- ", deck["ratio"], ", ", w, " × ", h, " u -->")
     isempty(deck["title"]) || println(io, "\n# ", deck["title"])
@@ -1353,6 +1354,7 @@ function _outline(deck)
         println(io, "\n## ", i, ". ", t === nothing ? "(no title)" : t["text"])
         for b in s["blocks"]
             if b["kind"] == "figure"
+                nfig += 1
                 println(io, "\n[figure: ", join(first.(b["forms"]), ", "), "]")
             elseif b["markdown"] !== nothing
                 println(io, "\n", strip(b["markdown"]))
@@ -1360,8 +1362,13 @@ function _outline(deck)
         end
         foreach(n -> println(io, "\n> Notes: ", strip(n)), s["notes"])
     end
-    return take!(io)
+    return take!(io), nfig == 0 ? String[] : ["The outline names $nfig figures but does not show them."]
 end
+
+# A tool type for `create_tools` that keeps what each tool was registered with.
+struct _XTool; name::String; f::Any; timeout_ms::Any; end
+_XTool(name, f; timeout_ms = nothing) = _XTool(String(name), f, timeout_ms)
+_xwarns(r) = JSON.parse(NS.HTTP.header(r, "X-Slate-Warnings", "[]"))
 
 const _XSRC = "#%% md id=xa\n## Intro\n\nOne paragraph and [a link][r].\n\n> A key message.\n\n[r]: https://example.com\n\n" *
               "#%% code id=xf\nFigHook.Two()\n\n#%% md id=xv\n{{ FigHook.Two() }}\n\n#%% md id=xn notes\nSay hi.\n\n" *
@@ -1395,13 +1402,39 @@ _plain(_) = false
             w = RE.exporter_wire("nope", Dict{String,Any}(), 1000)
             @test w.ok === false && occursin("no exporter", w.error)
             @test_throws ErrorException RE._gate_export(w, 1000)
-            @test RE._gate_export(RE.exporter_wire("outline", NS.exporter_deck(nb), 10^6), 10^6) isa Vector{UInt8}
+            out = RE._gate_export(RE.exporter_wire("outline", NS.exporter_deck(nb), 10^6), 10^6)
+            @test out.bytes isa Vector{UInt8} && out.warnings == ["The outline names 2 figures but does not show them."]
             # The dialog lists the exporter by its checked fields.
             @test NS.state_json(nb)["exporters"] == [Dict("name" => "outline", "label" => "Markdown outline", "ext" => "md")]
         end
         @testset "an unregistered name gives 404" begin
             @test NS._exporter_response(nb, "pptx", Dict()).status == 404
             @test NS._exporter_response(nb, "../outline", Dict()).status == 404
+        end
+        @testset "the warnings of an exporter reach the header and the tool answer" begin
+            r = NS._exporter_response(nb, "outline", Dict())
+            @test r.status == 200 && last(_xwarns(r)) == "The outline names 2 figures but does not show them."
+            old = KaimonSlate._HUB[]
+            KaimonSlate._HUB[] = NS.Hub(Dict("deck" => nb), nothing, "127.0.0.1", 0, ReentrantLock())
+            try
+                tool = only(t.f for t in KaimonSlate.create_tools(_XTool) if t.name == "export")
+                path = tempname() * ".md"
+                answer = tool("deck"; format = "outline", path)
+                @test occursin("Wrote", answer) && isfile(path)
+                @test occursin("⚠ The outline names 2 figures but does not show them.", answer)
+                rm(path; force = true)
+            finally
+                KaimonSlate._HUB[] = old
+            end
+            # An exporter that gives only the bytes still works, and adds no warning.
+            SEB.register_exporter!(d -> "plain text", "plain"; label = "Plain", ext = "txt", mime = "text/plain")
+            try
+                p = NS._exporter_response(nb, "plain", Dict())
+                @test p.status == 200 && String(p.body) == "plain text"
+                @test _xwarns(p) == _xwarns(r)[1:end-1]
+            finally
+                delete!(SEB._EXPORTERS, "plain")
+            end
         end
         @testset "a bad name, ext or mime is dropped with a warning" begin
             ok = (; name = "good", label = "Good", ext = "md", mime = "text/markdown", figure_mimes = ["image/png"])
@@ -1450,7 +1483,7 @@ _plain(_) = false
             tnb = _mknb("#%% md id=t title\n# The deck\n\n### A subtitle\n\n#%% md id=b\n## Body\n\nText.\n")
             deck = NS.exporter_deck(tnb)
             @test deck["title"] == "The deck"
-            @test startswith(String(_outline(deck)), "<!-- 16:9, 1920.0 × 1080.0 u -->\n\n# The deck\n")
+            @test startswith(String(first(_outline(deck))), "<!-- 16:9, 1920.0 × 1080.0 u -->\n\n# The deck\n")
         end
         @testset "figure forms follow figure_mimes" begin
             forms(mimes) = [[f[1] for f in b["forms"]] for b in NS.exporter_deck(nb; figure_mimes = mimes)["slides"][1]["blocks"]

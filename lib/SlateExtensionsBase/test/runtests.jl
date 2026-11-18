@@ -522,18 +522,24 @@ SlateExtensionsBase.to_palette_command(c::TaggedCmd) = auto_palette_command(c)
         SlateExtensionsBase._DECK_TEMPLATE[] = nothing
     end
 
-    # The manifest carries each exporter without its function; the function runs in this process.
+    # The manifest carries each exporter without its function; the function runs in this process. An
+    # exporter gives bytes, a string, or the bytes and its export warnings.
     @testset "register_exporter!" begin
         register_exporter!(d -> "slides: $(length(d["slides"]))", "count"; label = "Count", ext = "txt", mime = "text/plain")
         register_exporter!(d -> UInt8[1, 2], "bytes"; label = "Bytes", ext = "bin", mime = "application/octet-stream",
                            figure_mimes = ["image/svg+xml", "image/png"])
+        register_exporter!(d -> ("text", ["One warning."]), "warns"; label = "Warns", ext = "txt", mime = "text/plain")
         try
             @test extension_manifest().exporters ==
                   [(; name = "bytes", label = "Bytes", ext = "bin", mime = "application/octet-stream",
                       figure_mimes = ["image/svg+xml", "image/png"]),
-                   (; name = "count", label = "Count", ext = "txt", mime = "text/plain", figure_mimes = ["image/png"])]
-            @test SlateExtensionsBase.run_exporter("count", Dict{String,Any}("slides" => Any[1, 2])) == Vector{UInt8}("slides: 2")
-            @test SlateExtensionsBase.run_exporter("bytes", Dict{String,Any}()) == UInt8[1, 2]
+                   (; name = "count", label = "Count", ext = "txt", mime = "text/plain", figure_mimes = ["image/png"]),
+                   (; name = "warns", label = "Warns", ext = "txt", mime = "text/plain", figure_mimes = ["image/png"])]
+            @test SlateExtensionsBase.run_exporter("count", Dict{String,Any}("slides" => Any[1, 2])) ==
+                  (; bytes = Vector{UInt8}("slides: 2"), warnings = String[])
+            @test SlateExtensionsBase.run_exporter("bytes", Dict{String,Any}()) == (; bytes = UInt8[1, 2], warnings = String[])
+            @test SlateExtensionsBase.run_exporter("warns", Dict{String,Any}()) ==
+                  (; bytes = Vector{UInt8}("text"), warnings = ["One warning."])
             @test_throws ArgumentError SlateExtensionsBase.run_exporter("none", Dict{String,Any}())
         finally
             empty!(SlateExtensionsBase._EXPORTERS)

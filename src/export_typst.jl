@@ -2989,7 +2989,8 @@ end
 
 The file of the exporter `name` that a package of the notebook registers, as `(; exporter, bytes,
 warnings)`: Slate builds the deck value (`exporter_deck`) and the exporter runs on the main worker of
-the notebook. `nothing` when no package of the notebook registers `name`. Throws when the exporter
+the notebook. `warnings` are the export warnings of the slides PDF, then those of the exporter.
+`nothing` when no package of the notebook registers `name`. Throws when the exporter
 throws, or when its file has more than `maxbytes` bytes.
 """
 function export_with(nb::LiveNotebook, name::AbstractString; theme::AbstractString = "light",
@@ -3000,8 +3001,9 @@ function export_with(nb::LiveNotebook, name::AbstractString; theme::AbstractStri
     exporter = notebook_exporters(nb)[i]
     warnings = String[]
     deck = exporter_deck(nb; figure_mimes = exporter.figure_mimes, theme, charttheme, warnings)
-    bytes = ReportEngine.run_exporter(_running_kernel(nb, ""), exporter.name, deck; maxbytes)
-    return (; exporter, bytes, warnings = unique!(warnings))
+    out = ReportEngine.run_exporter(_running_kernel(nb, ""), exporter.name, deck; maxbytes)
+    append!(warnings, out.warnings)
+    return (; exporter, out.bytes, warnings = unique!(warnings))
 end
 
 # Write a deck template's files into the project `dir` and append its source to `io`, after the base

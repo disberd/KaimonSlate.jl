@@ -1791,10 +1791,11 @@ function export_figure(::Kernel, cellid::AbstractString, slot::Integer, mimes, c
 end
 
 """
-    run_exporter(kernel, name, deck; maxbytes) -> Vector{UInt8}
+    run_exporter(kernel, name, deck; maxbytes) -> NamedTuple
 
 The file that the exporter `name` (`SlateExtensionsBase.register_exporter!`) of the kernel's packages
-makes of the deck value `deck`, through the worker tool `__slate_export`. Throws an `ErrorException`
+makes of the deck value `deck`, through the worker tool `__slate_export`, as `(; bytes, warnings)`:
+`warnings` are the export warnings of the exporter, a `Vector{String}`. Throws an `ErrorException`
 with the reason when the exporter throws, when it gives more than `maxbytes` bytes, or when the round
 trip fails. The round trip has the timeout of an evaluation (`_eval_timeout`).
 """
@@ -1805,15 +1806,15 @@ function run_exporter(k::GateKernel, name::AbstractString, deck; maxbytes::Integ
 end
 run_exporter(::Kernel, name::AbstractString, deck; maxbytes::Integer) = _gate_export(exporter_wire(name, deck, maxbytes), maxbytes)
 
-# The bytes of an answer of `__slate_export` (`exporter_wire`). The hub checks the size again: it does
-# not trust the worker for it.
+# The file and the export warnings of an answer of `__slate_export` (`exporter_wire`). The hub checks
+# the size again: it does not trust the worker for it.
 function _gate_export(res, maxbytes::Integer)
     field(k) = res isa AbstractDict ? get(res, String(k), nothing) : hasproperty(res, k) ? getproperty(res, k) : nothing
     field(:ok) === true || error("the exporter failed: ", something(field(:error), "no answer from the worker"))
     bytes = field(:bytes)
     bytes isa AbstractVector{UInt8} || error("the exporter gave no bytes")
     length(bytes) > maxbytes && error("the exporter gave $(length(bytes)) bytes, more than the limit of $maxbytes bytes")
-    return Vector{UInt8}(bytes)
+    return (; bytes = Vector{UInt8}(bytes), warnings = String[String(w) for w in something(field(:warnings), String[])])
 end
 
 # Fetch a byte asset an extension registered on the WORKER via `provide_served_asset!` (keyed by content

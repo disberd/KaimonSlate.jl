@@ -87,17 +87,18 @@ function deck_template_wire()
 end
 
 # The file that the exporter `name` (`register_exporter!`) makes of `deck`, as the gate wire carries it:
-# `(; ok = true, bytes)`, or `(; ok = false, error)` with the first line of the error. A file of more than
-# `maxbytes` bytes is an error, so that it does not cross the gate.
+# `(; ok = true, bytes, warnings)` with the export warnings of the exporter, or `(; ok = false, error)`
+# with the first line of the error. A file of more than `maxbytes` bytes is an error, so that it does
+# not cross the gate.
 function exporter_wire(name::AbstractString, deck, maxbytes::Integer)
-    bytes = try
+    out = try
         SlateExtensionsBase.run_exporter(name, deck)
     catch e
         return (; ok = false, error = String(first(split(sprint(showerror, e), '\n'))))
     end
-    length(bytes) > maxbytes &&
-        return (; ok = false, error = "the exporter gave $(length(bytes)) bytes, more than the limit of $maxbytes bytes")
-    return (; ok = true, bytes)
+    length(out.bytes) > maxbytes &&
+        return (; ok = false, error = "the exporter gave $(length(out.bytes)) bytes, more than the limit of $maxbytes bytes")
+    return (; ok = true, out.bytes, out.warnings)
 end
 
 # slate_fingerprint + memo-store introspection — shared notebook helpers injected below

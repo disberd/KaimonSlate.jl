@@ -35,7 +35,8 @@ Two things to know about the published GitHub releases for this package:
   a slide deck. Slate builds the deck value, a `Dict{String,Any}` of plain Base types that the docstring
   documents key by key (deck title, slide size and ratio, deck settings, slides with their regions and blocks, the
   boxes, text sizes and line heights of the slides PDF, figure forms in the order of `figure_mimes`), and calls
-  `f(deck)` on the worker; `f` gives the bytes of the file. `extension_manifest()` gains an `exporters`
+  `f(deck)` on the worker; `f` gives the bytes of the file, or the tuple `(bytes, warnings)` with its
+  export warnings as a `Vector{String}`. `extension_manifest()` gains an `exporters`
   field with the name, label, extension and MIME types of each exporter.
 
 ## [0.11.3] - 2026-11-05
