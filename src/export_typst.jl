@@ -165,18 +165,20 @@ _figure_ctx(geo, cid::AbstractString, slot::Integer) =
 _figure_roles(s, palette::AbstractString) =
     Dict{String,String}(k => String(v) for (k, v) in deck_settings_dict(s; palette)["roles"])
 
-# The outputs whose value has a figure hook, as `(cell, slot, region)`: slot 0 is the output of a code
-# cell, slot `i` the `i`-th `{{ }}` or fence value of a markdown cell.
+# The outputs whose value has a figure hook, as `(cell, slot, region, held)`: slot 0 is the output of a
+# code cell, slot `i` the `i`-th `{{ }}` or fence value of a markdown cell. `held` is false for the
+# output of a code cell that the memo restored: that run did not happen, so a value that its worker
+# keeps is of an earlier run, maybe with other inputs.
 _hook_targets(nb::LiveNotebook) = lock(nb.lock) do
-    out = Tuple{String,Int,String}[]
+    out = Tuple{String,Int,String,Bool}[]
     for c in nb.report.cells
         renders(c.kind) || continue
         if is_prose(c.kind)
             for (i, o) in enumerate(c.interp)
-                _hook_output(o) && push!(out, (c.id, i, _cell_region(c)))
+                _hook_output(o) && push!(out, (c.id, i, _cell_region(c), true))
             end
         elseif _hook_output(c.output)
-            push!(out, (c.id, 0, _cell_region(c)))
+            push!(out, (c.id, 0, _cell_region(c), c.output.memo != "restored"))
         end
     end
     out
@@ -189,13 +191,12 @@ _hook_throw_warning(cid, r) =
 # adds a line to `warnings`. The cells whose worker keeps no value for an output add one line together,
 # with their ids. Their output comes from storage: the hub restored it from the memo, or the notebook
 # opened from its stored outputs and did not run, or its worker is not running. A run of the notebook
-# restores such a cell from the memo again; only a forced run of the cell (its ▶, or the route
-# `POST /api/<notebook>/cell/<cell>` with `force: true`) computes the value. Called before the caller
-# takes `nb.lock`, like the other warm passes.
+# restores such a cell from the memo again; only a forced run of the cell (its ▶) computes the value.
+# Called before the caller takes `nb.lock`, like the other warm passes.
 function _warm_hook_figs!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{String}, geo; progress = nothing)
     stored = String[]
-    for (cid, slot, region) in _hook_targets(nb)
-        k = _running_kernel(nb, region)
+    for (cid, slot, region, held) in _hook_targets(nb)
+        k = held ? _running_kernel(nb, region) : nothing
         k === nothing && (push!(stored, cid); continue)
         progress === nothing || (try; progress(cid); catch; end)
         r = try; ReportEngine.export_figure(k, cid, slot, _TYPST_FIGURE_MIMES, _figure_ctx(geo, cid, slot)); catch; nothing; end
@@ -216,8 +217,8 @@ end
 # the hook gets one MIME type at a time, so each output can give a form in each type. A throw stops the
 # search for that output and adds the warning of the Typst export.
 function _hook_forms!(plan, nb::LiveNotebook, warnings::Vector{String}, geo)
-    for (cid, slot, region) in _hook_targets(nb)
-        k = _running_kernel(nb, region)
+    for (cid, slot, region, held) in _hook_targets(nb)
+        k = held ? _running_kernel(nb, region) : nothing
         k === nothing && continue
         forms = Tuple{String,Vector{UInt8}}[]
         for m in plan.mimes

@@ -1474,6 +1474,19 @@ end
     w = String[]
     rm(NS._build_slides_project(nb; warnings = w); recursive = true, force = true)
     @test length(w) == 1 && startswith(w[1], "Cells fs2, fs3: ") && occursin("Run each of them", w[1])
+    # A cell that the memo restored did not run: a value that its worker keeps is of an earlier run, so
+    # the export does not draw it and warns as for stored output.
+    nb = _hooknb("#%% code id=fs4\nFigHook.Svg()\n")
+    c = only(nb.report.cells)
+    c.output = RE.CellOutput((f === :memo ? "restored" : getfield(c.output, f) for f in fieldnames(RE.CellOutput))...)
+    w = String[]
+    dir = NS._build_slides_project(nb; warnings = w)
+    try
+        @test isempty(_drawn_figs(dir)) && length(w) == 1 && occursin("fs4", w[1])
+    finally
+        rm(dir; recursive = true, force = true)
+        RE._figure_forget!("fs4")
+    end
 end
 
 # The roles follow the deck settings of the notebook on a slide; a document gives the body text size in
