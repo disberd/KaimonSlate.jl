@@ -1,0 +1,134 @@
+# Base deck settings of the Slate slide deck.
+#
+# The live deck and the Typst slides PDF both read these values. A deck template gives a partial file
+# with the same groups and keys (`provide_deck_template!(source; settings = …)`), and the notebook
+# setting `decksettings` gives a second partial file. Slate merges them key by key: this file, then
+# the deck template, then `decksettings`.
+#
+# Value forms:
+# - A length is a string with a unit: "18u" (slide unit, 1/1920 of the slide width at 16:9) or
+#   "0.55em" (of the body text). This file fixes the unit of each key. A value with another unit is
+#   dropped with a warning. A length is from 0 to 10000; `text.size` is more than 0.
+# - A ratio is a plain number. A line height is from 0.5 to 4; a `fit` value is more than 0 and at most 1.
+# - A colour is a hex value ("#003247"), a name from [palette], a role name from [roles], or
+#   "slate.<name>": a colour of the Slate palette in force (bg, bg2, bg3, border, text, strong, dim,
+#   accent, green, red, gold, orange, purple, teal). A role is a hex value, a palette name or a "slate." name.
+#   A paint (fill, stripe-fill, header-fill, rule-color) can also be "none".
+# - A font is a list of font family names.
+#
+# The groups rhythm, fit and columns, and the structure keys of [table], are base keys: Slate warns
+# when a deck template sets them. Geometry (padding, title, slide number) is not a setting.
+
+[palette]
+
+[roles]
+fg = "slate.text"
+strong = "slate.strong"
+dim = "slate.dim"
+accent = "slate.accent"
+accent2 = "#b392f0"
+surface = "slate.bg"
+ink = "#ff4d6d"
+
+[text]
+font = ["Inter"]
+size = "34u"
+line-height = 1.45
+paragraph-after = "0.55em"
+list-item-after = "0.28em"
+list-indent = "1.2em"
+
+[heading]
+h1 = "2.6em"
+h2 = "1.85em"
+h3 = "1.2em"
+
+# `cell-gap` is the gap between the cells of a slide and below a key message, `after-table` the space
+# below a table. `heading-above` and `heading-below` are the margins of a heading, in em of the heading.
+[rhythm]
+cell-gap = "18u"
+after-table = "0em"
+heading-above = "0.6em"
+heading-below = "0.45em"
+
+[key-message]
+fill = "slate.bg2"
+bar-color = "accent"
+text-color = "strong"
+bar-width = "8u"
+pad-x = "32u"
+pad-y = "20u"
+
+[caption]
+size = "0.8em"
+color = "dim"
+
+[table]
+header-fill = "slate.bg2"
+header-color = "strong"
+stripe-fill = "none"
+rule-color = "slate.border"
+text-size = "0.8em"
+line-height = 1.2
+pad-x = "0.6em"
+header-pad-y = "0.25em"
+body-pad-y = "0.15em"
+full-width = true
+
+# [admonition] is the default of every category. [admonition.<category>] overrides it; an unknown
+# category takes the default.
+[admonition]
+accent = "dim"
+fill = "slate.bg2"
+title-color = "strong"
+bar-width = "8u"
+pad-x = "28u"
+pad-y = "16u"
+radius = "14u"
+
+[admonition.note]
+accent = "accent"
+[admonition.info]
+accent = "accent"
+[admonition.tip]
+accent = "slate.green"
+[admonition.hint]
+accent = "slate.green"
+[admonition.answer]
+accent = "slate.green"
+[admonition.solution]
+accent = "slate.green"
+[admonition.warning]
+accent = "slate.gold"
+[admonition.caution]
+accent = "slate.gold"
+[admonition.danger]
+accent = "slate.red"
+[admonition.error]
+accent = "slate.red"
+[admonition.compat]
+accent = "slate.red"
+
+# `syntax` is the colour scheme of code: "auto" (light or dark after the surface), "light" or "dark".
+[code]
+font = ["DejaVu Sans Mono"]
+size = "0.62em"
+fill = "slate.bg2"
+syntax = "auto"
+
+# `slate-palette` is the Slate palette of the figures. Empty: the Slate palette in force.
+[figures]
+radius = "10u"
+slate-palette = ""
+
+# The fit sets the text scale between `text-floor` and 1. A figure is at most `figure-cap` of the slide
+# height.
+[fit]
+text-floor = 0.62
+figure-cap = 0.7
+
+# `gap` is the gap between the columns of a `:::: columns` block, `row-gap` the gap between the cells of
+# a row of cells.
+[columns]
+gap = "56u"
+row-gap = "48u"

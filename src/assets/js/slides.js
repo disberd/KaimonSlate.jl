@@ -607,20 +607,21 @@
   // A chart's natural size is its size in the notebook, recorded while the notebook is on screen: once
   // presenting, the notebook is hidden and a chart measured there has no real width. A chart first
   // seen on a slide (a cell re-ran while it was up) takes its size there, unless that is degenerate.
-  const _natural = new WeakMap();   // chart instance → [w, h]
+  // Keyed by element: a palette change draws a new chart into the same element.
+  const _natural = new WeakMap();   // chart element → [w, h]
   // The notebook's own inline sizing of a chart element, saved before the deck first changes it. Keyed
   // by element: a cell that re-runs may draw a new chart into the same element.
   const _origStyle = new WeakMap(); // chart element → [inline width, inline height]
   function _recordNatural(inst) {
     const w = inst.getWidth(), h = inst.getHeight();
-    _natural.set(inst, (w >= 240 && h >= 120) ? [w, h] : [900, 450]);
+    _natural.set(inst.getDom(), (w >= 240 && h >= 120) ? [w, h] : [900, 450]);
   }
   function _slideCharts() {
     const out = [];
     for (const r of D.restore) for (const inst of _cellCharts(r.el)) {
       const dom = inst.getDom && inst.getDom(); if (!dom || !dom.isConnected) continue;
-      if (!_natural.has(inst)) _recordNatural(inst);
-      const [natW, natH] = _natural.get(inst);
+      if (!_natural.has(dom)) _recordNatural(inst);
+      const [natW, natH] = _natural.get(dom);
       out.push({ inst, dom, natW, natH });
     }
     return out;
@@ -701,9 +702,16 @@
     _fitMath(body);
     if (_fitBody(body, charts)) body.classList.add('scroll');
   }
-  // The fit parameters of a slide. The PDF deck holds the same numbers (export_typst.jl `_FIT_TYPST`).
+  // The fit parameters of a slide. `textFloor` and `figCap` are the deck settings `fit.text-floor` and
+  // `fit.figure-cap` (`_fitSettings` reads them from the slide's custom properties); the PDF deck reads
+  // the same settings. `figFloor` and `mathFloor` are code, as in export_typst.jl `_FIT_TYPST`.
   // `figCap` is a share of the slide height; `_sizeCanvas` writes it to `--figcap` for notebook.css.
-  const FIT = { textFloor: 0.62, figFloor: 0.25, figCap: 0.7, mathFloor: 0.4 };
+  const FIT = { textFloor: NaN, figFloor: 0.25, figCap: NaN, mathFloor: 0.4 };
+  function _fitSettings(slide) {
+    const cs = getComputedStyle(slide);
+    FIT.textFloor = parseFloat(cs.getPropertyValue('--deck-fit-text-floor'));
+    FIT.figCap = parseFloat(cs.getPropertyValue('--deck-fit-figure-cap'));
+  }
   // The fit search, the same as the PDF deck's `fit`. `over(s, f)` lays the slide out at text scale
   // `s` and figure scale `f` (all figures share it) and returns how far it overflows, in px.
   // 1. Try `s = 1`, `f = 1`.
@@ -737,7 +745,9 @@
   // the slide height; a picture keeps its aspect, so `--fitw` (notebook.css) caps its width. True when
   // the slide is at the floor.
   function _fitBody(body, charts) {
-    const slide = body.parentNode, capH = FIT.figCap * slide.clientHeight;
+    const slide = body.parentNode;
+    _fitSettings(slide);
+    const capH = FIT.figCap * slide.clientHeight;
     const figs = [...body.querySelectorAll('.slidefig, :is(.output, .md, .snap) :is(img, video)')]
       .filter(e => !e.closest('.slidefig > *') && getComputedStyle(e).position !== 'absolute');
     const over = (s, f) => {
@@ -797,6 +807,7 @@
   }
   function _sizeCanvas(slide, vw, vh) {
     const [W, H] = _canvasSize();
+    _fitSettings(slide);
     const s = Math.min(vw / W, vh / H);
     slide.style.width = Math.round(W * s) + 'px';
     slide.style.height = Math.round(H * s) + 'px';
@@ -1297,6 +1308,9 @@
     deck.style.display = '';
     deck.dataset.style = _deckStyle();
     _mountSlide(D.idx);
+    if (window._syncChartPalette) window._syncChartPalette();   // the charts take the deck's figure palette
+    // The deck font can come in after the first fit (`font-display: swap`): fit again once it is in.
+    document.fonts.ready.then(() => { if (D.open) _relayout(); });
     _emit('enter');
     _broadcast();
   }
@@ -1319,6 +1333,7 @@
     if (D.laser) deckLaser();
     if (D.draw) deckDraw();
     document.body.classList.remove('presenting');
+    if (window._syncChartPalette) window._syncChartPalette();   // the charts go back to the UI theme
     const deck = document.getElementById('deck');
     if (deck) { deck.style.display = 'none'; deck.classList.remove('black-on'); }
     if (D.fs && document.exitFullscreen) { try { document.exitFullscreen(); } catch (e) {} D.fs = false; }
@@ -1536,19 +1551,23 @@
       for (const c of dv.children) { const it = items.find(x => x.el === c); if (it && it.idx <= step) cur = c; }
       for (const c of dv.children) c.classList.toggle('derive-cur', c === cur);
     }
-    // The same fitting and lighting as the deck, so the preview is what the audience sees.
+    // The same fitting and lighting as the deck, so the preview is what the audience sees. The host
+    // keeps the slide number and whether the slide is at the fit floor: the hub reads both from a
+    // deck print for its fit report (server_deckshot.jl `deck_pdf_report`).
     _lightTerms(slide.querySelector('.slide-body'));
+    host.dataset.slide = i + 1;
     _fitPreview(slide);
     return total;
   }
-  // Fit a drawn preview to its canvas, the way the deck fits a slide. Call it again when the images of
-  // the slide have loaded: the copy of an image has no size when it is drawn, so the first fit sees a
-  // slide that is shorter than it will be.
+  // Fit a drawn preview to its canvas, the way the deck fits a slide, and mark its host when the slide
+  // is at the fit floor. Call it again when the images of the slide have loaded: the copy of an image
+  // has no size when it is drawn, so the first fit sees a slide that is shorter than it will be.
   function _fitPreview(slide) {
     const body = slide.querySelector('.slide-body');
     slide.style.setProperty('--shrink', 1);
     _fitMath(body);
-    _fitBody(body, []);
+    const host = slide.parentNode;
+    if (_fitBody(body, [])) host.dataset.atFloor = '1'; else delete host.dataset.atFloor;
   }
   // Fit every slide drawn into `root` again.
   function _refitPreviews(root) {
@@ -1655,7 +1674,7 @@
     whenLoaded(grid, () => { _refitPreviews(grid); done(); });
   }
   // The deck one page per slide at the slide's own size (`--u: 1px`), for the hub's PDF of the deck
-  // as presented (server_deckshot.jl `deck_pdf`). Each slide is at its last step, or with `&steps=all`
+  // as presented (server_deckshot.jl `deck_pdf_report`). Each slide is at its last step, or with `&steps=all`
   // on a page for every step from its first, marked by a row of step dots.
   function _printDeck(done, whenLoaded) {
     _stillCharts().then(() => _drawPrint(done, whenLoaded));
@@ -1787,6 +1806,11 @@
   // `&render=1` is the video renderer's mode (server_deckshot.jl `deck_render`): the controls are
   // hidden, but transitions run, since they are what it records.
   const DECK_AT = new URLSearchParams(location.search).get('deck');
+  // A deck page (the open deck, a capture, the sheet, the print, the presenter window) draws its
+  // charts in the deck's figure palette (core.js `_syncChartPalette`). The state can come in before
+  // this file runs, so the palette is synced here too.
+  window._onDeck = () => D.open || !!DECK_AT || IS_PRESENTER;
+  if (window._syncChartPalette) window._syncChartPalette();
   if (DECK_AT && !IS_PRESENTER) {
     const q = new URLSearchParams(location.search);
     if (q.get('shot') === '1') document.documentElement.classList.add('deck-shot');

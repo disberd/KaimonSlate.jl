@@ -1,6 +1,7 @@
-# The shared "Slate look": the Julia palette that Makie mirrors MUST stay in lockstep with the CSS
-# `:root` (Midnight) that the client ECharts theme reads — this golden test pins the two so a colour
-# edit on one side without the other fails CI. Also checks the Makie theme attrs are well-formed.
+# The shared "Slate look": the Julia palettes that Makie and the deck settings read MUST stay equal to
+# the CSS theme blocks (`:root` and each `html[data-slate-theme]`) that the client ECharts theme reads.
+# This golden test pins the two, so a colour edit on one side only fails CI. It also checks the Makie
+# theme attributes.
 using ReTest
 
 include(joinpath(@__DIR__, "..", "src", "engine.jl"))
@@ -44,18 +45,22 @@ const RE = ReportEngine
         end
     end
 
-    @testset "Julia palette mirrors the CSS :root (Midnight) — golden parity" begin
+    @testset "Julia palettes mirror the CSS theme blocks — golden parity" begin
         css = read(joinpath(@__DIR__, "..", "src", "assets", "notebook.css"), String)
-        m = match(r":root\s*\{(.*?)\}"s, css)              # the FIRST :root block is the canonical default
-        @test m !== nothing
-        vars = Dict{String,String}()
-        for vm in eachmatch(r"--([a-z0-9]+)\s*:\s*(#[0-9a-fA-F]{3,8})"i, m.captures[1])
-            vars[lowercase(vm.captures[1])] = lowercase(vm.captures[2])
+        function vars(sel)
+            m = match(Regex(sel * "\\s*\\{(.*?)\\}", "s"), css)   # the FIRST block of the selector
+            @test m !== nothing
+            Dict(lowercase(vm.captures[1]) => lowercase(vm.captures[2])
+                 for vm in eachmatch(r"--([a-z0-9]+)\s*:\s*(#[0-9a-fA-F]{3,8})"i, m.captures[1]))
         end
-        # every palette field must equal the CSS var of the same name (byte-for-byte, case-insensitive)
-        for k in (:bg, :bg2, :bg3, :border, :text, :dim, :accent, :green, :red, :gold, :orange, :purple, :teal)
-            @test haskey(vars, String(k))
-            @test vars[String(k)] == lowercase(getfield(RE.SLATE_PALETTE, k))
+        root = vars(":root")
+        for (name, p) in RE.SLATE_PALETTES
+            v = name == "midnight" ? root : merge(root, vars("html\\[data-slate-theme=\"$name\"\\]"))
+            # every palette field must equal the CSS var of the same name (byte-for-byte, case-insensitive)
+            for k in keys(p)
+                @test get(v, String(k), nothing) == lowercase(getfield(p, k))
+            end
         end
+        @test RE.SLATE_PALETTE === RE.SLATE_PALETTES["midnight"]
     end
 end

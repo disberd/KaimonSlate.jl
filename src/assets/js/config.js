@@ -78,6 +78,10 @@ function _cfgControl(it, eff) {
       `</select>`;
   if (it.type === 'int')
     return `<input class="cfgnum" type="number" min="1" ${it.key === 'slidelevel' ? 'max="6"' : ''} value="${_cfgEsc(eff)}" onchange="cfgSet('${it.key}', this.value)"/>`;
+  // Multi-line text (the deck settings, TOML): the override text, or blank when not set.
+  if (it.type === 'text')
+    return `<textarea class="cfgarea" rows="6" spellcheck="false" placeholder="[text]\nsize = &quot;36u&quot;" ` +
+      `onchange="cfgSet('${it.key}', this.value)">${it.overridden ? _cfgEsc(it.value) : ''}</textarea>`;
   // string — show the override text (blank when inherited) with the inherited value as placeholder.
   const ph = it.key === 'agentmodel' ? (agentModel() || 'Sonnet (default)') : (it.key === 'threads' ? 'global (adaptive)' : String(it.default || ''));
   return `<input class="cfgtext" type="text" value="${it.overridden ? _cfgEsc(it.value) : ''}" placeholder="${_cfgEsc(ph)}" ` +
@@ -88,7 +92,10 @@ function _cfgRow(it) {
   const eff = _cfgEffective(it), src = _cfgSource(it);
   const clear = it.overridden
     ? `<button class="cfgclear" title="clear override — follow the global default" onclick="cfgClear('${it.key}')">✕</button>` : '';
-  const sub = it.overridden ? '' : `<div class="cfgsub">follows ${src.txt}: ${_cfgEsc(_cfgInherited(it))}</div>`;
+  let sub = it.overridden ? '' : `<div class="cfgsub">follows ${src.txt}: ${_cfgEsc(_cfgInherited(it))}</div>`;
+  // The checks of the merged deck settings (deck template and this notebook) go under their row.
+  const warns = it.key === 'decksettings' && nbState && nbState.deckSettingsWarnings || [];
+  if (warns.length) sub += warns.map(w => `<div class="cfgsub cfgwarn">${_cfgEsc(w)}</div>`).join('');
   return `<div class="cfgrow"><div class="cfglabel">${_cfgEsc(it.label)}<span class="cfgbadge ${src.cls}">${src.txt}</span>${sub}</div>` +
     `<div class="cfgctl">${_cfgControl(it, eff)}${clear}</div></div>`;
 }

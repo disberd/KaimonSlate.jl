@@ -321,6 +321,9 @@ const _CONFIG_UI = (
      choices = String[], global_default = nothing, restart = false),
     (key = "slideratio", group = "Slides", label = "Slide aspect ratio", type = :enum, default = "16:9",
      choices = ["16:9", "16:10", "4:3"], global_default = nothing, restart = false),
+    # TOML text merged on the deck template's settings (deck_settings.jl). Shown as a text area.
+    (key = "decksettings", group = "Slides", label = "Deck settings (TOML)", type = :text, default = "",
+     choices = String[], global_default = nothing, restart = false),
     (key = "bibstyle", group = "Export", label = "Citation style", type = :enum, default = "ieee",
      choices = collect(_CITATION_STYLES), global_default = nothing, restart = false),
     (key = "series", group = "Publishing", label = "Series", type = :string, default = "",
@@ -1785,6 +1788,15 @@ function state_json(nb::LiveNotebook)
     meta["slideTimings"] = get(nb.report.meta, "slidetimings", "")           # rehearsed seconds, `<slide>:<step>=<s>,…`
     meta["slideTheme"] = get(nb.report.meta, "slidetheme", "")               # "" = follow the editor theme
     meta["slideRatio"] = get(nb.report.meta, "slideratio", "16:9")           # PDF deck aspect ratio
+    # The merged deck settings as CSS custom properties, the warnings of their checks, whether the
+    # export picker can change the colours of the deck (the export dialog says when it cannot), and the
+    # Slate palette of the charts on the deck ("" = the UI theme).
+    let ds = notebook_deck_settings(nb)
+        meta["deckCss"] = deck_settings_css(ds.values)
+        meta["deckSettingsWarnings"] = ds.warnings
+        meta["deckFixesColours"] = deck_fixes_colours(ds.values)
+        meta["deckFigurePalette"] = ds.values["figures"]["slate-palette"]
+    end
     meta["deckBrowser"] = chrome_status_cached().problem                    # "" = the deck print, video and captures can run
     meta["bibStyle"] = get(nb.report.meta, "bibstyle", "ieee")               # CSL citation/reference style
     meta["agentModel"] = get(nb.report.meta, "agentmodel", "")               # per-notebook agent-model override ("" = browser global)

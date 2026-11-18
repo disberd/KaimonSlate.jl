@@ -16,14 +16,15 @@ Two things to know about the published GitHub releases for this package:
 
 ### Added
 
-- **`provide_deck_template!`**, declaring a Typst deck template as bytes: the `.typ` source and named
-  files such as a layout catalogue, art and fonts. A file name is a relative POSIX path, and a name that
-  is absolute or has a `..` segment throws an `ArgumentError`. `deck_template()` returns the template as
-  `(; hash, source, files)`, and `extension_manifest()` gains a `deck_template_hash` field. The field is
-  absent when no package declares a template. The package now depends on the `SHA` standard library for
-  the hash. When `source` is a `PkgAsset` (`@pkg_asset("typst/deck.typ")`), the registry reads the file
-  again when its mtime changes, as it does for a file-backed front-end script, so an edit to the `.typ`
-  reaches Slate without a worker restart.
+- **`provide_deck_template!`**, declaring a Typst deck template as bytes: the `.typ` source, the partial
+  deck-settings file (`settings`, TOML text or bytes) and named files such as a layout catalogue, art and
+  fonts. A file name is a relative POSIX path, and a name that is absolute or has a `..` segment throws an
+  `ArgumentError`. `deck_template()` returns the template as `(; hash, source, settings, files)`, and
+  `extension_manifest()` gains a `deck_template_hash` field; the hash covers the settings too. The field
+  is absent when no package declares a template. The package now depends on the `SHA` standard library
+  for the hash. The source, the settings and each file can be a `PkgAsset`
+  (`@pkg_asset("typst/deck.typ")`): the registry then reads the file again when its mtime changes, as it
+  does for a file-backed front-end script, so an edit reaches Slate without a worker restart.
 
 ## [0.11.3] - 2026-11-05
 

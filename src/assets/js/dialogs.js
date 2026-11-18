@@ -593,6 +593,7 @@ async function _runDeckPrint() {
     const r = await fetch(_apipath('/api/export.pdf') + '?layout=present&slatetheme=' + encodeURIComponent(charttheme) + '&steps=' + steps);
     if (!r.ok) { await alertDark('PDF export failed:\n' + (await r.text())); return; }
     _saveBlob(await r.blob(), '.pdf');
+    _pdfShowWarnings(JSON.parse(r.headers.get('X-Slate-Warnings') || '[]'));
   } catch (e) { await alertDark('PDF export failed: ' + e); }
   finally { hideLoading(); }
 }
@@ -606,11 +607,15 @@ function _pdfSyncThemeWarn() {
   const pick = (document.getElementById('pdftheme') || {}).value;
   if (row) row.style.display = (_exFormat() === 'pdf' && !_pdfPresent() && pick && pick !== 'asis') ? '' : 'none';
 }
-// Show the speaker-notes row only for the slides layout (PDF only).
+// Show the speaker-notes row only for the slides layout (PDF only), and the line that says the deck
+// template fixes the colours (the Theme picker changes nothing then) for both deck layouts.
 function _pdfSyncSlides() {
-  const slides = (document.getElementById('pdflayout').value || '').startsWith('slides');
+  const lay = document.getElementById('pdflayout').value || '';
+  const slides = lay.startsWith('slides');
   const row = document.getElementById('pdfnotesrow');
   if (row) row.style.display = (_exFormat() === 'pdf' && slides) ? '' : 'none';
+  const fixed = document.getElementById('pdffixedrow');
+  if (fixed) fixed.style.display = (_exFormat() === 'pdf' && (slides || _pdfPresent()) && nbState && nbState.deckFixesColours) ? '' : 'none';
 }
 // Show only the rows for the selected format.
 function _exSyncRows() {

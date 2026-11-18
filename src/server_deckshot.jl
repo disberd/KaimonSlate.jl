@@ -172,7 +172,7 @@ _slatetheme_qs(theme::AbstractString) = occursin(r"^[a-z0-9-]{1,32}$", theme) ? 
 # slides.js). A video is recorded at this size, so it has no bars at the deck's own ratio.
 deck_canvas(ratio::AbstractString) = ratio == "4:3" ? (1440, 1080) : ratio == "16:10" ? (1920, 1200) : (1920, 1080)
 
-# The page `deck_pdf` prints for notebook `id` on the hub at `base`: every slide at its last step, or
+# The page `deck_pdf_report` prints for notebook `id` on the hub at `base`: every slide at its last step, or
 # with `steps = "all"` a page for each step of each slide, in Slate palette `theme`.
 deck_print_url(base::AbstractString, id::AbstractString; theme::AbstractString = "", steps::AbstractString = "") =
     string(base, "/n/", id, "?deck=print&shot=1", steps == "all" ? "&steps=all" : "", _slatetheme_qs(theme))
@@ -206,16 +206,20 @@ function deck_shot(url::AbstractString; width::Integer = 1600, height::Integer =
 end
 
 """
-    deck_pdf(url; timeout = 120) -> Vector{UInt8}
+    deck_pdf_report(url; timeout = 120) -> (pdf::Vector{UInt8}, warnings::Vector{String})
 
 A PDF of the deck at `url` (from `deck_print_url`) as the audience sees it: one page per slide at its
 last step, or per step of each slide, each the slide's own size. Text and SVG stay vector; a chart is
-the snapshot the deck shows.
+the snapshot the deck shows. The page fits each slide as the deck does; `warnings` has one line for
+each slide at the fit floor, in the words of the Typst fit report (`_fit_warnings`).
 """
-function deck_pdf(url::AbstractString; timeout::Real = 120)
+function deck_pdf_report(url::AbstractString; timeout::Real = 120)
     lock(_DECKSHOT_LOCK) do
         _with_cdp_tab(_deckshot_browser(); timeout) do call
             _cdp_open_deck(call, url, 1920, 1080, timeout)
+            floor = something(_cdp_value(call, """[...new Set([...document.querySelectorAll(
+                '.deck-print-page[data-at-floor]')].map(h => +h.dataset.slide))]"""), Any[])
+            recs = [Dict{String,Any}("kind" => "fit", "slide" => Int(n), "at_floor" => true) for n in floor]
             # Read back as a stream in chunks: in one reply, a large PDF's base64 would pass the
             # WebSocket's frame limit (16 MiB in HTTP.jl) and the socket would close.
             h = call("Page.printToPDF", Dict("preferCSSPageSize" => true, "printBackground" => true,
@@ -228,9 +232,19 @@ function deck_pdf(url::AbstractString; timeout::Real = 120)
                 get(r, "eof", false) === true && break
             end
             call("IO.close", Dict("handle" => h))
-            return take!(io)
+            return take!(io), _fit_warnings(recs)
         end
     end
+end
+
+# The deck print of notebook `nb` on the hub at `base` (see `deck_print_url`) and its export warnings:
+# the checks of the deck settings, then the slides at the fit floor. The page takes the Slate palette
+# `theme`, the export picker; the page draws its charts in `figures.slate-palette` when the deck
+# settings name one (`deckFigurePalette` of the state).
+function deck_print_report(nb, base::AbstractString; theme::AbstractString = "", steps::AbstractString = "")
+    ds = notebook_deck_settings(nb)
+    pdf, floor = deck_pdf_report(deck_print_url(base, nb.id; theme, steps))
+    return pdf, vcat(ds.warnings, floor)
 end
 
 # ── Rendering the whole deck to a video ───────────────────────────────────────────────────────────

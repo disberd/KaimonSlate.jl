@@ -864,6 +864,9 @@ const _CONFIG_KEYS = ("sharefindings", "parallel", "threads", "hotreload", "macr
                       # `.jl` rather than living in one person's browser.
                       "replaystrides",
                       "slidelevel", "slidetransition", "slideauto", "deckstyle", "slidetimings", "slidetheme", "slideratio", "bibstyle",
+                      # `decksettings` = the deck override of the deck settings: TOML text, one JSON
+                      # string on its footer line (the text has more than one line).
+                      "decksettings",
                       "publishrepo", "publishslug", "series", "docid",
                       # `format` = the notebook file format this file is written in (see `FORMAT`).
                       "format",
@@ -885,7 +888,7 @@ const _CONFIG_TYPES = Dict("sharefindings" => :bool, "parallel" => :bool, "threa
                            "regions" => :string,
                            "slidelevel" => :int, "slidetransition" => :string, "slideauto" => :int,
                            "deckstyle" => :string, "slidetimings" => :string,
-                           "slidetheme" => :string, "slideratio" => :string, "bibstyle" => :string,
+                           "slidetheme" => :string, "slideratio" => :string, "bibstyle" => :string, "decksettings" => :text,
                            "publishrepo" => :string, "publishslug" => :string, "series" => :string,
                            # `docid` = the notebook's STABLE publish-ledger identity, generated once and
                            # carried in the file so it never flips when the path/repo/origin changes.
@@ -942,7 +945,7 @@ function _render_config_footer(meta)::String
         k == "format" && (push!(items, (k, string(FORMAT))); continue)
         haskey(meta, k) || continue
         v = meta[k]
-        sv = v isa Bool ? string(v) : String(string(v))
+        sv = v isa Bool ? string(v) : get(_CONFIG_TYPES, k, :string) === :text ? JSON.json(String(v)) : String(string(v))
         isempty(sv) && continue
         push!(items, (k, sv))
     end
@@ -968,6 +971,7 @@ function _parse_config_footer(lines)::Dict{String,Any}
         ty = get(_CONFIG_TYPES, k, :string)
         out[k] = ty === :bool ? (v == "true") :
                  ty === :int  ? something(tryparse(Int, v), nothing) :
+                 ty === :text ? (s = try; JSON.parse(v); catch; nothing; end; s isa String ? s : nothing) :
                  String(v)
         out[k] === nothing && delete!(out, k)   # drop malformed ints rather than store junk
     end

@@ -177,7 +177,17 @@ const _PALETTES = Dict(
                 parbg = "rgb(\"#1a2233\")", parborder = "rgb(\"#2c3a57\")", parlabel = "rgb(\"#8ab4f8\")",
                 tablestroke = "luma(90)",  tableheadbg = "rgb(\"#1b1f2b\")", tablestripe = "rgb(\"#171b25\")"),
 )
-_palette(theme) = get(_PALETTES, theme, _PALETTES["light"])
+# The colours of the slides layout, as Typst expressions that read the deck settings (`settings`,
+# deck_settings.jl): the slides preamble and the tables of a slide (`_typst_table`) take no
+# `_PALETTES` entry. `deckpaint` (slides preamble) turns a `none` paint into a transparent colour.
+const _DECK_PALETTE = (page = "settings.roles.surface", text = "settings.roles.fg",
+    rule = "deckpaint(settings.table.rule-color)", title = "settings.roles.strong", codebg = "settings.code.fill",
+    codetheme = "", outbg = "settings.code.fill", outfg = "settings.roles.dim",
+    valbg = "settings.code.fill", valfg = "settings.roles.accent", errbg = "settings.code.fill",
+    errfg = "settings.roles.ink", parbg = "settings.code.fill", parborder = "deckpaint(settings.table.rule-color)",
+    parlabel = "settings.roles.dim", tablestroke = "deckpaint(settings.table.rule-color)",
+    tableheadbg = "settings.table.header-fill", tablestripe = "settings.table.stripe-fill")
+_palette(theme) = theme == "deck" ? _DECK_PALETTE : get(_PALETTES, theme, _PALETTES["light"])
 
 # A compact Tokyo-Night-style dark syntax theme for Typst `raw` (written to the export
 # dir when `theme=dark`; its background matches `codebg` so the block reads uniformly).
@@ -280,6 +290,7 @@ function _typst_preamble(title::AbstractString; style::AbstractString = "article
       let im = image(src, alt: alt, width: mdlen(a.at("width", default: none)), height: mdlen(a.at("height", default: none)))
       if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), im) } else { im }
     }
+    #let mdscope = (image: mdimage)
     $(_CITE_SHOW)
     #let titleblock(t) = { align(center, text(size: $(st.titlesize), weight: "bold", fill: $(p.title), t)); v(2pt); line(length: 100%, stroke: 0.5pt + $(p.rule)); v(10pt) }
     #let metablock(title, subtitle, byline, abstract) = {
@@ -316,47 +327,52 @@ end
 _slide_geom(ratio) = ratio == "4:3" ? ("254mm", "190.5mm") :
                      ratio == "16:10" ? ("254mm", "158.75mm") : ("254mm", "142.875mm")
 
-# The size of a code listing on a slide, in em of the body text. The base size is 0.62 em, as on the
-# live deck; the `code` option scales it as its point size scales the 8.5 pt of "small".
+# The size of a code listing on a slide: the deck setting `code.size`, times the factor of the `code`
+# option (its point size over the 8.5 pt of "small"; "normal" is "small").
 _slide_code_size(code) =
-    string(round(0.62 * parse(Float64, chop(_code_size(code == "normal" ? "small" : code); tail = 2)) / 8.5; digits = 3), "em")
+    string(round(parse(Float64, chop(_code_size(code == "normal" ? "small" : code); tail = 2)) / 8.5; digits = 4),
+           " * settings.code.size")
 
-# The fit parameters of a slide. `slides.js` holds the same numbers in `FIT`.
-const _FIT_TYPST = "(text-floor: 0.62, fig-floor: 0.25, fig-cap: 0.7, math-floor: 0.4)"
+# The fit parameters of a slide. The text floor and the figure cap are deck settings; `slides.js`
+# holds the same figure floor and math floor in `FIT`.
+const _FIT_TYPST = "(text-floor: settings.fit.text-floor, fig-floor: 0.25, fig-cap: settings.fit.figure-cap, math-floor: 0.4)"
 
 # Preamble for the slides layout. Reuses the same block helpers as the article preamble but on a
-# landscape slide page with bigger type. It defines `SLIDE_W` and `SLIDE_H` (the page size), `u` (the
-# slide unit: 1/1920 of the page width at 16:9 and 16:10, 1/1440 at 4:3, as the live canvas), `FIT`
-# (the fit parameters), `#let fit(body)` (see its comment), `#let slidecols(widths, ..cols)` (a row of
-# columns, see its comment) and `#let slide(body, layout: none, title: none, n: none)`: one page per
-# slide, the body inside `fit`. `layout` is the slide's layout tag and `title` its heading (a
-# `heading` element), both `none` when unset; `n` is the slide number on a notes page. A template that
-# is added after this preamble can redefine `slide` or `slidecols` to draw each layout its own way. It
-# must draw the body through `fit`, because `fit` sizes the figures and records the fit.
+# landscape slide page with bigger type. It imports `deck-settings.typ` (`deck_settings_typ`):
+# `SLIDE_W` and `SLIDE_H` (the page size), `u` (the slide unit: 1/1920 of the page width at 16:9 and
+# 16:10, 1/1440 at 4:3, as the live canvas) and `settings` (the deck settings). It defines `FIT` (the fit
+# parameters), `mdscope` (the scope of each `cmarker.render`), `mdcell` (a markdown cell),
+# `#let base-rhythm(body)` and `#let fit(body)` (see their comments),
+# `#let slidecols(widths, ..cols)` (a row of columns, see its comment) and
+# `#let slide(body, layout: none, title: none, n: none)`: one page per slide, the body inside `fit`.
+# `layout` is the slide's layout tag and `title` its heading (a `heading` element), both `none` when
+# unset; `n` is the slide number on a notes page. A template that is added after this preamble can
+# redefine `slide` or `slidecols` to draw each layout its own way. It must draw the body through `fit`,
+# because `fit` sizes the figures and records the fit.
+# The page copies the geometry of the live base deck (notebook.css `.deck-slide`, `.slide-title`,
+# `.slide-num`): the body padding, the body at the top of the slide, the slide number, the title. The
+# base `slide` draws the body in `base-rhythm`, the vertical rhythm of the live deck from the deck
+# settings, with the line boxes of CSS.
 # Lengths in the body follow the live deck: text sizes and spacing in `em` (they follow the text
 # scale of `fit`), geometry in `u` (fixed).
-function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "dark",
-                                ratio::AbstractString = "16:9", code::AbstractString = "small")
+# `syntax` is the colour scheme of code, "light" or "dark" (the deck setting `code.syntax`, resolved):
+# "dark" needs `code-dark.tmTheme` in the project.
+function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = "light", code::AbstractString = "small")
     pre = _typ_str(strip(replace(_MITEX_SHIMS, r"\s+" => " ")))
-    p = _palette(theme)
-    w, h = _slide_geom(ratio)
-    W = first(deck_canvas(ratio))
-    rawtheme = isempty(p.codetheme) ? "" : "\n    #set raw(theme: \"$(p.codetheme)\")"
+    p = _DECK_PALETTE
+    rawtheme = syntax == "dark" ? "\n    #set raw(theme: \"code-dark.tmTheme\")" : ""
     return """
     #import "@preview/cmarker:$(_CMARKER_VER)"
     #import "@preview/mitex:$(_MITEX_VER)": mitex, mi
-    #let SLIDE_W = $w
-    #let SLIDE_H = $h
-    #let u = SLIDE_W / $W
+    #import "deck-settings.typ": SLIDE_W, SLIDE_H, u, settings
+    #let deckpaint(c) = if c == none { rgb(0, 0, 0, 0) } else { c }
     #let FIT = $_FIT_TYPST
     #set document(title: "$(_typ_str(title))")
-    #set page(width: SLIDE_W, height: SLIDE_H, margin: (x: 121 * u, y: 91 * u), fill: $(p.page))
-    // 50.67 u is 19 pt on a 16:9 page.
-    #set text(font: "New Computer Modern", size: 50.67 * u, fill: $(p.text))$(rawtheme)
-    #set par(justify: false, leading: 0.7em, spacing: 1.1em)
+    #set page(width: SLIDE_W, height: SLIDE_H, margin: (top: 84 * u, x: 120 * u, bottom: 72 * u), fill: $(p.page))
+    #set text(font: settings.text.font, size: settings.text.size, fill: $(p.text))$(rawtheme)
+    #show raw: set text(font: settings.code.font)
+    #set par(justify: false)
     #show heading: set text(fill: $(p.title))
-    #show heading.where(level: 1): set text(size: 1.7em)
-    #show heading.where(level: 2): set text(size: 1.35em)
     #set heading(numbering: none)
     #let PRE = "$pre "
     #let mathfn = (s, block: false) => if block { mitex(PRE + s) } else { mi(PRE + s) }
@@ -371,8 +387,107 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
       if w > size.width { scale(calc.max(FIT.math-floor, size.width / w) * 100%, reflow: true, it) } else { it }
     })
     #show table.cell: it => { show math.equation.where(block: true): set align(left); it }
-    // Markdown tables take the theme's thin rule colour rather than cmarker's heavy black lines.
-    #set table(stroke: 1.33 * u + $(p.rule), inset: (x: 0.37em, y: 0.26em))
+    // Headings have the line height of the live headings (`HEAD-LH`). Code in markdown is at
+    // `CODE-INLINE` of its text, as the live `code`.
+    #let HEAD-LH = 1.1
+    #let CODE-INLINE = 0.85
+    // A row of a table has `table.line-height` in the line boxes of the body text: the leading takes
+    // the difference, and the inset half of it on each side. A rule of `TRULE` under each row adds its
+    // width to the row, as a CSS border does.
+    #let TL = settings.table.line-height
+    #let TRULE = 2 * u
+    #let tinset(pad) = pad - (settings.text.line-height - TL) / 2 * 1em
+    // The plain text of a table cell, for its widest word.
+    #let plaintext(c) = if type(c) == str { c } else if c.has("text") and type(c.text) == str { c.text } else if c.has("children") { c.children.map(plaintext).sum(default: "") } else if c.has("body") { plaintext(c.body) } else if c.has("child") { plaintext(c.child) } else { " " }
+    // A markdown table at `table.text-size`, with the column widths that CSS auto table layout gives
+    // it in its column: each column gets at least its widest word (min) and at most its widest line
+    // (max), and the room between the sums of min and max goes to the columns in proportion to
+    // max - min. When `table.full-width` is on, a table narrower than its column takes the full
+    // width, in proportion to max, as the live `width: 100%`. The rebuilt table has `fr` columns,
+    // which tell this rule that the table is done.
+    #let base-table(it) = if type(it.columns) == array and it.columns.len() > 0 and it.columns.all(c => type(c) == fraction) { it } else {
+      set text(size: settings.table.text-size)
+      block(above: settings.text.paragraph-after, below: settings.rhythm.after-table, layout(sz => {
+        if type(it.columns) != array or it.columns.any(c => c != auto) { return it }
+        let n = it.columns.len()
+        let cells = it.children.map(c => if c.func() == table.header { c.children } else { (c,) }).flatten()
+        let pad = 2 * settings.table.pad-x.to-absolute()
+        let col(i) = cells.enumerate().filter(((j, _)) => calc.rem(j, n) == i).map(((j, c)) => if j < n { strong(c.body) } else { c.body })
+        let mx = range(n).map(i => calc.max(..col(i).map(b => measure(b).width)) + pad)
+        let mn = range(n).map(i => calc.max(..col(i).map(b => calc.max(0 * u, ..plaintext(b).split(" ").map(w => measure(w).width)))) + pad)
+        let w = if mx.sum() <= sz.width {
+          if not settings.table.full-width { return it }
+          mx.map(x => x / mx.sum() * sz.width)
+        } else if mn.sum() >= sz.width { mn } else {
+          let d = range(n).map(i => mx.at(i) - mn.at(i))
+          range(n).map(i => mn.at(i) + (sz.width - mn.sum()) * (d.at(i) / d.sum()))
+        }
+        let f = it.fields()
+        let children = f.remove("children")
+        table(..f, columns: w.map(x => x / u * 1fr), ..children)
+      }))
+    }
+    // `base-rhythm(body)` draws `body` with the vertical rhythm of the live base deck, from the deck
+    // settings. The base `slide` puts it around `fit`; a template that draws its own pages can put it
+    // around its `fit` too, or keep its own rules. Inside it, `mdcell` and `cellgap` (`RHYTHM`) draw
+    // the padding of a markdown cell and the gap between cells; outside it they add nothing.
+    // - Line boxes as in CSS: a line of line height `L` (a ratio of the text size) is the line box of
+    //   the font, from its ascender `A` to its descender `D`, with `(L - (A + D)) / 2` above and below
+    //   it. `A` and `D` are measured on the font in use, so the rule holds for any font. The lines of a
+    //   code block are `text.line-height` of `code.size` apart, as the live `pre` puts them.
+    // - The space between blocks follows the CSS margins of the live deck. Typst puts only the
+    //   `above` of a block between a paragraph and the block, and only its `below` between the block
+    //   and a paragraph; two blocks take the larger of the two, as CSS margins collapse. A block has no
+    //   space of its own, as a `div`; the blocks of markdown set theirs. A list has
+    //   `text.paragraph-after` above it and `.6em` below it, as a live `ul`. A nested list has the item
+    //   spacing above and below it: Typst spaces a tight list so, and the live deck does the same.
+    // - Headings take the sizes and the margins of the deck settings and the weights of the live deck
+    //   (800, 750, 650). Typst sets a level-1 heading at 1.4em and a level-2 heading at 1.2em of the
+    //   text around it, below any show rule, so those sizes divide by these factors. A level-2
+    //   heading has the accent bar of the live deck.
+    // - A key message (a block quote) has the gap between cells below it. A code block has
+    //   `code.size` above and below it, as the margin of a live `pre`. Display math is at 1.4em with
+    //   .8em above and 1em below it (the margin and the padding of a live `.katex-display`), inline
+    //   math at 1.1em.
+    // - Tables take the structure and paint keys of `[table]`, and `base-table` sets their text size
+    //   and column widths.
+    #let RHYTHM = state("slate-rhythm", false)
+    #let base-rhythm(body) = { RHYTHM.update(true); context {
+      let m(t, b) = measure(text(top-edge: t, bottom-edge: b, "x")).height / text.size
+      let (A, D) = (m("ascender", "baseline"), m("baseline", "descender"))
+      let edges(L) = (top-edge: (A + (L - A - D) / 2) * 1em, bottom-edge: -(D + (L - A - D) / 2) * 1em)
+      set text(..edges(settings.text.line-height))
+      show heading: set text(..edges(HEAD-LH))
+      show raw.where(block: true): set text(..edges(settings.text.line-height / CODE-INLINE))
+      set par(leading: 0em, spacing: settings.text.paragraph-after)
+      set block(spacing: 0em)
+      set list(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
+        marker: depth => box(width: settings.text.list-indent - 0.5em, align(right, text(fill: settings.roles.accent, ("•", "◦", "▪").at(calc.rem(depth - 1, 3))))))
+      set enum(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
+        numbering: n => box(width: settings.text.list-indent - 0.5em, align(right, [#n.])))
+      show list: set block(above: settings.text.paragraph-after, below: 0.6em)
+      show enum: set block(above: settings.text.paragraph-after, below: 0.6em)
+      show grid: set block(above: settings.text.paragraph-after, below: settings.text.paragraph-after)
+      show heading.where(level: 1): set text(size: settings.heading.h1 / 1.4, weight: 800)
+      show heading.where(level: 2): set text(size: settings.heading.h2 / 1.2, weight: 750)
+      show heading.where(level: 3): set text(size: settings.heading.h3, weight: 650)
+      show heading: set block(above: settings.rhythm.heading-above, below: settings.rhythm.heading-below)
+      show heading.where(level: 2): it => block(it.body + block(above: 0.32em, box(width: 2.2em, height: 6 * u,
+        radius: 99 * u, fill: gradient.linear(settings.roles.accent, settings.roles.accent2))))
+      show quote.where(block: true): it => block(above: settings.text.paragraph-after, below: settings.rhythm.cell-gap, it.body)
+      show raw.where(block: true): set block(above: settings.code.size / CODE-INLINE, below: settings.code.size / CODE-INLINE)
+      show math.equation.where(block: true): set text(size: 1.4em)
+      show math.equation.where(block: true): set block(above: 0.8em / 1.4, below: 1em / 1.4)
+      show math.equation.where(block: false): set text(size: 1.1em)
+      set table(stroke: (x, y) => (bottom: TRULE + $(p.rule)),
+        inset: (x, y) => { let p = tinset(if y == 0 { settings.table.header-pad-y } else { settings.table.body-pad-y }); (x: settings.table.pad-x, top: p, bottom: p + TRULE) },
+        fill: (x, y) => if y == 0 { settings.table.header-fill } else if calc.even(y) { settings.table.stripe-fill })
+      show table: set par(leading: (TL - settings.text.line-height) * 1em)
+      show table.cell.where(y: 0): set text(fill: settings.table.header-color, weight: "bold")
+      show table.cell: set align(horizon)
+      show table: base-table
+      body
+    }; RHYTHM.update(false) }
     // Author-embedded markdown images stage into the doc root; resolve them relative to THIS file
     // (not cmarker's package dir, where its built-in image() looks) — passed to cmarker as scope.image.
     // `media.json` carries any `{width=…}` block the author wrote (see `_stage_typst_md_media`), as
@@ -393,6 +508,16 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
       let im = image(src, alt: alt, width: mdlen(w), height: mdlen(h))
       if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), im) } else { im }
     }
+    // Code in markdown as on the live deck: inline code at `CODE-INLINE` of its text, a code block at
+    // `code.size` with its code at `CODE-INLINE` of that. Typst sets raw text at 0.8em of the text
+    // around it, below any show rule, so the sizes divide by it.
+    #let mdraw(..a) = text(size: (if a.named().at("block", default: false) { settings.code.size / 1em } else { 1 }) * CODE-INLINE / 0.8 * 1em, raw(..a))
+    #let mdscope = (image: mdimage, raw: mdraw)
+    // A markdown cell has the padding of a live markdown cell, 16 u on each side; the slide title has it
+    // too. It keeps the space below its last block, as a live cell does; the empty block at its end
+    // holds that space. `cellgap` is the gap between the cells of a slide.
+    #let mdcell(body) = context if RHYTHM.get() { pad(x: 16 * u, { body; block(height: 0em, above: settings.text.paragraph-after) }) } else { body }
+    #let cellgap = context if RHYTHM.get() { v(settings.rhythm.cell-gap) }
     $(_CITE_SHOW)
     #let metablock(title, subtitle, byline, abstract) = align(center + horizon)[
       #text(size: 2.4em, weight: "bold", fill: $(p.title))[#title]
@@ -405,13 +530,22 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
     #let valblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.valbg), radius: 8 * u, text(size: 0.7em, fill: $(p.valfg), raw(s)))
     #let errblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.errbg), radius: 8 * u, text(size: 0.7em, fill: $(p.errfg), raw(s)))
     // A figure is a marker that `fit` sizes for the slide. `width` is an upper bound on its drawn
-    // width: a ratio of the column, or a length. At figure scale `f`, a figure is `f` of the size that
-    // fills its column (or its `width`), and at most `FIT.fig-cap` of the slide height. Outside `fit`
-    // it is drawn at `f = 1`.
+    // width: a ratio of the column, or a length. With no `width`, the full size of a figure is the
+    // natural size of the picture that the live deck shows (`natural-w`), at most its column. At
+    // figure scale `f`, a figure is `f` of its full size, and at most `FIT.fig-cap` of the slide
+    // height. Outside `fit` it is drawn at `f = 1`.
     #let figureimg(p, width: none) = [#metadata((p: p, w: width)) <slate-fig>]
+    // The natural width in CSS px (1/96 in), which is `u` on the slide, of a PNG (its pixel width: a
+    // browser does not read its density) or an SVG. A PDF figure (a Makie figure) shows on the live
+    // deck as a PNG at twice its size, so it fills its column: `none`.
+    #let natural-w(p, n) = if lower(p).ends-with(".png") {
+      let b = read(p, encoding: none)
+      b.at(16) * 16777216 + b.at(17) * 65536 + b.at(18) * 256 + b.at(19)
+    } else if lower(p).ends-with(".svg") { n.width / (1in / 96) }
     #let drawfig(v, f) = layout(c => {
       let n = measure(image(v.p))
-      let cw = if v.w == none { c.width } else if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) }
+      let nw = natural-w(v.p, n)
+      let cw = if v.w != none { if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) } } else if nw == none { c.width } else { calc.min(c.width, nw * u) }
       align(center, image(v.p, height: calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))))
     })
     #show <slate-fig>: it => drawfig(it.value, 1)
@@ -467,33 +601,45 @@ function _typst_preamble_slides(title::AbstractString; theme::AbstractString = "
       if at-floor { block(height: sz.height, align(top, box(width: sz.width, height: tall(s, f), draw(s, f)))) }
       else { block(width: sz.width, breakable: false, draw(s, f)) }
     })
-    // Side-by-side columns, top aligned. `widths` holds one entry per column: a ratio or a length, or
-    // `none` for a column that shares the rest equally. The other arguments are the column bodies.
-    // Ratios that fill the row or more shrink in proportion, as the flex columns of the live deck do.
-    // The gap is 56 u, as on the live deck.
-    #let slidecols(widths, ..cols) = {
+    // Side-by-side columns. `widths` holds one entry per column: a ratio or a length, or `none` for a
+    // column that shares the rest equally. The other arguments are the column bodies. Ratios that fill
+    // the row or more shrink in proportion, as the flex columns of the live deck do. The gap is the
+    // deck setting `columns.gap`. A row of cells (`row: true`) gives `columns.row-gap`, no spacing of
+    // its own in `base-rhythm` (the gap between cells is around it) and `align: horizon` when it holds
+    // a markdown cell, as on the live deck.
+    #let slidecols(widths, gap: settings.columns.gap, align: top, row: false, ..cols) = {
       let shrink = widths.all(w => type(w) == ratio) and widths.map(w => w / 1%).sum() >= 100
-      grid(columns: widths.map(w => if w == none { 1fr } else if shrink { w / 1% * 1fr } else { w }),
-        column-gutter: 56 * u, align: top, ..cols.pos())
+      let g = grid(columns: widths.map(w => if w == none { 1fr } else if shrink { w / 1% * 1fr } else { w }),
+        column-gutter: gap, align: align, ..cols.pos())
+      if row { context if RHYTHM.get() { block(above: 0em, below: 0em, g) } else { g } } else { g }
     }
-    // One slide = one page, vertically centered. The title goes at the top of the body, inside `fit`;
-    // a notes page gets a "Notes · slide N" label in its place. Two layouts follow the live deck:
-    // `center` centres the text as well; `section` shifts the slide right and draws a larger title,
-    // with a dimmed level-3 heading.
-    #let slide(body, layout: none, title: none, n: none) = page[
-      #align(horizon)[
-        #pad(left: (if layout == "section" { 30 } else { 0 }) * u)[
-          #fit({
-            set align(center) if layout == "center"
-            show heading.where(level: 3): it => if layout == "section" { text(fill: $(p.text).transparentize(40%), it) } else { it }
-            if layout == "notes" { text(fill: luma(130))[Notes · slide #n]; v(0.32em) } else if title != none {
-              if layout == "section" { text(size: 1.6em, title) } else { title }
-            }
-            body
-          })
-        ]
+    // One slide = one page, with the body at the top. The title goes at the top of the body, inside
+    // `fit`, with the padding of the live title cell (12 u above, 16 u at the sides); a notes page gets
+    // a "Notes · slide N" label in its place. The slide number is at the bottom right, as on the live
+    // deck, but not on a title, section, cover or notes page; a notes page does not count. The layouts
+    // follow the live deck: `center`, `title` and `section` centre the body on the page, `center` centres
+    // the text as well, and `section` has a wider left margin, a larger title and a dimmed level-3
+    // heading.
+    #let slidenum = counter("slate-slide")
+    #let slide(body, layout: none, title: none, n: none) = {
+      if layout != "notes" { slidenum.step() }
+      page(margin: (top: 84 * u, bottom: 72 * u, left: (if layout == "section" { 180 } else { 120 }) * u, right: 120 * u),
+        foreground: if layout not in ("title", "section", "cover", "notes") {
+          place(bottom + right, dx: -44 * u, dy: -30 * u,
+            text(size: 20 * u, fill: settings.roles.dim.transparentize(30%), context slidenum.display()))
+        })[
+        #set std.align(horizon) if layout in ("center", "title", "section")
+        #base-rhythm(fit({
+          set std.align(center) if layout == "center"
+          show heading.where(level: 3): it => if layout == "section" { text(fill: $(p.text).transparentize(40%), it) } else { it }
+          if layout == "notes" { text(fill: luma(130))[Notes · slide #n]; v(0.32em) } else if title != none {
+            v(12 * u)
+            pad(x: 16 * u, { if layout == "section" { text(size: 1.6em, title) } else { title }; block(height: 0em) })
+          }
+          body
+        }))
       ]
-    ]
+    }
 
     """
 end
@@ -863,33 +1009,45 @@ function _typst_table(spec; theme::AbstractString = "light")::String
     isempty(cols) && return ""
     ncol = length(cols)
     p = _palette(theme)
+    # On a slide each size is in `em` (of `table.text-size` inside the table), so that the fit's text
+    # scale shrinks the table with the text. The table sets no rule, inset or fill: the base slide gives
+    # them and the column widths (`base-rhythm`, `base-table` in the slides preamble), as for a markdown
+    # table, and a deck template gives its own.
+    deck = theme == "deck"
+    z = deck ? (body = "", head = "", title = "1.05em", gap = ("0.6em", "0.5em"), more = "settings.table.text-size") :
+               (body = "size: 8pt, ", head = "size: 8.5pt, ", title = "10.5pt", gap = ("6pt", "5pt"), more = "8pt")
     _typalign(a) = a == "right" ? "right" : (a == "center" ? "center" : "left")
     fmts = Any[_col_format(c) for c in cols]   # _col_* column-spec accessors are shared (server_export.jl)
-    inner(v, fmt) = "[#text(size: 8pt, \"" * _typ_str(ReportEngine._format_cell(v, fmt)) * "\")]"
+    inner(v, fmt) = "[#text($(z.body)\"" * _typ_str(ReportEngine._format_cell(v, fmt)) * "\")]"
     cell(v, col, fmt) = _typ_viz_cell(v, col, inner(v, fmt))
     io = IOBuffer()
     # per-column alignment (numbers right, bools center) + a themed grid stroke
     print(io, "#align(center)[\n")   # center the table block on the page
     # A caption above the table, matching the browser and the HTML export.
     ttl = _table_title(opts)
-    ttl === nothing || print(io, "#block(above: 6pt, below: 5pt)[#text(size: 10.5pt, weight: \"bold\", \"",
+    ttl === nothing || print(io, "#block(above: $(z.gap[1]), below: $(z.gap[2]))[#text(size: $(z.title), weight: \"bold\", \"",
                              _typ_str(ttl), "\")]\n")
-    print(io, "#table(columns: ", ncol, ", inset: 5pt, align: (", join((_typalign(_col_align(c)) for c in cols), ", "), "), stroke: 0.4pt + $(p.tablestroke),\n")
-    # zebra: header shaded (row 0), odd body rows a subtle stripe
-    print(io, "  fill: (_, row) => if row == 0 { $(p.tableheadbg) } else if calc.odd(row) { $(p.tablestripe) },\n")
+    aligns = join((_typalign(_col_align(c)) for c in cols), ", ")
+    if deck
+        print(io, "#[#set text(size: settings.table.text-size)\n#table(columns: ", ncol, ", align: (", aligns, ",),\n")
+    else
+        print(io, "#table(columns: ", ncol, ", inset: 5pt, align: (", aligns, "), stroke: 0.4pt + $(p.tablestroke),\n")
+        # zebra: header shaded (row 0), odd body rows a subtle stripe
+        print(io, "  fill: (_, row) => if row == 0 { $(p.tableheadbg) } else if calc.odd(row) { $(p.tablestripe) },\n")
+    end
     # repeat the header on every page a long table spills onto
-    print(io, "  table.header(repeat: true, ", join(["[#text(size: 8.5pt, weight: \"bold\", \"" * _typ_str(_col_name(c)) * "\")]" for c in cols], ", "), "),\n")
+    print(io, "  table.header(repeat: true, ", join(["[#text($(z.head)weight: \"bold\", \"" * _typ_str(_col_name(c)) * "\")]" for c in cols], ", "), "),\n")
     maxr = Int(something(get(opts, "export_rows", nothing), 200))   # per-table export_rows hint, else default cap
     for (ri, r) in enumerate(rows)
         ri > maxr && break
         print(io, "  ", join([cell(ci <= length(r) ? r[ci] : nothing, cols[ci], fmts[ci]) for ci in 1:ncol], ", "), ",\n")
     end
-    print(io, ")\n")
+    print(io, deck ? ")\n]\n" : ")\n")
     # accurate truncation: the wire ships at most `maxr` here AND a paged table ships only page 1,
     # so report against opts.nrows (the true total), not the shipped-row count.
     total = Int(get(opts, "nrows", length(rows)))
     shown = min(length(rows), maxr)
-    shown < total && print(io, "#text(size: 8pt, fill: gray)[… ", total - shown, " more rows (", total, " total)]\n")
+    shown < total && print(io, "#text(size: $(z.more), fill: gray)[… ", total - shown, " more rows (", total, " total)]\n")
     print(io, "]\n")   # close #align(center)
     return String(take!(io))
 end
@@ -1087,7 +1245,7 @@ function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString
         src = _normalize_math_delims(md; tex = _portable_tex)
         if _typst_typesets(:md, src)
             write(joinpath(dir, base * ".md"), src)
-            print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: (image: mdimage))\n")
+            print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: mdscope)\n")
             return true
         end
     end
@@ -1162,7 +1320,7 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
     if md !== nothing
         # Prose: typeset as a markdown cell's would be, rather than rasterized as HTML.
         write(joinpath(dir, base * "_out.md"), _admonitions_to_quotes(_normalize_math_delims(md)))
-        print(io, "#cmarker.render(read(\"", base, "_out.md\"), math: mathfn, scope: (image: mdimage))\n\n")
+        print(io, "#cmarker.render(read(\"", base, "_out.md\"), math: mathfn, scope: mdscope)\n\n")
         return
     end
     if texts && isempty(o.display) && !isempty(o.value_repr)
@@ -1283,9 +1441,12 @@ function _typst_query(typ::String, selector::AbstractString)
     return JSON.parse(String(take!(out)))
 end
 
-# An export warning for each slide that the slides preamble `fit` records at the floor.
-_fit_warnings(records) = ["Slide $(r["slide"]) does not fit at the smallest text size: its end runs past the page bottom."
-                          for r in records if r isa AbstractDict && get(r, "kind", "") == "fit" && get(r, "at_floor", false) === true]
+# An export warning for each slide that a fit record marks at the floor. `unit` names the number of the
+# record: "Slide" for the live index of the deck print, "Page" for the PDF page of the slides preamble
+# `fit` (the PDF drops a slide with no content, so a page number is not always the slide number).
+_fit_warnings(records; unit::AbstractString = "Slide") =
+    ["$unit $(r["slide"]) does not fit at the smallest text size: its end runs past the page bottom."
+     for r in records if r isa AbstractDict && get(r, "kind", "") == "fit" && get(r, "at_floor", false) === true]
 
 """
     export_pdf(nb; include_source=true, style="article", columns=1,
@@ -1307,13 +1468,15 @@ cell the document title falls back to the first markdown H1 (then the notebook f
 """
 export_pdf(nb::LiveNotebook; kwargs...) = first(_export_pdf_report(nb; kwargs...))
 
-# `export_pdf` and the export warnings of the PDF: the slides at the fit floor of a slides layout.
+# `export_pdf` and the export warnings of the PDF. A slides layout warns about the checks of its deck
+# settings and about the slides at the fit floor.
 function _export_pdf_report(nb::LiveNotebook; kwargs...)
     dir = _build_typst_project(nb; kwargs...)
     try
         typ = joinpath(dir, "doc.typ"); pdf = joinpath(dir, "out.pdf")
         _typst_compile(typ, pdf)
-        warns = get(kwargs, :layout, "") == "slides" ? _fit_warnings(_typst_query(typ, "<slate>")) : String[]
+        warns = get(kwargs, :layout, "") == "slides" ?
+            vcat(notebook_deck_settings(nb).warnings, _fit_warnings(_typst_query(typ, "<slate>"); unit = "Page")) : String[]
         return read(pdf), warns
     finally
         rm(dir; recursive = true, force = true)
@@ -1423,13 +1586,13 @@ Each entry has these fields:
   first cell of the slide that has it, as a string, or `nothing`.
 - `title`: `nothing`, or `(text, depth, cell, interpbase)` when the first block of the slide is a
   markdown heading. `text` is the heading without its `#` marks, `depth` is 1 to 6, `cell` is the id of
-  the cell that holds it. The heading is not in `blocks`.
-- `blocks`: the body, in order. Each block is `(cell, src, interpbase, row, column)`: the cell id,
+  the cell that holds it. The heading is not in `frags`.
+- `frags`: the body, in order. Each fragment is `(cell, src, interpbase, row, column)`: the cell id,
   the markdown to draw (`nothing` is the whole cell), the number of `{{ }}` interpolations before it in
   its cell, the side-by-side row that it belongs to, and its `column=` value.
 - `notes`: the ids of the `notes` cells that belong to the slide.
 
-`drop(cell)` removes a cell from the blocks, and so from the title search; the entry stays in the deck
+`drop(cell)` removes a cell from the fragments, and so from the title search; the entry stays in the deck
 so that slide numbers stay stable.
 """
 function slide_deck(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slidelevel", 2), drop = Returns(false))
@@ -1456,14 +1619,14 @@ function slide_deck(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slid
                 isempty(strip(h.rest)) && popfirst!(frags)
             end
         end
-        blocks = NamedTuple[]
+        body = NamedTuple[]
         row = 0
         for f in frags
             col = _cell_column(f.cell)
             (col >= 2 && row > 0) || (row += 1)
-            push!(blocks, (cell = f.cell.id, src = f.src, interpbase = f.interpbase, row = row, column = col))
+            push!(body, (cell = f.cell.id, src = f.src, interpbase = f.interpbase, row = row, column = col))
         end
-        push!(deck, (layout = tag("layout"), title = title, blocks = blocks, transition = tag("transition"),
+        push!(deck, (layout = tag("layout"), title = title, frags = body, transition = tag("transition"),
                      auto = tag("auto"), notes = [n.id for n in seg.notes]))
     end
     return deck
@@ -1942,7 +2105,7 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
             if !isempty(strip(fm.abstract))
                 write(joinpath(dir, "abstract.md"),
                       _stage_typst_md_media(_rewrite_citations(fm.abstract, citekeys), dir, "abstract", _proj_root(nb); sizes = mediasz))
-                absarg = "cmarker.render(read(\"abstract.md\"), math: mathfn, scope: (image: mdimage))"
+                absarg = "cmarker.render(read(\"abstract.md\"), math: mathfn, scope: mdscope)"
             end
             print(io, "#metablock(", arg(fm.title), ", ", arg(fm.subtitle), ", ", arg(fm.byline), ", ", absarg, ")\n\n")
         end
@@ -1972,9 +2135,9 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                     write(joinpath(dir, base * ".md"), md)
                     if haskey(figidx.numbers, c.id)  # a caption cell → numbered "Figure N." block
                         print(io, "#figcaption(\"Figure ", figidx.numbers[c.id],
-                              "\", cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: (image: mdimage)))\n\n")
+                              "\", cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: mdscope))\n\n")
                     else
-                        print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: (image: mdimage))\n\n")
+                        print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: mdscope)\n\n")
                     end
                 end
             else
@@ -2008,7 +2171,7 @@ end
 # Typst length of a `:::` column's `width` attribute, or "none" when it has none. A bare number is a
 # percentage, as in the live deck; `px` becomes points and `rem` becomes `em`.
 function _column_width_typst(attrs::AbstractString)
-    m = match(r"(?:^|[\s{.])width\s*=\s*\"?([0-9.]+)(%|px|em|rem)?", attrs)
+    m = match(r"(?:^|[\s{.])width\s*=\s*\"?([0-9]+(?:\.[0-9]+)?|\.[0-9]+)(%|px|em|rem)?", attrs)
     m === nothing && return "none"
     unit = something(m[2], "%")
     return string(m[1], unit == "px" ? "pt" : unit == "rem" ? "em" : unit)
@@ -2060,9 +2223,11 @@ function _split_columns(src::AbstractString)
     return isempty(pieces) ? Any[String(src)] : pieces
 end
 
-# One `slidecols` call: `body(j)` prints the j-th column of the row.
-function _print_slidecols(body, io::IO, widths)
-    print(io, "#slidecols((", join(widths, ", "), ",),\n")
+# One `slidecols` call: `body(j)` prints the j-th column of the row. `gap` and `align` are Typst
+# expressions, or `nothing` for the defaults of `slidecols`; `row` marks a row of cells.
+function _print_slidecols(body, io::IO, widths; gap = nothing, align = nothing, row::Bool = false)
+    print(io, "#slidecols((", join(widths, ", "), ",),", gap === nothing ? "" : " gap: $gap,",
+          align === nothing ? "" : " align: $align,", row ? " row: true," : "", "\n")
     for j in eachindex(widths)
         print(io, "[")
         body(j)
@@ -2076,13 +2241,22 @@ end
 # are INVARIANT, so a literal whose `src` is a concrete `String` (or `Nothing`) is not a subtype of
 # `SlideFrag`'s `Union{String,Nothing}` field, and a `::SlideFrag` annotation would reject every caller
 # that builds one inline rather than pushing it through a `Vector{SlideFrag}`.
-function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, compfigs::_CompFigs = _NO_COMPFIGS)
+# A markdown cell prints inside one `mdcell`, which gives it the padding of a live markdown cell;
+# `incell` is true for the parts of a cell that a `:::: columns` group splits.
+function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false)
     c, srcoverride = frag.cell, frag.src     # `frag.src` is a per-frag SOURCE override (String/nothing), NOT the themed-render Bool `override`
+    if is_prose(c.kind) && !incell
+        cio = IOBuffer()
+        _emit_slide_frag!(cio, dir, base, nb, frag; theme, charttheme, override, show_source, include_params, citekeys,
+                          outputs, sizes, compfigs, incell = true)
+        position(cio) == 0 || print(io, "#mdcell[\n", String(take!(cio)), "]\n\n")
+        return
+    end
     if is_prose(c.kind)
         src = srcoverride === nothing ? c.source : srcoverride
         pieces = _split_columns(src)
         if !(length(pieces) == 1 && pieces[1] isa AbstractString)    # a `:::: columns` group splits the cell
-            kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, compfigs)
+            kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, compfigs, incell)
             ib = frag.interpbase     # interpolations are numbered across the cell, so each piece starts after the last
             for (k, p) in enumerate(pieces)
                 pbase = string(base, "p", k)
@@ -2104,7 +2278,7 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
         md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = sizes)   # author-embedded images → staged files
         isempty(strip(md)) && return
         write(joinpath(dir, base * ".md"), md)
-        print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: (image: mdimage))\n\n")
+        print(io, "#cmarker.render(read(\"", base, ".md\"), math: mathfn, scope: mdscope)\n\n")
     else
         if show_source && !(:hidecode in c.flags) && isempty(c.binds) && !_is_web_cell(c) && !isempty(strip(c.source))
             write(joinpath(dir, base * ".jl"), c.source)
@@ -2121,7 +2295,9 @@ end
 # Write a deck template's files into the project `dir` and append its source to `io`, after the base
 # preamble, so a `#let slide` or `#let metablock` in it shadows the base one. The source stays inline
 # (an `#include` would not export its lets). A template ships fonts under `fonts/`: `_typst_compile`
-# puts that directory on the font path.
+# puts that directory on the font path. A template file must not have the name of a file that Slate
+# writes into the project.
+const _SLATE_PROJECT_FILES = ("doc.typ", "deck-settings.typ", "media.json", "code-dark.tmTheme")
 _apply_deck_template!(io::IO, dir::AbstractString, ::Nothing) = nothing
 function _apply_deck_template!(io::IO, dir::AbstractString, t)
     root = normpath(dir)
@@ -2129,6 +2305,8 @@ function _apply_deck_template!(io::IO, dir::AbstractString, t)
         path = normpath(joinpath(root, name))
         startswith(path, root * Base.Filesystem.path_separator) ||
             throw(ArgumentError("deck template file \"$name\" escapes the project directory"))
+        relpath(path, root) in _SLATE_PROJECT_FILES &&
+            throw(ArgumentError("deck template file \"$name\" has the name of a file that Slate writes"))
         mkpath(dirname(path))
         write(path, bytes)
     end
@@ -2144,21 +2322,26 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                                include_source::Bool = false, include_params::Bool = false,
                                notes::Bool = false, level::Integer = 2, outputs::AbstractString = "all")
     show_source = include_source && code != "hidden"
-    ct = _chart_theme(charttheme, theme)                               # the Slate palette charts render in
+    # Pull the manifest now, so an edit to a file-backed template part (`@pkg_asset`) reaches this export
+    # without a run or a worker restart.
+    _refresh_extensions_for_page!(nb)
+    ds = notebook_deck_settings(nb)
+    palette = _chart_theme(charttheme, theme)       # the Slate palette of the `slate.` colours
+    ct = _deck_figure_palette(ds.values, palette)   # the Slate palette the figures render in
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_html_rasters!(nb; theme = ct)   # one round-trip, under the EXPORT's palette (see above)
     compfigs = _warm_component_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_vector_figs!(nb, compfigs; progress = cid -> _export_progress(nb, cid))
-    # Pull the manifest now, so an edit to a file-backed template source (`@pkg_asset`) reaches this
-    # export without a run or a worker restart.
-    _refresh_extensions_for_page!(nb)
     lock(nb.lock) do
         dir = mktempdir()
         mediasz = Dict{String,Any}()   # staged image => its `{width=…}` block, written out as media.json
-        theme == "dark" && write(joinpath(dir, "code-dark.tmTheme"), _CODE_DARK_TMTHEME)
+        syntax = _deck_syntax(ds.values, ReportEngine._resolve_palette(palette))
+        syntax == "dark" && write(joinpath(dir, "code-dark.tmTheme"), _CODE_DARK_TMTHEME)
+        write(joinpath(dir, "deck-settings.typ"), deck_settings_typ(ds.values; ratio, palette))
+        _deck_fonts!(dir, ds.values)
         io = IOBuffer()
-        print(io, _typst_preamble_slides(nb.report.title; theme = theme, ratio = ratio, code = code))
+        print(io, _typst_preamble_slides(nb.report.title; syntax, code))
         _apply_deck_template!(io, dir, notebook_deck_template(nb))
         cells = filter(c -> renders(c.kind), nb.report.cells)
         # Role-tagged metadata → a dedicated title slide (metablock); hoisted title/abstract cells
@@ -2181,17 +2364,19 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             write(joinpath(dir, "s$(si)title.md"),
                   _stage_typst_md_media(md, dir, "s$(si)title", _proj_root(nb); sizes = mediasz))
             titles[si] = "title: heading(level: $(t.depth), cmarker.render(read(\"s$(si)title.md\"), " *
-                         "math: mathfn, scope: (image: mdimage)))"
+                         "math: mathfn, scope: mdscope))"
         end
         for (si, sl) in enumerate(deck)
-            frags = [(cell = bycell[b.cell], src = b.src, interpbase = b.interpbase) for b in sl.blocks]
+            frags = [(cell = bycell[b.cell], src = b.src, interpbase = b.interpbase) for b in sl.frags]
             (isempty(frags) && isempty(titles[si])) && continue
             args = filter(!isempty, [sl.layout === nothing ? "" : "layout: \"$(_typ_str(sl.layout))\"", titles[si]])
             print(io, isempty(args) ? "#slide[\n" : "#slide($(join(args, ", ")))[\n")
-            # Each side-by-side row of the model is one `slidecols` call with a column per block.
-            for row in unique(b.row for b in sl.blocks)
-                fis = findall(b -> b.row == row, sl.blocks)
-                function emit(fi)
+            # Each side-by-side row of the model is one `slidecols` call with a column per fragment. Rows
+            # that print something have the gap between cells of the live deck between them.
+            gap = false
+            for row in unique(b.row for b in sl.frags)
+                fis = findall(b -> b.row == row, sl.frags)
+                function emit(rio, fi)
                     f = frags[fi]
                     # Strip the hoisted H1 from the implicit-title cell so it isn't repeated on a body
                     # slide, taking the interpolation offset with it (see `_body_after_hoisted_h1`).
@@ -2199,11 +2384,20 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                         body, off = _body_after_hoisted_h1(f.cell)
                         f = (cell = f.cell, src = body, interpbase = off)
                     end
-                    _emit_slide_frag!(io, dir, "s$(si)f$(fi)", nb, f; theme = theme, charttheme = ct, override = override,
+                    _emit_slide_frag!(rio, dir, "s$(si)f$(fi)", nb, f; theme = "deck", charttheme = ct, override = override,
                                       show_source = show_source, include_params = include_params, citekeys = citekeys,
                                       outputs = outputs, sizes = mediasz, compfigs = compfigs)
                 end
-                length(fis) == 1 ? emit(fis[1]) : _print_slidecols(j -> emit(fis[j]), io, fill("none", length(fis)))
+                rio = IOBuffer()
+                # A row that holds a markdown cell centres its cells, as on the live deck.
+                length(fis) == 1 ? emit(rio, fis[1]) :
+                    _print_slidecols(j -> emit(rio, fis[j]), rio, fill("none", length(fis)); gap = "settings.columns.row-gap",
+                                     align = any(fi -> is_prose(frags[fi].cell.kind), fis) ? "horizon" : nothing, row = true)
+                out = String(take!(rio))
+                isempty(strip(out)) && continue       # a cell that draws nothing (no output) has no gap
+                gap && print(io, "#cellgap\n")
+                gap = true
+                print(io, out)
             end
             print(io, "]\n\n")
         end
@@ -2219,7 +2413,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                 isempty(strip(ntext)) && continue
                 write(joinpath(dir, "notes$(si).md"), ntext)
                 print(io, "#slide(", join(filter(!isempty, ["layout: \"notes\"", titles[si], "n: $(si)"]), ", "), ")[\n",
-                      "#cmarker.render(read(\"notes$(si).md\"), math: mathfn, scope: (image: mdimage))\n]\n\n")
+                      "#cmarker.render(read(\"notes$(si).md\"), math: mathfn, scope: mdscope)\n]\n\n")
             end
         end
         write(joinpath(dir, "media.json"), JSON.json(mediasz))   # always present: the preamble reads it
@@ -2233,9 +2427,10 @@ end
 
 The complete Typst PROJECT — `doc.typ` plus every figure / markdown / code-listing asset it
 references — as a gzip-compressed tarball (`.tar.gz`). Unpack it and `typst compile doc.typ`
-reproduces the PDF, so the layout and preamble can be tweaked by hand. A slide deck whose package
-declares a deck template carries the template files too. When they include a `fonts` directory,
-compile with `typst compile --font-path fonts doc.typ`.
+reproduces the PDF, so the layout and preamble can be tweaked by hand. A slide deck carries its deck
+settings (`deck-settings.typ`), the files of its deck template, and the shipped Inter font when its
+settings use it. When the project has a `fonts` directory, compile with
+`typst compile --font-path fonts doc.typ`.
 """
 function export_typst_bundle(nb::LiveNotebook; kwargs...)
     dir = _build_typst_project(nb; kwargs...)

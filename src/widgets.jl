@@ -74,7 +74,9 @@ end
 function deck_template_wire()
     t = isdefined(SlateExtensionsBase, :deck_template) ? SlateExtensionsBase.deck_template() : nothing
     t === nothing && return Dict{String,Any}("ok" => false)
+    # An older SlateExtensionsBase has no template settings: they go as "".
     return Dict{String,Any}("ok" => true, "hash" => t.hash, "source" => t.source,
+        "settings" => hasproperty(t, :settings) ? t.settings : "",
         "files" => Dict{String,Any}[Dict{String,Any}("name" => n, "b64" => Base64.base64encode(b))
                                     for (n, b) in sort!(collect(t.files); by = first)])
 end

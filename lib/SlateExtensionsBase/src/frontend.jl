@@ -596,91 +596,124 @@ end
 # A Typst template for the slide deck, held as bytes so the hub never reads a path the worker names.
 # The manifest carries only the hash; the hub pulls the bytes when the hash changes.
 const _DECK_TEMPLATE_LOCK = ReentrantLock()
-const _DECK_TEMPLATE = Ref{Union{Nothing,@NamedTuple{hash::String, source::String,
-                                                      files::Dict{String,Vector{UInt8}}}}}(nothing)
-# (; path, mtime) when the source came from a file ([`PkgAsset`](@ref)): [`deck_template`](@ref) reads
-# `path` again when its mtime moves, as the front-end registry does.
-const _DECK_TEMPLATE_FILE = Ref{Union{Nothing,@NamedTuple{path::String, mtime::Float64}}}(nothing)
+const _DeckTemplate = @NamedTuple{hash::String, source::String, settings::String,
+                                  files::Dict{String,Vector{UInt8}}}
+const _DECK_TEMPLATE = Ref{Union{Nothing,_DeckTemplate}}(nothing)
+# (; path, mtime) of each part that came from a file ([`PkgAsset`](@ref)), under the key `"source"`,
+# `"settings"` or `"files/<name>"`. [`deck_template`](@ref) reads a part again when its mtime moves, as
+# the front-end registry does.
+const _DECK_TEMPLATE_FILES = Dict{String,@NamedTuple{path::String, mtime::Float64}}()
 
 # A file name is a relative POSIX path: no drive, no backslash, no NUL, and no empty, `.` or `..` segment.
 _template_path_ok(name::AbstractString) =
     !isempty(name) && !startswith(name, '/') && !occursin(r"^[A-Za-z]:|[\\\0]", name) &&
     all(s -> !isempty(s) && s != "." && s != "..", split(name, '/'))
 
-# SHA-256 over the source and the (name, bytes) pairs in name order. Each part carries its length, so
-# two different splits of the same bytes give two different hashes.
-function _template_hash(source::AbstractString, files::AbstractDict)
+# SHA-256 over the source, the settings and the (name, bytes) pairs in name order. Each part carries its
+# length, so two different splits of the same bytes give two different hashes.
+function _template_hash(source::AbstractString, settings::AbstractString, files::AbstractDict)
     ctx = SHA.SHA2_256_CTX()
     part(b) = (SHA.update!(ctx, codeunits("$(length(b)):")); SHA.update!(ctx, b))
     part(codeunits(source))
+    part(codeunits(settings))
     for name in sort!(collect(keys(files)))
         part(codeunits(name)); part(files[name])
     end
     return bytes2hex(SHA.digest!(ctx))
 end
 
+_template_text(x::AbstractString) = String(x)
+_template_text(x::AbstractVector{UInt8}) = String(copy(x))
+_template_bytes(x::AbstractString) = Vector{UInt8}(codeunits(String(x)))
+_template_bytes(x::AbstractVector{UInt8}) = Vector{UInt8}(x)
+
 """
-    provide_deck_template!(source; files = Dict{String,Vector{UInt8}}()) -> Nothing
+    provide_deck_template!(source; settings = nothing, files = Dict{String,Vector{UInt8}}()) -> Nothing
 
 Declare a Typst deck template for every notebook that loads this package. `source` is the `.typ` text.
-`files` maps a file name to its bytes: the layout catalogue, art and fonts that `source` uses. Put fonts
-under `fonts/`. Slate accepts bytes only, so give it `read(path)`, never a path.
 
-When `source` is a [`PkgAsset`](@ref) (`@pkg_asset("typst/deck.typ")`), the registry keeps its path and
-reads the file again when its mtime changes, so an edit to the `.typ` reaches the next export without a
-worker restart. The `files` are kept as given.
+`settings` is the partial deck-settings file of the template: TOML text or bytes. Slate merges it on its
+base settings key by key, and the notebook setting `decksettings` on top. Slate checks each key and
+value; see the Slate docs for the keys. On the live deck each value is a `--deck-*` custom property.
+The colour roles (`--deck-fg`, …), `--deck-font` and the palette are on the deck root (`.deck`); every
+other value is on each slide, so a CSS rule that overrides one must match `.deck-slide`, not `.deck`.
+
+`files` maps a file name to its bytes: the layout catalogue, art and fonts that `source` uses. Put fonts
+under `fonts/`.
+
+`source`, `settings` and each value of `files` can be a [`PkgAsset`](@ref)
+(`@pkg_asset("typst/deck.typ")`). Then the registry keeps its path and reads the file again when its
+mtime changes, so an edit reaches the next export without a worker restart.
 
 A file name must be a relative POSIX path, such as `layouts/title.typ`. A name that is absolute or has a
-`..` segment throws an `ArgumentError`. Call this from `__init__`. A later call replaces the template.
+`..` segment throws an `ArgumentError`. The slides export refuses the names of the files that Slate
+writes into the project (`doc.typ`, `deck-settings.typ`, `media.json`, `code-dark.tmTheme`). Call this
+from `__init__`. A later call replaces the template.
 
-The manifest carries a hash of the template ([`extension_manifest`](@ref)). Slate pulls the bytes only
-when the hash changes.
+The manifest carries a hash of the template, settings included ([`extension_manifest`](@ref)). Slate
+pulls the bytes only when the hash changes.
 """
 function provide_deck_template!(source::AbstractString;
+                                settings::Union{Nothing,AbstractString,AbstractVector{UInt8}} = nothing,
                                 files::AbstractDict = Dict{String,Vector{UInt8}}())
     copied = Dict{String,Vector{UInt8}}()
+    paths = Dict{String,@NamedTuple{path::String, mtime::Float64}}()
+    follow(key, x) = x isa PkgAsset && (paths[key] = (path = x.path, mtime = mtime(x.path)))
     for (name, bytes) in files
         _template_path_ok(name) ||
             throw(ArgumentError("provide_deck_template!: file name `$name` must be a relative POSIX path " *
                                 "without a `..` segment"))
-        copied[String(name)] = Vector{UInt8}(bytes)
+        copied[String(name)] = _template_bytes(bytes)
+        follow("files/" * name, bytes)
     end
     src = String(source)
-    t = (; hash = _template_hash(src, copied), source = src, files = copied)
+    set = settings === nothing ? "" : _template_text(settings)
+    follow("source", source)
+    settings === nothing || follow("settings", settings)
+    t = (; hash = _template_hash(src, set, copied), source = src, settings = set, files = copied)
     lock(_DECK_TEMPLATE_LOCK) do
         _DECK_TEMPLATE[] = t
-        _DECK_TEMPLATE_FILE[] = source isa PkgAsset ? (path = source.path, mtime = mtime(source.path)) : nothing
+        empty!(_DECK_TEMPLATE_FILES)
+        merge!(_DECK_TEMPLATE_FILES, paths)
     end
     return nothing
 end
 
-# Read a file-backed source again when its file changed. Call under `_DECK_TEMPLATE_LOCK`. A file that
-# has gone missing or cannot be read keeps the last source: a half-saved file must not drop the template.
-function _refresh_deck_template_file!()
-    f = _DECK_TEMPLATE_FILE[]
-    (f === nothing || _DECK_TEMPLATE[] === nothing) && return
-    t = mtime(f.path)
-    (t == 0 || t == f.mtime) && return
-    src = try
-        read(f.path, String)
-    catch
-        return
+# Read each file-backed part again when its file changed. Call under `_DECK_TEMPLATE_LOCK`. A file that
+# has gone missing or cannot be read keeps the last value: a half-saved file must not drop the template.
+function _refresh_deck_template_files!()
+    cur = _DECK_TEMPLATE[]
+    cur === nothing && return
+    (; source, settings, files) = cur
+    changed = false
+    for (key, f) in collect(_DECK_TEMPLATE_FILES)
+        t = mtime(f.path)
+        (t == 0 || t == f.mtime) && continue
+        bytes = try
+            read(f.path)
+        catch
+            continue
+        end
+        changed || (files = copy(files))
+        changed = true
+        key == "source" ? (source = String(bytes)) :
+        key == "settings" ? (settings = String(bytes)) : (files[chopprefix(key, "files/")] = bytes)
+        _DECK_TEMPLATE_FILES[key] = (path = f.path, mtime = t)
     end
-    files = _DECK_TEMPLATE[].files
-    _DECK_TEMPLATE[] = (; hash = _template_hash(src, files), source = src, files)
-    _DECK_TEMPLATE_FILE[] = (path = f.path, mtime = t)
+    changed && (_DECK_TEMPLATE[] = (; hash = _template_hash(source, settings, files), source, settings, files))
     return
 end
 
 """
     deck_template() -> Union{Nothing,NamedTuple}
 
-The template that [`provide_deck_template!`](@ref) declared, as `(; hash, source, files)`, or `nothing`.
-The hash is a hex SHA-256 string. A later `provide_deck_template!`, or an edit to a file-backed source,
-replaces the template and leaves the returned value as it was.
+The template that [`provide_deck_template!`](@ref) declared, as `(; hash, source, settings, files)`, or
+`nothing`. `settings` is the TOML text, `""` when the template gives none. The hash is a hex SHA-256
+string. A later `provide_deck_template!`, or an edit to a file-backed part, replaces the template and
+leaves the returned value as it was.
 """
 deck_template() = lock(_DECK_TEMPLATE_LOCK) do
-    _refresh_deck_template_file!()
+    _refresh_deck_template_files!()
     _DECK_TEMPLATE[]
 end
 

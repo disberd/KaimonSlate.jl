@@ -108,7 +108,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test occursin("hello", md) && !occursin("ACME", md)
     end
 
-    @testset "slide_deck: layout, title, blocks, transition, auto, notes" begin
+    @testset "slide_deck: layout, title, frags, transition, auto, notes" begin
         src = """
         #%% md id=a layout=title transition=zoom auto=5
         # Hello *world*
@@ -141,28 +141,28 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         # a tagged slide that starts with a heading: tag values, title out of the body
         @test deck[1].layout == "title" && deck[1].transition == "zoom" && deck[1].auto == "5"
         @test deck[1].title.text == "Hello *world*" && deck[1].title.depth == 1
-        @test [b.cell for b in deck[1].blocks] == ["a"]
-        @test strip(deck[1].blocks[1].src) == "body one"
+        @test [b.cell for b in deck[1].frags] == ["a"]
+        @test strip(deck[1].frags[1].src) == "body one"
         @test deck[1].notes == ["b"]
         # an untagged slide: no tag values
         @test deck[2].layout === nothing && deck[2].transition === nothing && deck[2].auto === nothing
         @test deck[2].title.text == "Plain" && deck[2].title.depth == 2
         @test deck[2].notes == String[]
         # column group of a body block
-        @test [(b.cell, b.row, b.column) for b in deck[2].blocks] == [("c", 1, 1), ("d", 1, 2)]
+        @test [(b.cell, b.row, b.column) for b in deck[2].frags] == [("c", 1, 1), ("d", 1, 2)]
         # a slide whose first block is not a heading has no title
-        @test deck[3].title === nothing && deck[3].blocks[1].cell == "e"
+        @test deck[3].title === nothing && deck[3].frags[1].cell == "e"
         # the first cell with a layout tag wins; a code cell first means no title
         @test deck[4].layout == "center" && deck[4].title === nothing
-        # a title-only slide stays in the deck, with no blocks
-        @test deck[5].title.depth == 4 && isempty(deck[5].blocks) && deck[5].layout == "section"
+        # a title-only slide stays in the deck, with no fragments
+        @test deck[5].title.depth == 4 && isempty(deck[5].frags) && deck[5].layout == "section"
     end
 
     @testset "slide_deck: a heading with an interpolation keeps the body's numbering" begin
         src = "#%% md id=a\n## Total {{ t }}\n\nvalue {{ v }}\n"
         deck = NS.slide_deck(_mknb(src))
         @test deck[1].title.interpbase == 0
-        @test deck[1].blocks[1].interpbase == 1
+        @test deck[1].frags[1].interpbase == 1
     end
 
     @testset "slide_deck: the title follows the CommonMark ATX rule" begin
@@ -263,10 +263,11 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
             md = join((read(joinpath(dir, f), String) for f in readdir(dir) if endswith(f, ".md")), "\n")
             @test occursin("kept text", md) && !occursin(":::", md)
             # The columns start where the widths say: on a 16:9 page 1 u is 720 pt / 1920, the margins
-            # are 121 u and the gutter is 56 u.
+            # are the 120 u of the live deck plus the 16 u padding of a markdown cell, and the gutter is
+            # the deck setting `columns.gap`.
             xs(label) = [p["x"] for p in NS._typst_query(joinpath(dir, "doc.typ"), label)]
             u = 720 / 1920
-            left, row, gap = 121u, 720 - 242u, 56u
+            left, row, gap = 136u, 720 - 272u, NS.deck_settings("", "").values["columns"]["gap"].value * u
             @test xs("<colx>") ≈ [left, left + 0.4row + gap] atol = 1       # `width="40%"` and the rest
             @test xs("<eqx>") ≈ [left, left + (row - gap) / 2 + gap] atol = 1   # equal columns
         finally
@@ -289,10 +290,248 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         r.meta["slidelevel"] = 3
         r.meta["slidetransition"] = "slide"
         r.meta["slideratio"] = "4:3"
+        r.meta["decksettings"] = "[text]\nsize = \"36u\"  # a comment\n"
         r2 = RE.parse_report(RE.serialize_report(r))
         @test r2.meta["slidelevel"] === 3           # parsed back as an Int, not a String
         @test r2.meta["slidetransition"] == "slide"
         @test r2.meta["slideratio"] == "4:3"
+        @test r2.meta["decksettings"] == r.meta["decksettings"]   # several lines survive the footer
+    end
+
+    # The deck settings: base file ← deck template ← notebook, key by key. A value that fails a check
+    # gives a warning, and the value below it stays.
+    @testset "deck settings: merge order and checks" begin
+        base = NS.deck_settings("", "")
+        @test isempty(base.warnings)
+        @test base.values["text"]["size"] == (value = 34.0, unit = :u)
+        len(g, k, r) = r.values[g][k]
+        wpath(r, p) = count(w -> occursin("`$p`", w), r.warnings)       # the warnings about key path `p`
+
+        r = NS.deck_settings("[text]\nsize = \"36u\"\nline-height = 1.3\n", "[text]\nsize = \"38u\"\n")
+        @test isempty(r.warnings)
+        @test len("text", "size", r) == (value = 38.0, unit = :u)       # the notebook wins
+        @test len("text", "line-height", r) == 1.3                      # the template's other key stays
+        @test len("text", "paragraph-after", r) == (value = 0.55, unit = :em)   # the base fills the rest
+
+        # An unknown group or key: a warning, and no value.
+        r = NS.deck_settings("[text]\nsizes = \"36u\"\n[nogroup]\na = 1\n", "")
+        @test length(r.warnings) == 2 && wpath(r, "text.sizes") == 1 && wpath(r, "nogroup") == 1
+        @test r.values == base.values
+
+        # A unit that is not the unit of the key, or not u or em: a warning, and the value below stays.
+        r = NS.deck_settings("[text]\nsize = \"36u\"\n", "[text]\nsize = \"2em\"\n[columns]\ngap = \"56px\"\n")
+        @test len("text", "size", r).value == 36 && len("columns", "gap", r) == (value = 56.0, unit = :u)
+        @test length(r.warnings) == 2 && wpath(r, "text.size") == 1 && wpath(r, "columns.gap") == 1
+
+        # Values reach CSS and Typst text, so each must match a strict pattern.
+        r = NS.deck_settings("[roles]\nfg = \"red; } body { x\"\n[text]\nfont = [\"Inter\\\"; }\"]\n" *
+                             "[code]\nsyntax = \"neon\"\n[palette]\nbad = \"blue\"\n", "")
+        @test length(r.warnings) == 4 && r.values == base.values
+
+        # A base key from a deck template warns; from the notebook it does not.
+        r = NS.deck_settings("[rhythm]\ncell-gap = \"20u\"\n", "")
+        @test length(r.warnings) == 1 && wpath(r, "rhythm.cell-gap") == 1 && r.values["rhythm"]["cell-gap"].value == 20
+        @test isempty(NS.deck_settings("", "[rhythm]\ncell-gap = \"20u\"\n").warnings)
+
+        # A colour word must be in [palette] (or [roles], outside the roles); else the base value stays.
+        r = NS.deck_settings("[palette]\nnavy = \"#003247\"\n[roles]\nfg = \"navy\"\n[caption]\ncolor = \"accent\"\n", "")
+        @test isempty(r.warnings) && r.values["roles"]["fg"] == "navy" && r.values["caption"]["color"] == "accent"
+        r = NS.deck_settings("[roles]\nfg = \"dim\"\n", "")
+        @test length(r.warnings) == 1 && r.values["roles"]["fg"] == "slate.text"
+
+        # A fixed surface with text roles on the Slate palette warns.
+        r = NS.deck_settings("[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\n", "")
+        @test length(r.warnings) == 1 && occursin("roles.strong", r.warnings[1]) && occursin("roles.dim", r.warnings[1])
+        @test isempty(NS.deck_settings("[roles]\nsurface = \"#ffffff\"\nfg = \"#003247\"\nstrong = \"#003247\"\n" *
+                                       "dim = \"#8197a6\"\n", "").warnings)
+
+        # Text that is not TOML: one warning that gives the line and the reason, and the layer is not used.
+        r = NS.deck_settings("[text\n", "")
+        @test length(r.warnings) == 1 && r.values == base.values
+        @test occursin(r"\(line \d+: \S", r.warnings[1])
+
+        # An admonition category takes the default for the keys it does not set; any word is a category.
+        r = NS.deck_settings("[admonition.aside]\naccent = \"#123456\"\n", "")
+        @test isempty(r.warnings)
+        d = NS.deck_settings_dict(r.values; palette = "daylight")
+        @test d["admonition"]["aside"]["accent"] == "#123456"
+        @test d["admonition"]["aside"]["radius"] == d["admonition"]["radius"]
+
+        # A category with the name of a default key: a warning, and the notebook page still loads.
+        r = NS.deck_settings("", "[admonition.fill]\naccent = \"#ffffff\"\n")
+        @test wpath(r, "admonition.fill") == 1 && r.values == base.values
+        nb = _mknb("#%% md id=a\n## A\n")
+        nb.report.meta["decksettings"] = "[admonition.fill]\naccent = \"#ffffff\"\n"
+        @test NS.state_json(nb)["deckCss"] isa String
+
+        # A number out of its range: a warning, and the value below stays. A large number never reaches
+        # the CSS or the Typst text.
+        for (g, k, v) in (("text", "size", "\"100000000000000000000u\""), ("text", "size", "\"0u\""),
+                          ("text", "size", "\"-5u\""), ("columns", "gap", "\"-100u\""),
+                          ("text", "line-height", "1e25"), ("text", "line-height", "-1"),
+                          ("fit", "text-floor", "2"), ("fit", "text-floor", "-1"), ("fit", "figure-cap", "0"))
+            r = NS.deck_settings("", "[$g]\n$k = $v\n")
+            @test wpath(r, "$g.$k") == 1 && r.values == base.values
+        end
+        r = NS.deck_settings("", "[fit]\ntext-floor = 1\n[columns]\ngap = \"0u\"\n")
+        @test isempty(r.warnings)
+
+        # A wrong colour word from the notebook keeps the template's value.
+        r = NS.deck_settings("[caption]\ncolor = \"#123456\"\n", "[caption]\ncolor = \"typo\"\n")
+        @test wpath(r, "caption.color") == 1 && r.values["caption"]["color"] == "#123456"
+        # A palette name of the same layer is found, whatever the order of the groups.
+        @test isempty(NS.deck_settings("[caption]\ncolor = \"navy\"\n[palette]\nnavy = \"#003247\"\n", "").warnings)
+
+        # "none" is a paint only: a text colour or a role must have a colour.
+        r = NS.deck_settings("[caption]\ncolor = \"none\"\n[roles]\nfg = \"none\"\n[table]\nstripe-fill = \"none\"\nheader-fill = \"none\"\n", "")
+        @test wpath(r, "caption.color") == 1 && wpath(r, "roles.fg") == 1 && length(r.warnings) == 2
+        @test r.values["table"]["header-fill"] == "none"
+
+        # At most 64 palette names and 32 admonition categories: one warning for the rest.
+        many = "[palette]\n" * join(("c$i = \"#000000\"" for i in 1:100), "\n") * "\n" *
+               join(("[admonition.k$i]\naccent = \"#000000\"" for i in 1:40), "\n") * "\n"
+        r = NS.deck_settings("", many)
+        @test length(r.warnings) == 1 && length(r.values["palette"]) == 64
+        @test count(v -> v isa AbstractDict, values(r.values["admonition"])) == 32
+
+        # The export picker changes no colour only when no value follows the Slate palette and the
+        # figures have a palette of their own.
+        @test !NS.deck_fixes_colours(base.values)
+        fixed = replace(read(NS._DECK_BASE_PATH, String), r"\"slate\.\w+\"" => "\"#123456\"",
+                        "slate-palette = \"\"" => "slate-palette = \"daylight\"")
+        @test NS.deck_fixes_colours(NS.deck_settings("", fixed).values)
+        @test !NS.deck_fixes_colours(NS.deck_settings("", replace(fixed, "\"daylight\"" => "\"\"")).values)
+    end
+
+    # A `slate.` colour is a CSS reference on the live deck and a hex value of the export's Slate
+    # palette in the PDF and for an exporter.
+    @testset "deck settings: slate. colours, the live CSS and deck-settings.typ" begin
+        s = NS.deck_settings("", "").values
+        for (name, p) in RE.SLATE_PALETTES
+            d = NS.deck_settings_dict(s; palette = name)
+            @test (d["roles"]["fg"], d["roles"]["strong"], d["roles"]["dim"], d["roles"]["accent"], d["roles"]["surface"]) ==
+                  (p.text, p.strong, p.dim, p.accent, p.bg)
+            @test d["slate_palette"] == name
+            typ = NS.deck_settings_typ(s; ratio = "16:9", palette = name)
+            @test occursin("\"fg\": rgb(\"$(p.text)\")", typ) && occursin("\"surface\": rgb(\"$(p.bg)\")", typ)
+        end
+        # A figure palette that the deck settings name wins over the export palette.
+        fixed = NS.deck_settings("[figures]\nslate-palette = \"daylight\"\n", "").values
+        @test NS.deck_settings_dict(fixed; palette = "midnight")["slate_palette"] == "daylight"
+        # The page gets it too, so that the live deck draws its charts in it ("" = the UI theme).
+        nb = _mknb("#%% md id=a\n## A\n")
+        @test NS.state_json(nb)["deckFigurePalette"] == ""
+        nb.report.meta["decksettings"] = "[figures]\nslate-palette = \"daylight\"\n"
+        @test NS.state_json(nb)["deckFigurePalette"] == "daylight"
+
+        # Live: `slate.` names stay CSS references, and every rule is inside `:where(…)`, so that a
+        # package CSS overrides it.
+        nb = _mknb("#%% md id=a\n## A\n\nbody\n")
+        css = NS.state_json(nb)["deckCss"]
+        @test occursin("--deck-fg: var(--text);", css) && occursin("--deck-surface: var(--bg);", css)
+        @test occursin("--deck-strong: var(--strong);", css)    # bold text and headings keep the theme's --strong
+        @test occursin("--deck-font: \"Inter\", \"Slate Inter\", sans-serif;", css)   # the font keeps its property name
+        @test occursin("--deck-rhythm-cell-gap: calc(18 * var(--u));", css)
+        rules = [strip(r) for r in split(css, '}') if !isempty(strip(r))]
+        @test !isempty(rules) && all(r -> startswith(r, ":where("), rules)
+
+        # The slides PDF: with no export palette, `theme = "light"` gives daylight and `"dark"` midnight.
+        for (theme, name) in (("light", "daylight"), ("dark", "midnight"))
+            dir = NS._build_slides_project(nb; theme)
+            try
+                typ = read(joinpath(dir, "deck-settings.typ"), String)
+                @test occursin("\"fg\": rgb(\"$(RE.SLATE_PALETTES[name].text)\")", typ)
+                @test occursin("#import \"deck-settings.typ\"", read(joinpath(dir, "doc.typ"), String))
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+    end
+
+    # Each key of the base file reaches the live deck (`--deck-<group>-<key>` in notebook.css or
+    # slides.js) and the slides PDF (`settings.<group>.<key>` in export_typst.jl). Julia reads the keys
+    # in `julia`. The two `todo` lists hold the keys that a target does not read yet: a key must leave
+    # its list when a target starts to read it, so the lists only get shorter.
+    @testset "deck settings: each key has a reader on each target" begin
+        src = joinpath(@__DIR__, "..", "src")
+        live = read(joinpath(src, "assets", "notebook.css"), String) * read(joinpath(src, "assets", "js", "slides.js"), String)
+        typ = read(joinpath(src, "export_typst.jl"), String)
+        julia = ("code.syntax", "figures.slate-palette")
+        todo_live = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
+                     "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
+                     "code.fill", "code.font", "key-message.bar-color", "key-message.bar-width", "key-message.fill",
+                     "key-message.pad-x", "key-message.pad-y", "key-message.text-color")
+        todo_typst = ("admonition.accent", "admonition.bar-width", "admonition.fill", "admonition.pad-x",
+                      "admonition.pad-y", "admonition.radius", "admonition.title-color", "caption.color", "caption.size",
+                      "figures.radius", "key-message.bar-color", "key-message.bar-width", "key-message.fill",
+                      "key-message.pad-x", "key-message.pad-y", "key-message.text-color")
+        keys_ = ["$g.$k" for (g, d) in NS.deck_settings("", "").values for (k, v) in d if g != "palette" && !(v isa AbstractDict)]
+        @test length(keys_) > 50
+        reads_live(key) = occursin(Regex(NS._deck_css_name(split(key, '.')...) * "(?![\\w-])"), live)
+        reads_typst(key) = occursin(Regex("settings\\." * replace(key, "." => "\\.") * "(?![\\w-])"), typ)
+        checked = filter(!in(julia), keys_)
+        @test isempty(filter(key -> reads_live(key) == (key in todo_live), checked))
+        @test isempty(filter(key -> reads_typst(key) == (key in todo_typst), checked))
+    end
+
+    # The Typst preamble reads the deck settings: a template's `text.size` moves the body text size that
+    # the fit record measures, in `u`.
+    @testset "a deck setting moves the measured text size in the PDF" begin
+        sizes = map(("", "[text]\nsize = \"40u\"\n")) do set
+            nb = _mknb("#%% md id=a\n## A\n\nbody text\n")
+            nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}())
+            dir = NS._build_slides_project(nb)
+            try
+                recs = NS._typst_query(joinpath(dir, "doc.typ"), "<slate>")
+                only(r["size"] for r in recs if r isa AbstractDict && r["kind"] == "fit")
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+        @test sizes[1] ≈ 34 && sizes[2] ≈ 40
+    end
+
+    # The base preamble copies the rhythm and the geometry of the live base deck: two paragraphs are
+    # `text.line-height` + `text.paragraph-after` apart, and a content slide shows its number at the
+    # bottom right. A second slide holds a table wider than its column, which takes the other branch of
+    # the column widths.
+    @testset "the base PDF: the paragraph gap of the settings, the slide number" begin
+        # A mark inside the first line of each paragraph (at the start of a line, the comment would be
+        # an HTML block that joins the two paragraphs).
+        mark(k) = "<!--raw-typst #context [#metadata(here().position().y.pt()) <$k>]-->"
+        set = "[text]\nparagraph-after = \"1em\"\n"
+        long = join(fill("word", 30), " ")
+        wide = "| $long | $long | x |\n|---|---|---|\n| a | b | c |\n"
+        nb = _mknb("#%% md id=a\n## A\n\nOne$(mark("p1")) line.\n\nThe$(mark("p2")) next line.\n\n#%% md id=b\n## B\n\n$wide")
+        nb.deck_template = (; hash = "h", source = "", settings = set, files = Dict{String,Vector{UInt8}}())
+        dir = NS._build_slides_project(nb)
+        try
+            doc = joinpath(dir, "doc.typ")
+            y(k) = only(NS._typst_query(doc, "<$k>")) / (720 / 1920)      # in u
+            t = NS.deck_settings(set, "").values["text"]
+            @test y("p2") - y("p1") ≈ t["size"].value * (t["line-height"] + t["paragraph-after"].value) atol = 0.5
+            pdf = joinpath(dir, "out.pdf")
+            NS._typst_compile(doc, pdf)
+            num = match(r"xMin=\"([\d.]+)\" yMin=\"([\d.]+)\"[^>]*>1</word>", read(`pdftotext -bbox -f 1 -l 1 $pdf -`, String))
+            @test num !== nothing && parse(Float64, num[1]) > 680 && parse(Float64, num[2]) > 380
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    # The base deck font is Inter in the PDF too: the project carries the shipped files, and Typst
+    # embeds them on a machine that has no Inter of its own.
+    @testset "the base slides PDF is set in the shipped Inter" begin
+        nb = _mknb("#%% md id=a\n## A\n\nbody text\n")
+        dir = NS._build_slides_project(nb)
+        try
+            @test isfile(joinpath(dir, "fonts", "Inter-Regular.ttf")) && isfile(joinpath(dir, "fonts", "Inter-Bold.ttf"))
+            pdf = joinpath(dir, "out.pdf")
+            NS._typst_compile(joinpath(dir, "doc.typ"), pdf)
+            @test occursin("Inter-Regular", read(`pdffonts $pdf`, String))
+        finally
+            rm(dir; recursive = true, force = true)
+        end
     end
 
     @testset "cell_json exposes slide/notes flags" begin
@@ -305,93 +544,60 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
 
     @testset "slide-deck PDF compiles" begin
         nb = _mknb("#%% md id=t\n# Deck\nhi\n\n#%% md id=s\n## One\n\n- a\n- b\n")
-        # Typst fetches registry packages on first compile; guard on network/availability so the
-        # suite stays green offline — but assert real bytes whenever it does run.
-        pdf = try
-            NS.export_pdf(nb; layout = "slides", theme = "dark")
-        catch err
-            @info "slide PDF compile skipped" err
-            nothing
-        end
-        @test pdf === nothing || length(pdf) > 1000
+        @test length(NS.export_pdf(nb; layout = "slides", theme = "dark")) > 1000
     end
 
     @testset "a deck template drives the PDF and the bundle" begin
-        # The template font comes from a pinned commit of google/fonts (SIL OFL). Without curl or a
-        # network, the deck still compiles in the fallback font, and only the font check is skipped.
-        fonturl = "https://raw.githubusercontent.com/google/fonts/90abd17b4f97671435798b6147b698aa9087612f/ofl/monoton/Monoton-Regular.ttf"
-        font = try
-            Sys.which("curl") === nothing ? nothing : read(`curl -sSfL --max-time 30 $fonturl`)
-        catch
-            nothing
-        end
+        # The template sets its text in Inter from its own `fonts` directory (the shipped Inter file).
+        # Its settings name another font, so Slate copies no Inter: only the template file can give it.
         tpl = """
         #let slide(body, layout: none, title: none, n: none) = page[
-          #set text(font: "Monoton")
+          #set text(font: "Inter")
           TPL layout=#repr(layout) title=#(if title == none { "none" } else { title.body }) name=#toml("cfg.toml").name
           #body
         ]
         """
-        files = Dict("cfg.toml" => Vector{UInt8}("name = \"tomlvalue\"\n"))
-        font === nothing || (files["fonts/Monoton-Regular.ttf"] = font)
+        files = Dict("cfg.toml" => Vector{UInt8}("name = \"tomlvalue\"\n"),
+                     "fonts/Inter-Regular.ttf" => read(joinpath(NS._INTER_DIR, "Inter-Regular.ttf")))
         src = "#%% md id=s layout=center\n## Shown\n\nbody text\n"
         text(pdf) = (f = tempname() * ".pdf"; write(f, pdf);
                      try read(`pdftotext -layout $f -`, String) finally rm(f) end)
-        plain = _mknb(src)
-        before = try
-            dir = NS._build_slides_project(plain)
-            try
-                read(joinpath(dir, "doc.typ"), String)
-            finally
-                rm(dir; recursive = true, force = true)
-            end
-        catch
-            nothing
-        end
+        dir = NS._build_slides_project(_mknb(src))
+        before = try read(joinpath(dir, "doc.typ"), String) finally rm(dir; recursive = true, force = true) end
         nb = _mknb(src)
-        nb.deck_template = (; hash = "h", source = tpl, files)
-        pdf = try
-            NS.export_pdf(nb; layout = "slides")
-        catch err
-            @info "deck template PDF skipped" err
-            nothing
-        end
-        if pdf === nothing || Sys.which("pdftotext") === nothing
-            @test true
-        else
-            t = text(pdf)
-            @test occursin("TPL layout=\"center\"", t) && occursin("title=Shown", t) && occursin("name=tomlvalue", t)
-            if font === nothing || Sys.which("pdffonts") === nothing
-                @info "font check skipped (font download or pdffonts unavailable)"
-                @test true
-            else
-                f = tempname() * ".pdf"; write(f, pdf)
-                fonts = try read(`pdffonts $f`, String) finally rm(f) end
-                @test occursin("Monoton", fonts)
-            end
+        nb.deck_template = (; hash = "h", source = tpl, settings = "[text]\nfont = [\"DejaVu Sans\"]\n", files)
+        pdf = NS.export_pdf(nb; layout = "slides")
+        t = text(pdf)
+        @test occursin("TPL layout=\"center\"", t) && occursin("title=Shown", t) && occursin("name=tomlvalue", t)
+        f = tempname() * ".pdf"; write(f, pdf)
+        fonts = try read(`pdffonts $f`, String) finally rm(f) end
+        @test occursin("Inter-Regular", fonts)
 
-            # The bundle holds the same files; unpacked, it compiles to the same text and page count.
-            bundle = NS.export_typst_bundle(nb; layout = "slides")
-            out = mktempdir()
-            try
-                gz = joinpath(out, "b.tar.gz"); write(gz, bundle)
-                proj = joinpath(out, "proj"); mkpath(proj)
-                run(`tar -xzf $gz -C $proj`)
-                @test read(joinpath(proj, "cfg.toml"), String) == "name = \"tomlvalue\"\n"
-                NS._typst_compile(joinpath(proj, "doc.typ"), joinpath(proj, "again.pdf"))
-                @test text(read(joinpath(proj, "again.pdf"))) == t
-            finally
-                rm(out; recursive = true, force = true)
-            end
+        # The bundle holds the same files; unpacked, it compiles to the same text and page count.
+        bundle = NS.export_typst_bundle(nb; layout = "slides")
+        out = mktempdir()
+        try
+            gz = joinpath(out, "b.tar.gz"); write(gz, bundle)
+            proj = joinpath(out, "proj"); mkpath(proj)
+            run(`tar -xzf $gz -C $proj`)
+            @test read(joinpath(proj, "cfg.toml"), String) == "name = \"tomlvalue\"\n"
+            NS._typst_compile(joinpath(proj, "doc.typ"), joinpath(proj, "again.pdf"))
+            @test text(read(joinpath(proj, "again.pdf"))) == t
+        finally
+            rm(out; recursive = true, force = true)
         end
 
         # Without a template the preamble is the only prefix; no template text leaks in.
-        @test before === nothing || !occursin("deck template", before)
+        @test !occursin("deck template", before)
 
-        # A file name that leaves the project directory is refused at the write site.
+        # The write site refuses a file name that leaves the project directory, and the name of a file
+        # that Slate writes.
         io = IOBuffer(); d = mktempdir()
         try
-            @test_throws ArgumentError NS._apply_deck_template!(io, d, (; hash = "h", source = "", files = Dict("../x" => UInt8[])))
+            for name in ("../x", "deck-settings.typ")
+                @test_throws ArgumentError NS._apply_deck_template!(io, d, (; hash = "h", source = "", settings = "",
+                                                                          files = Dict(name => UInt8[])))
+            end
         finally
             rm(d; recursive = true, force = true)
         end
@@ -399,33 +605,23 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
 
     @testset "slide-deck with CITATIONS compiles (measure-in-isolation regression)" begin
         # A cite() inside the slide fit-scaler's measure() used to abort the whole deck with
-        # "cannot format citation in isolation" — the measured copy must render citation
-        # sentinels as a stand-in, while the real slide keeps the true citation. Gate on a PLAIN
-        # deck compiling first (typst/packages/network available), so offline skips both but a
-        # citation-specific failure can never hide behind the skip.
-        plain = try
-            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
-        catch
-            nothing
-        end
-        if plain === nothing
-            @info "cited slide PDF compile skipped (typst unavailable)"
-            @test true
-        else
-            nb = _mknb("#%% md id=s\n## Cited slide\n\nSee [@knuth1984, p. 3].\n\n" *
-                       "#%% md id=refs bibliography\n@book{knuth1984,\n  author = {Knuth, D.},\n" *
-                       "  title = {The TeXbook},\n  publisher = {Addison-Wesley},\n  year = {1984}\n}\n")
-            pdf = NS.export_pdf(nb; layout = "slides")   # a throw here IS the regression
-            @test length(pdf) > 1000
-        end
+        # "cannot format citation in isolation". The measured copy must render citation sentinels
+        # as a stand-in, while the real slide keeps the true citation.
+        nb = _mknb("#%% md id=s\n## Cited slide\n\nSee [@knuth1984, p. 3].\n\n" *
+                   "#%% md id=refs bibliography\n@book{knuth1984,\n  author = {Knuth, D.},\n" *
+                   "  title = {The TeXbook},\n  publisher = {Addison-Wesley},\n  year = {1984}\n}\n")
+        @test length(NS.export_pdf(nb; layout = "slides")) > 1000   # a throw here IS the regression
     end
 
     @testset "the PDF deck fits each slide and records the fit" begin
-        # The fixture deck at 16:9 and at 4:3, with two slides added: a figure that shares a tall
-        # slide with text, and a portrait figure alone whose drawn height is measured. One
-        # `typst query` per ratio reads the fit records of `fit` (label `<slate>`).
+        # The fixture deck at 16:9 and at 4:3, with four slides added: a figure that shares a tall
+        # slide with text, a portrait figure alone whose drawn height is measured, a slide of text
+        # that is taller than the page at full size, and a data table of 35 rows, which shrinks with the
+        # text. One `typst query` per ratio reads the fit records of `fit` (label `<slate>`).
         fixture = read(joinpath(@__DIR__, "fixtures", "deck_fixture.jl"), String)
         svg(w, h) = """<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h"><rect width="$w" height="$h" fill="#38c"/></svg>"""
+        table = NS._typst_table(Dict("columns" => [Dict("name" => "n"), Dict("name" => "square")],
+                                     "rows" => [[i, i^2] for i in 1:35]); theme = "deck")
         extra = """
         #slide(title: heading(level: 2)[A figure that shares the slide])[
         Two lines of text above the figure make this slide taller than the page at full size, so
@@ -434,11 +630,17 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         #figureimg("wide.svg")
         ]
         #slide[#layout(sz => [#metadata(measure(block(width: sz.width, figureimg("tall.svg"))).height / SLIDE_H) <figcap>])]
+        #slide(title: heading(level: 2)[A tall slide of text])[
+        #for i in range(20) [Line #i of a slide that is a little taller than the page at full size.\\ ]
+        ]
+        #slide(title: heading(level: 2)[A data table])[
+        $table
+        ]
         """
         function query(ratio)
             dir = NS._build_slides_project(_mknb(fixture); ratio)
             try
-                write(joinpath(dir, "wide.svg"), svg(900, 450)); write(joinpath(dir, "tall.svg"), svg(300, 900))
+                write(joinpath(dir, "wide.svg"), svg(2400, 1200)); write(joinpath(dir, "tall.svg"), svg(300, 900))
                 doc = joinpath(dir, "doc.typ")
                 open(io -> print(io, extra), doc, "a")
                 vals = NS._typst_query(doc, "selector(<slate>).or(<figcap>)")
@@ -450,15 +652,21 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
         tie(r) = (1 + r["s"]) / 2
         fit, cap, recs = query("16:9")
-        @test sort(collect(keys(fit))) == 1:16              # one page per slide: no slide breaks
-        tall, atfloor, fig = fit[12], fit[13], fit[15]      # fixture "A tall slide…", "…at the floor"
+        @test sort(collect(keys(fit))) == 1:18              # one page per slide: no slide breaks
+        tall, atfloor, fig = fit[17], fit[13], fit[15]      # the added tall slide, fixture "…at the floor"
         @test 0.62 <= tall["s"] < 1 && tall["f"] >= tie(tall) && !tall["at_floor"]
+        @test fit[18]["s"] < 1 && !fit[18]["at_floor"]      # the table shrinks with the text
         @test atfloor["at_floor"] && atfloor["s"] == 0.62
         @test count(r -> r["at_floor"], recs) == 1
         @test 0.62 <= fig["s"] < 1 && tie(fig) <= fig["f"] < 1 && !fig["at_floor"]   # the figure shrinks less than the text
         @test cap ≈ 0.7 atol = 0.01                          # a tall figure takes at most 0.7 of the slide height
-        warns = NS._fit_warnings(recs)                       # the export dialog's warnings
-        @test length(warns) == 1 && occursin("Slide 13 ", only(warns))
+        warns = NS._fit_warnings(recs; unit = "Page")        # the export dialog's warnings: a PDF page number
+        @test length(warns) == 1 && startswith(only(warns), "Page 13 ")
+        # The header that carries the warnings to the page is ASCII, at most 21 lines of at most 300
+        # characters.
+        h = NS._warnings_header(vcat(["tëst"], fill("x"^400, 30)))
+        l = JSON.parse(h)
+        @test isascii(h) && length(l) == 21 && l[1] == "tëst" && length(l[2]) == 300 && occursin("11 more", l[21])
         # At 4:3 the slide unit is 1/1440 of the page width, as on the live canvas: the body text has
         # the same size in `u` as at 16:9.
         fit43, cap43, _ = query("4:3")
@@ -556,12 +764,18 @@ end
     for h in ("codeblock", "outblock", "valblock", "errblock", "figureimg", "notefig", "figcaption", "paramblock")
         @test occursin("#let $h(", pre)
     end
+    # The public `code=` sizes of the slides PDF are factors on the deck setting `code.size`.
+    for (code, f) in (("normal", 1), ("small", 1), ("smaller", 7.5 / 8.5), ("tiny", 6.5 / 8.5))
+        m = match(r"#let codeblock\(.*text\(size: ([0-9.]+) \* settings\.code\.size", NS._typst_preamble_slides("T"; code))
+        @test m !== nothing && isapprox(parse(Float64, m[1]), f; atol = 1e-4)
+    end
 end
 
 @testset "deck lengths: em for text, the slide unit for geometry" begin
     # The fit changes the text size only, so a deck length that must follow the text is in em and a
     # fixed one is in the slide unit (`--u` live, `u` in Typst), never in px, pt, mm or rem. This scans
-    # the notebook.css rules whose selector starts with `.deck-slide`, and the Typst slides preamble.
+    # the notebook.css rules whose selector starts with `.deck-slide`, the Typst slides preamble and a
+    # data table of a slide (`_typst_table`).
     # It does not cover deck rules under other selectors (`.slide-title`, `.slide-body`,
     # `.deck-sheet`, `.cell.role-title`), the notebook rules that reach into a slide, or template
     # CSS: the parity run (`parity.mjs`) catches what leaks from those. Markdown image sizes that the
@@ -577,8 +791,15 @@ end
         occursin(abslen, d) && push!(bad, "$(m[1]) { $d }")
     end
     @test isempty(bad)
+    # An inline `max-width` of a deck image keeps its effect: only a picture that the fit gave `--fitw`
+    # takes an `!important` width.
+    img = [m for m in rules if occursin(":is(img, video)", m[1])]
+    @test !isempty(img) && all(m -> !occursin(r"max-width[^;]*!important", m[2]) || occursin("[style*=\"--fitw\"]", m[1]), img)
     pre = split(NS._typst_preamble_slides("T"), '\n')
     @test isempty(filter(l -> occursin(abslen, l) && !occursin(r"#let (SLIDE_[WH]|mdlen)\b", l), pre))
+    spec = Dict("columns" => [Dict("name" => "a")], "rows" => [[1], [2]],
+                "opts" => Dict{String,Any}("title" => "T", "nrows" => 300))
+    @test !occursin(abslen, NS._typst_table(spec; theme = "deck"))
 end
 
 @testset "the API reference covers the deck" begin

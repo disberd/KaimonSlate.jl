@@ -491,6 +491,7 @@ function _acp_models()
     models
 end
 
+include("deck_settings.jl")  # deck settings: base file, merge, checks, the CSS and Typst outputs
 include("export_typst.jl")   # export_pdf(nb) — publication-quality PDF via Typst (uses types defined above)
 include("bib_remote.jl")     # a bibliography named by its address: fetched, cached, revalidated
 include("memostore.jl")      # MemoStore (server-side copy — stateless, root passed explicitly): pack/unpack
@@ -813,6 +814,19 @@ end
 # Sanitized download filename for an export: notebook base name with unsafe chars folded to `_`,
 # plus the given extension (which INCLUDES the leading dot, e.g. ".html", ".typ.tar.gz").
 _download_name(nb, ext) = replace(splitext(basename(nb.path))[1], r"[^A-Za-z0-9_.-]" => "_") * ext
+
+# The export warnings as the value of the `X-Slate-Warnings` header: a JSON list of at most 20 lines of
+# at most 300 characters, all ASCII (`\uXXXX` escapes), so that a proxy with a small header buffer
+# passes it and the page parses it.
+function _warnings_header(warns)
+    list = [length(w) > 300 ? first(w, 299) * "…" : w for w in first(warns, 20)]
+    length(warns) > 20 && push!(list, "And $(length(warns) - 20) more warnings.")
+    return sprint() do io
+        for c in JSON.json(list)
+            isascii(c) ? print(io, c) : foreach(u -> print(io, "\\u", string(u; base = 16, pad = 4)), transcode(UInt16, string(c)))
+        end
+    end
+end
 
 # Read an MB-valued query param (`key`) and convert to a byte budget: absent or unparseable ⇒ `default`.
 _mb_budget(qp, key, default) = begin
@@ -1226,6 +1240,15 @@ function _make_router(h::Hub)
         (occursin('/', f) || occursin('\\', f) || occursin("..", f) || !endswith(f, ".json")) && return HTTP.Response(404)
         p = joinpath(dirname(_JS_DIR), "maps", f)
         isfile(p) ? HTTP.Response(200, ["Content-Type" => "application/json",
+                                        "Cache-Control" => "public, max-age=31536000, immutable"], read(p)) :
+                    HTTP.Response(404)
+    end)
+    # The base deck font (Inter 4.1, OFL, `assets/fonts/inter`): the `@font-face` rules of notebook.css.
+    HTTP.register!(router, "GET", "/assets/fonts/inter/{file}", req -> begin
+        f = HTTP.getparam(req, "file")
+        (occursin('/', f) || occursin('\\', f) || occursin("..", f) || !endswith(f, ".ttf")) && return HTTP.Response(404)
+        p = joinpath(_INTER_DIR, f)
+        isfile(p) ? HTTP.Response(200, ["Content-Type" => "font/ttf",
                                         "Cache-Control" => "public, max-age=31536000, immutable"], read(p)) :
                     HTTP.Response(404)
     end)
@@ -2833,7 +2856,7 @@ function _make_router(h::Hub)
             # `layout=present`: the live deck printed in headless Chrome (server_deckshot.jl), not
             # Typst, in Slate palette `slatetheme` (the headless browser has no saved one).
             get(qp, "layout", "") == "present" ?
-                (deck_pdf(deck_print_url(_hub_url(h), nb.id; theme = get(qp, "slatetheme", ""), steps = get(qp, "steps", ""))), String[]) :
+                deck_print_report(nb, _hub_url(h); theme = get(qp, "slatetheme", ""), steps = get(qp, "steps", "")) :
             _export_pdf_report(nb; _pdf_export_opts(qp, nb)...)
         catch e
             return HTTP.Response(500, "PDF export failed: " * sprint(showerror, e))
@@ -2841,7 +2864,7 @@ function _make_router(h::Hub)
         fn = _download_name(nb, ".pdf")
         headers = ["Content-Type" => "application/pdf", "Content-Disposition" => "attachment; filename=\"$fn\""]
         # The export warnings (a JSON list of strings) for the export dialog; the body is the PDF.
-        isempty(warns) || push!(headers, "X-Slate-Warnings" => JSON.json(warns))
+        isempty(warns) || push!(headers, "X-Slate-Warnings" => _warnings_header(warns))
         HTTP.Response(200, headers, pdf)
     end))
     # The editable Typst PROJECT (doc.typ + assets) as a .tar.gz, so the layout can be tweaked and

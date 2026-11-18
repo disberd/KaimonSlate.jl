@@ -27,6 +27,24 @@ were written when they went out. They are marked.
   `typst compile --font-path fonts doc.typ`. A notebook without a template exports the same `doc.typ`
   as before. The export pulls the extension manifest first, so a template whose source is a
   `PkgAsset` exports as it is on disk now, with no run and no worker restart in between.
+- Deck settings: one set of content values for the live deck, the PDF deck and later an exporter.
+  Slate ships the base file `src/assets/deck-settings.toml` with every key and its base value: text,
+  headings, rhythm, colour roles, key message, caption, table, admonition, code, figures, fit and
+  columns. A length takes a unit, `u` or `em`, that the base file fixes for each key. A deck template
+  gives a partial file with `provide_deck_template!(source; settings = @pkg_asset("deck.toml"))`, and
+  the notebook setting **Deck settings (TOML)** (Settings → This notebook, key `decksettings`) gives a
+  second one. The hub merges them key by key in that order. An unknown key, a wrong unit, a value
+  that does not match its pattern, or a base key that a deck template sets gives a warning and is
+  not used; the export goes on. A colour role is a hex value, a name of `[palette]`, or
+  `slate.<name>`, a colour of the Slate palette in force. The warnings show under the setting and in
+  the export dialog.
+- The hub writes each deck setting as a `--deck-*` custom property in `:where(…)` rules and sends
+  them to the page, so a package stylesheet can read and override them. A slides export writes
+  `deck-settings.typ` into the Typst project with `SLIDE_W`, `SLIDE_H`, `u` and `settings`, which the
+  deck preamble imports.
+- A deck template's settings and files can be `PkgAsset`s. An edit to one of them reaches the next
+  export with no run and no worker restart, as an edit to the template source does.
+- The `export_pdf` tool lists the export warnings of a deck in its answer.
 
 ### Changed
 
@@ -52,7 +70,9 @@ were written when they went out. They are marked.
 - The live deck puts the heading a slide starts with in its own `.slide-title` element, above the
   slide body. A slide that starts with a heading of any depth has a title. The heading is not
   repeated in the body. The slide of a `title` cell has `data-role="title"`, so a stylesheet can
-  match it with CSS only. The default look of the deck does not change.
+  match it with CSS only. The default look of the deck does not change. The slide overview, the
+  "next" line of the presenter window and `window._deckPos()` take the title by the same rule: a
+  slide that starts with a code cell has no title there, also when a later cell has a heading.
 
 ### Visible changes
 
@@ -83,6 +103,46 @@ were written when they went out. They are marked.
   0.62 em of the body text, as on the live deck (they were 8.5 pt), and the `code` option scales
   them. The column gap is 56 u, as on the live deck. Display math that is wider than its column is
   set smaller down to 0.4 of its size, as on the live deck.
+- The base font of the deck is Inter, on the live deck and in the PDF deck. Slate ships the Inter 4.1
+  font files (SIL Open Font License). The PDF deck used New Computer Modern; it now embeds Inter. The
+  live deck uses an Inter that the machine has, and else the shipped one.
+- The PDF deck sets the body text at the size of the live deck, 34 u (12.75 pt on a 16:9 page), not
+  at 50.67 u (19 pt), and the gap between the cells of a row is 48 u, as on the live deck.
+- The slides PDF takes its colours from the Slate palette that the export dialog's Theme picker
+  chooses (`charttheme`). When no palette is given, `theme="light"` gives Daylight and `theme="dark"`
+  Midnight, so the default slides PDF stays light. The base colours of the PDF deck change a little:
+  the text is the palette's text colour, not black or `#d6dae8`.
+- On a deck template that sets `figures.slate-palette` (a deck with fixed colours), figures in the PDF
+  deck and in the deck print take that palette and no longer follow the Theme picker. The other
+  colours of the deck print still follow the Theme picker. On the live deck, in the presenter window
+  and in slide captures, ECharts charts take that palette too, and go back to the UI theme when the
+  deck closes. The export dialog says when the deck template fixes the colours.
+- The deck print ("as presented") warns about each slide that does not fit at the smallest text
+  size, as the PDF deck does.
+- The PDF deck has the geometry of the live base deck: a body padding of 84, 120 and 72 u, the body at
+  the top of the slide (the `center`, `title` and `section` layouts stay centred), the slide number at
+  the bottom right, and the title below the 12 u padding of the live title. Headings take the sizes
+  of the deck settings and the weights of the live deck, and a level-2 heading has the accent bar of
+  the live deck under it.
+- The PDF deck spaces lines and blocks as the live deck does. Each line has the line box of CSS: the
+  ascender to the descender of the font, as Typst measures it, with half of the rest of the line
+  height above and below. Paragraphs, lists and headings take the spacing of the deck settings, the
+  cells of a slide and a key message have 18 u below them, a table has no space below it, and display
+  math, inline math and code in markdown have the sizes of the live deck. A row of cells that holds a
+  markdown cell centres its cells, as on the live deck. The default `slide` draws its body in the new
+  `base-rhythm(body)`; a deck template that draws its own pages keeps its own rules, or calls
+  `base-rhythm` around its `fit`.
+- Base tables, on the live deck and in the PDF deck, take the `[table]` deck settings: the full width
+  of their column, text at 0.8 em, a line height of 1.2, padding in em, a bold header row on a fill
+  and a rule under each row. In the PDF deck the column widths follow the automatic table layout of
+  CSS.
+- In the PDF deck a figure with no width of its own is drawn at its natural size (1 px of the picture
+  is 1 u of the slide), at most as wide as its column, as on the live deck. It used to fill its
+  column.
+- On the live deck, a heading that is not the first block of its cell has `rhythm.heading-above`
+  above it. A block quote has no indent and the gap between cells below it. A nested list has the item
+  spacing above and below it; it had 0.6 em below it. The padding of a markdown cell is in slide units,
+  12 by 16 u, so it no longer changes with the size of the screen.
 
 ### Fixed
 
