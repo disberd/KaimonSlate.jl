@@ -1684,8 +1684,11 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
         return
     end
     if texts && isempty(o.display) && !isempty(o.value_repr)
-        write(joinpath(dir, base * ".val"), plain(o.value_repr))
-        put("code", "#valblock(read(\"", base, ".val\"))\n")
+        val = plain(o.value_repr)
+        write(joinpath(dir, base * ".val"), val)
+        # The `text/plain` value is the one output whose text an exporter gets, as a code block.
+        print(io, blk("code", string("#valblock(read(\"", base, ".val\"))\n");
+                      src = strip(ReportEngine._md_fence_block("", val), '\n') * "\n"))
     end
     # Math, and HTML with a markdown form, print as text and formulas — ahead of any page snapshot.
     if !hooked && _emit_typeset_output!(io, dir, base, o; blk)
@@ -2806,7 +2809,8 @@ rhythm, the CSS line height times the text size.
   - `index`: its number in the fragment, in reading order. A `::: column` holds blocks: the blocks of
     column 1 come before the blocks of column 2. `divcolumn` is the number of that column, or 0.
   - `src`: its markdown, with `{{ }}` resolved and the block kinds marked; `nothing` for an output
-    of a code cell, except a markdown output: it splits into blocks as a markdown cell does.
+    of a code cell, with two exceptions. A markdown output splits into blocks as a markdown cell
+    does. The `text/plain` value is a fenced code block of its text.
   - `page`, `box`, `size`, `lineheight`: its page in the PDF, its box, its text size and its line
     height; `nothing` when the PDF does not draw it. The box of a figure is the picture, the box of a
     table is the table, the box of each other block is as wide as its column.

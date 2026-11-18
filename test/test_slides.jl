@@ -1264,6 +1264,15 @@ end
     @test occursin("A key message", b[2].src) && issorted([x.box.y for x in b])
 end
 
+# The `text/plain` value of a code cell reaches an exporter as a code block; stdout carries no text.
+@testset "layout source: a text/plain value is a fenced code block" begin
+    nb = _hooknb("#%% code id=pv\nprintln(\"hi\")\n1 + 2\n")
+    b = only(NS.exporter_deck(nb)["slides"])["blocks"]
+    @test [(x["kind"], x["markdown"]) for x in b] == [("code", nothing), ("code", "```\n3\n```\n")]
+    v = only(NS.exporter_deck(_hooknb("#%% code id=pq\n\"a ``` b\"\n"))["slides"])["blocks"]
+    @test only(v)["markdown"] == "````\n\"a ``` b\"\n````\n"   # the fence is longer than a run of backticks in the text
+end
+
 @testset "figure hook: the width comes from the columns and the template's body width" begin
     widths(nb) = (dir = NS._build_slides_project(nb);
                   try; [_svg_width(t) for (_, t) in _drawn_figs(dir)]; finally; rm(dir; recursive = true, force = true); end)

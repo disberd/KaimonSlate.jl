@@ -99,7 +99,8 @@ were written when they went out. They are marked.
   and so does the new tool `export(notebook; format, path)`. The hub compiles the slides PDF with its
   marks, builds the deck value (deck title, slide size and ratio, deck settings in the palette of the Theme picker,
   slides with their layout, title, notes, transition, regions and blocks, each block with its markdown
-  or its figure forms, its box, its text size and its line height; regions with their text, box, text
+  (the `text/plain` value of a code cell as a fenced code block) or its figure forms, its box, its text
+  size and its line height; regions with their text, box, text
   size and line height), and the worker calls `f(deck)` through the gate tool
   `__slate_export`. The hub checks the name (`^[a-z0-9][a-z0-9-]{0,31}$`), the file extension
   (`^[a-z0-9]{1,8}$`) and each MIME type (`type/subtype`), and drops an exporter that fails with a
