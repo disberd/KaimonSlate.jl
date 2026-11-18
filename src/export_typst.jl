@@ -1552,15 +1552,26 @@ end
 _output_chunk(o, mime) = (i = findfirst(ch -> ch.mime == mime, o.display); i === nothing ? nothing : String(copy(o.display[i].data)))
 _has_figure_bytes(o) = any(ch -> ch.mime in ("application/pdf", "image/svg+xml", "image/png"), o.display)
 
+# Write the markdown `md` of an output (block kinds marked) to `file` and print its `cmarker` call
+# through `blk`, with `tail` after it. On a slide (`blk` is a `_block_printer`) each block of `md` is a
+# block of the layout source, split by the rules of a markdown cell, in a file of its own.
+function _emit_output_md!(io::IO, dir, file, md, tail, blk)
+    parts = blk === _plain_block ? [(kind = "prose", text = md)] : ReportRender._md_split(md)
+    for (k, b) in enumerate(parts)
+        f = k == 1 ? file : string(chopsuffix(file, ".md"), "_", k, ".md")
+        write(joinpath(dir, f), b.text)
+        print(io, blk(b.kind, string("#", _md_render(f), tail); src = b.text))
+    end
+end
+
 # Emit an output's markdown or math form natively; false if it has neither, or Typst can't set it.
-function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString, o)
+function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString, o; blk = _plain_block)
     _has_figure_bytes(o) && return false
     md = _output_chunk(o, "text/markdown")
     if md !== nothing
         src = _normalize_math_delims(md; tex = _portable_tex)
         if _typst_typesets(:md, src)
-            write(joinpath(dir, base * ".md"), ReportRender._md_kinds(src; plain = true))
-            print(io, "#", _md_render(base * ".md"), "\n")
+            _emit_output_md!(io, dir, base * ".md", ReportRender._md_kinds(src; plain = true), "\n", blk)
             return true
         end
     end
@@ -1569,7 +1580,7 @@ function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString
         src = _portable_tex(_strip_math_delims(tex))
         if _typst_typesets(:tex, src)
             write(joinpath(dir, base * ".tex"), src)
-            print(io, "#align(center, mathfn(read(\"", base, ".tex\"), block: true))\n")
+            print(io, blk("prose", string("#align(center, mathfn(read(\"", base, ".tex\"), block: true))\n")))
             return true
         end
     end
@@ -1640,8 +1651,7 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
     md = hooked ? nothing : ReportRender._markdown_output(o)
     if md !== nothing
         # Prose: typeset as a markdown cell's would be, rather than rasterized as HTML.
-        write(joinpath(dir, base * "_out.md"), ReportRender._md_kinds(_normalize_math_delims(md); plain = true))
-        put("prose", "#", _md_render(base * "_out.md"), "\n\n")
+        _emit_output_md!(io, dir, base * "_out.md", ReportRender._md_kinds(_normalize_math_delims(md); plain = true), "\n\n", blk)
         return
     end
     if texts && isempty(o.display) && !isempty(o.value_repr)
@@ -1649,9 +1659,7 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
         put("code", "#valblock(read(\"", base, ".val\"))\n")
     end
     # Math, and HTML with a markdown form, print as text and formulas — ahead of any page snapshot.
-    tio = IOBuffer()
-    if !hooked && _emit_typeset_output!(tio, dir, base, o)
-        put("prose", String(take!(tio)))
+    if !hooked && _emit_typeset_output!(io, dir, base, o; blk)
         for spec in _table_specs(c)
             put("table", _typst_table(spec; theme = theme))
         end
@@ -2754,7 +2762,7 @@ of a caption and of a region holds whole line boxes of CSS. A text size is in `u
   - `index`: its number in the fragment, in reading order. A `::: column` holds blocks: the blocks of
     column 1 come before the blocks of column 2. `divcolumn` is the number of that column, or 0.
   - `src`: its markdown, with `{{ }}` resolved and the block kinds marked; `nothing` for an output
-    of a code cell.
+    of a code cell, except a markdown output: it splits into blocks as a markdown cell does.
   - `page`, `box`, `size`: its page in the PDF, its box and its text size; `nothing` when the PDF
     does not draw it. The box of a figure is the picture, the box of a table is the table, the box
     of each other block is as wide as its column.

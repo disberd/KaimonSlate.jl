@@ -1249,6 +1249,15 @@ end
     @test text.box.y >= fig.box.y + fig.box.h
 end
 
+# The live deck renders a `Markdown.MD` output as markdown, so the PDF splits it as a markdown cell.
+@testset "layout source: a markdown output gives one block for each top-level node" begin
+    nb = _hooknb("#%% code id=mo\nimport Markdown\nMarkdown.parse(\"One.\\n\\n> A key message.\\n\\n- a\\n- b\\n\")\n")
+    b = only(NS.slide_layout(nb)).blocks
+    @test [x.kind for x in b] == ["prose", "key-message", "prose"]
+    @test all(x -> x.cell == "mo" && x.page == 1, b) && [x.index for x in b] == 1:3
+    @test occursin("A key message", b[2].src) && issorted([x.box.y for x in b])
+end
+
 @testset "figure hook: the width comes from the columns and the template's body width" begin
     widths(nb) = (dir = NS._build_slides_project(nb);
                   try; [_svg_width(t) for (_, t) in _drawn_figs(dir)]; finally; rm(dir; recursive = true, force = true); end)

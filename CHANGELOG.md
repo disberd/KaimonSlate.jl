@@ -227,7 +227,8 @@ were written when they went out. They are marked.
   drew only the title, the first subheading and the first paragraph. A byline of several lines is
   one byline now, not its first line only.
 - The Typst project of a PDF deck has one markdown file for each block of a cell (`s2f1b1.md`,
-  `s2f1b2.md`), not one for each cell, and each block is in a `#blk(…)[…]` call. The pages do not
+  `s2f1b2.md`), not one for each cell, and each block is in a `#blk(…)[…]` call. The markdown output
+  of a code cell (a `Markdown.MD` value) splits into blocks by the same rules. The pages do not
   change.
 
 ## [2.2.0] - 2026-11-16
