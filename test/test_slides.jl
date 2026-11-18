@@ -532,6 +532,22 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
     end
 
+    # A table wider than its column: a column of hyphenated words can break after each hyphen, as in a
+    # browser, so it gets less width than a column of words of the same length with no hyphen.
+    @testset "the base PDF: a table column breaks its words after a hyphen" begin
+        long(w) = join(fill(w, 12), " ")
+        nb = _mknb("#%% md id=a\n## A\n\n| $(long("aaaaaaaaaa-bbbbbbbbbb")) | $(long("aaaaaaaaaaxbbbbbbbbbb")) |\n|---|---|\n| x | y |\n")
+        dir = NS._build_slides_project(nb)
+        try
+            out = IOBuffer()
+            NS._typst_run("query", joinpath(dir, "doc.typ"), ["table", "--field", "columns"]; out)
+            w = [parse(Float64, chopsuffix(c, "fr")) for c in last(JSON.parse(String(take!(out))))]   # the table with its widths
+            @test w[1] < 0.9 * w[2]
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
     # The base deck font is Inter in the PDF too: the project carries the shipped files, and Typst
     # embeds them on a machine that has no Inter of its own.
     @testset "the base slides PDF is set in the shipped Inter" begin
@@ -665,10 +681,11 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         end
         tie(r) = (1 + r["s"]) / 2
         fit, cap, recs = query("16:9")
-        @test sort(collect(keys(fit))) == 1:20              # one page per slide: no slide breaks
-        tall, atfloor, fig = fit[19], fit[13], fit[17]      # the added tall slide, fixture "…at the floor"
+        n = length(fit) - 4                                 # the pages of the fixture; the four added slides follow
+        @test sort(collect(keys(fit))) == 1:n+4             # one page per slide: no slide breaks
+        tall, atfloor, fig = fit[n+3], fit[13], fit[n+1]    # the added tall slide, fixture "…at the floor"
         @test 0.62 <= tall["s"] < 1 && tall["f"] >= tie(tall) && !tall["at_floor"]
-        @test fit[20]["s"] < 1 && !fit[20]["at_floor"]      # the table shrinks with the text
+        @test fit[n+4]["s"] < 1 && !fit[n+4]["at_floor"]    # the table shrinks with the text
         @test atfloor["at_floor"] && atfloor["s"] == 0.62
         @test count(r -> r["at_floor"], recs) == 1
         @test 0.62 <= fig["s"] < 1 && tie(fig) <= fig["f"] < 1 && !fig["at_floor"]   # the figure shrinks less than the text

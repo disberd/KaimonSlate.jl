@@ -412,9 +412,10 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // A markdown table at `table.text-size`, with the column widths that CSS auto table layout gives
     // it in its column: each column gets at least its widest word (min) and at most its widest line
     // (max), and the room between the sums of min and max goes to the columns in proportion to
-    // max - min. When `table.full-width` is on, a table narrower than its column takes the full
-    // width, in proportion to max, as the live `width: 100%`. The rebuilt table has `fr` columns,
-    // which tell this rule that the table is done.
+    // max - min. A word ends at a space and after a hyphen, where a browser breaks a line too. When
+    // `table.full-width` is on, a table narrower than its column takes the full width, in proportion
+    // to max, as the live `width: 100%`. The rebuilt table has `fr` columns, which tell this rule that
+    // the table is done.
     #let base-table(it) = if type(it.columns) == array and it.columns.len() > 0 and it.columns.all(c => type(c) == fraction) { it } else {
       set text(size: settings.table.text-size)
       block(above: settings.text.paragraph-after, below: settings.rhythm.after-table, layout(sz => {
@@ -424,7 +425,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
         let pad = 2 * settings.table.pad-x.to-absolute()
         let col(i) = cells.enumerate().filter(((j, _)) => calc.rem(j, n) == i).map(((j, c)) => if j < n { strong(c.body) } else { c.body })
         let mx = range(n).map(i => calc.max(..col(i).map(b => measure(b).width)) + pad)
-        let mn = range(n).map(i => calc.max(..col(i).map(b => calc.max(0 * u, ..plaintext(b).split(" ").map(w => measure(w).width)))) + pad)
+        let mn = range(n).map(i => calc.max(..col(i).map(b => calc.max(0 * u, ..plaintext(b).replace("-", "- ").split(" ").map(w => measure(w).width)))) + pad)
         let w = if mx.sum() <= sz.width {
           if not settings.table.full-width { return it }
           mx.map(x => x / mx.sum() * sz.width)
