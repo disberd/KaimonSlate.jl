@@ -562,7 +562,8 @@ const _FIT_TYPST = "(text-floor: settings.fit.text-floor, fig-floor: 0.25, fig-c
 # `layout` is the slide's layout tag and `title` its heading (a `heading` element), both `none` when
 # unset; `n` is the slide number on a notes page. A template that is added after this preamble can
 # redefine `slide` or `slidecols` to draw each layout its own way. It must draw the body through `fit`,
-# because `fit` sizes the figures and records the fit.
+# because `fit` sizes the figures and records the fit. `base-slide` and `base-fit` are the base `slide`
+# and `fit`, so that a template that redefines them can still call them.
 # The page copies the geometry of the live base deck (notebook.css `.deck-slide`, `.slide-title`,
 # `.slide-num`): the body padding, the body at the top of the slide, the slide number, the title. The
 # base `slide` draws the body in `base-rhythm`, the vertical rhythm of the live deck from the deck
@@ -1034,6 +1035,9 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
         }))
       ]
     }
+    // A deck template that defines its own `slide` or `fit` calls the base one by these names.
+    #let base-fit = fit
+    #let base-slide = slide
 
     """
 end

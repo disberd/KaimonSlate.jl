@@ -607,6 +607,12 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         f = tempname() * ".pdf"; write(f, pdf)
         fonts = try read(`pdffonts $f`, String) finally rm(f) end
         @test occursin("Inter-Regular", fonts)
+        # A template that wraps the base `slide` calls it as `base-slide`: the base page, title and fit stay.
+        wnb = _mknb(src)
+        wrap = "#let slide(body, layout: none, title: none, n: none) = base-slide([WRAP #body], layout: layout, title: title, n: n)\n"
+        wnb.deck_template = (; hash = "w", source = wrap, settings = "", files = Dict{String,Vector{UInt8}}(), body_width = nothing)
+        wt = text(NS.export_pdf(wnb; layout = "slides"))
+        @test occursin("Shown", wt) && occursin("WRAP", wt) && occursin("body text", wt)
 
         # The bundle holds the same files; unpacked, it compiles to the same text and page count.
         bundle = NS.export_typst_bundle(nb; layout = "slides")

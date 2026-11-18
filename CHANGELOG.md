@@ -21,7 +21,8 @@ were written when they went out. They are marked.
   still gets every other manifest field. This needs `SlateExtensionsBase` 0.11.4, and KaimonSlate
   now requires at least that version.
 - The PDF deck export applies the deck template of the notebook. The template source goes after the
-  default Typst preamble, so a `#let slide` in it replaces the default one. The template files are
+  default Typst preamble, so a `#let slide` in it replaces the default one; the default one stays
+  callable as `base-slide`, and the default `fit` as `base-fit`. The template files are
   written into the Typst project directory, which is the `--root` of the compile. When the project
   has a `fonts` directory, Typst gets `--font-path` for it. The Typst bundle export carries the same
   files. To rebuild a deck with template fonts from an unpacked bundle, run
