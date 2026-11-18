@@ -955,6 +955,11 @@ end
         # A cell with the `caption` tag: each block is a caption, and the first one has the figure number.
         @test R._md_kinds("One.\n\nTwo."; caption = 3) ==
               "<slate-caption number=\"3\">\n\nOne.\n\n</slate-caption>\n\n<slate-caption>\n\nTwo.\n\n</slate-caption>"
+        # On the page the label of a figure caption starts its first paragraph, so that it is on the
+        # line of the caption where a paragraph is a block (a slide).
+        r = RE.parse_report("#%% code id=f\n1\n\n#%% md id=c caption\nOne.\n\nTwo.\n")
+        @test occursin(r"<slate-caption number=\"1\">\s*<p><span class=\"figlabel\">",
+                       NS.cell_json(r.cells[2]; figidx = NS.figure_index(r))["output"])
         # An admonition category with its own values has a rule on its element in the deck CSS.
         css = NS.deck_settings_css(NS.deck_settings("[admonition.aside]\naccent = \"#123456\"\n", "").values)
         @test occursin(":where(.deck-slide slate-admonition[category=\"aside\"]) { --deck-admonition-accent: #123456; }", css)

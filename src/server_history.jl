@@ -1195,7 +1195,12 @@ function cell_json(c::Cell, bindref::Dict{String,Tuple{Cell,BindSpec}} = Dict{St
         d["roleCaption"] = true
         if haskey(fignums, c.id)
             d["figNum"] = fignums[c.id]
-            d["output"] = "<span class=\"figlabel\">Figure " * string(fignums[c.id]) * ".</span> " * d["output"]
+            # The label goes at the start of the first paragraph of the caption, so that it stays on
+            # that line where a paragraph is a block (on a slide).
+            label = "<span class=\"figlabel\">Figure " * string(fignums[c.id]) * ".</span> "
+            first_p = r"<slate-caption number=\"\d+\">\s*<p>"
+            d["output"] = occursin(first_p, d["output"]) ? replace(d["output"], first_p => s -> s * label; count = 1) :
+                          label * d["output"]
         end
     end
     c.kind === ReportEngine.FOREIGN && (d["header"] = c.header)   # its `#%%` line as a newer Slate wrote it

@@ -3306,12 +3306,11 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
   background: var(--deck-key-message-fill); border: none;
   border-left: var(--deck-key-message-bar-width) solid var(--deck-key-message-bar-color); color: var(--deck-key-message-text-color); }
 /* Caption: smaller and dimmed. A figure caption (a cell with the `caption` tag) is a markdown cell of
-   captions on a slide, and its first block shows the figure number. */
+   captions on a slide. The hub puts its label ("Figure N.") at the start of its first paragraph. */
 .deck-slide :is(.md, .markdown) slate-caption > * { font-size: var(--deck-caption-size); color: var(--deck-caption-color); }
-.deck-slide slate-caption[number] > :first-child::before { content: "Figure " attr(number) ". "; font-weight: 700; color: var(--deck-fg); }
 .deck-slide .cell.role-caption .md { font-size: 1em; line-height: inherit; color: var(--deck-fg); margin: 0; }
 .deck-slide .cell.role-caption .md p { display: block; margin: 0 0 var(--deck-text-paragraph-after); }
-.deck-slide .cell.role-caption .md .figlabel { display: none; }
+.deck-slide .cell.role-caption .md .figlabel { color: var(--deck-fg); }
 /* Admonition: a box with a bar on its left, the heading in bold above the body. The values of its
    category replace the `--deck-admonition-*` values on its element (`deck_settings_css`). It has the
    gap between cells below it, but not at the end of its cell, as a key message. */
