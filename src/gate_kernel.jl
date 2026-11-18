@@ -1771,10 +1771,15 @@ function export_figure(k::GateKernel, cellid::AbstractString, slot::Integer, mim
     catch
         return nothing
     end
-    field(k) = get(res, k, get(res, String(k), ""))
-    (res !== nothing && field(:held) isa Bool) || return nothing
-    b64 = String(field(:b64))
-    bytes = try; Base64.base64decode(b64); catch; return nothing; end
+    return _gate_figure(res)
+end
+# The answer of the worker tool `__slate_export_figure` as the result of `export_figure`, or `nothing`
+# when it is no answer. The gate carries the NamedTuple of the worker as it is; a dictionary with
+# string keys is read too.
+function _gate_figure(res)
+    field(k) = res isa AbstractDict ? get(res, String(k), "") : hasproperty(res, k) ? getproperty(res, k) : ""
+    field(:held) isa Bool || return nothing
+    bytes = try; Base64.base64decode(String(field(:b64))); catch; return nothing; end
     return (; held = field(:held), mime = String(field(:mime)), bytes, error = String(field(:error)),
             type = String(field(:type)))
 end
