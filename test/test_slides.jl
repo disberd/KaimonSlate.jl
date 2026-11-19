@@ -1321,16 +1321,16 @@ end
     @test only(v)["markdown"] == "````\n\"a ``` b\"\n````\n"   # the fence is longer than a run of backticks in the text
 end
 
-# The text of an output block has the size and the line height that the PDF draws: the code text of
-# the block (0.7 em of raw text, which is at 0.8 em), not the body text around it. Each more line
-# makes the block one line height taller.
+# The text of an output block has the size and the line height that the live deck draws: 0.7 em of
+# the body text around it (`.deck-slide .output`), not the body text. Each more line makes the block
+# one line height taller.
 @testset "layout source: an output block has the size and the line height of its text" begin
     nb = _hooknb("#%% md id=pt\nText.\n\n#%% code id=p1\nprintln(\"a\")\n1\n\n#%% code id=p5\n[1, 2, 3, 4]\n\n#%% code id=pe\nerror(\"x\")\n")
     deck = NS.exporter_deck(nb)
     p, o1, v1, v5, e = only(deck["slides"])["blocks"]
     L = deck["settings"]["text"]["line-height"]
     for b in (o1, v1, v5, e)
-        @test b["kind"] == "code" && b["size"] ≈ 0.56 * p["size"] && b["lineheight"] ≈ L * b["size"]
+        @test b["kind"] == "code" && b["size"] ≈ 0.7 * p["size"] && b["lineheight"] ≈ L * b["size"]
     end
     @test v5["box"]["h"] - v1["box"]["h"] ≈ 4 * v1["lineheight"]
 end
