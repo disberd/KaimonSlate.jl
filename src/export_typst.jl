@@ -768,7 +768,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       let a = MEDIASZ.at(src, default: (:))
       let (w, h) = (a.at("width", default: none), a.at("height", default: none))
       if a.at("block", default: false) and h == none and a.at("align", default: "center") == "center" {
-        return [#metadata((p: src, w: if w == none { none } else { mdlen(w) })) <slate-fig>]
+        return [#metadata((p: src, w: if w == none { none } else { mdlen(w) }, hook: a.at("hook", default: false))) <slate-fig>]
       }
       let im = image(src, alt: alt, width: mdlen(w), height: mdlen(h))
       if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), figrec(box(im))) } else { im }
@@ -922,14 +922,16 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // figure scale `f`, a figure is `f` of its full size, and at most `FIT.fig-cap` of the slide
     // height. Outside `fit` it is drawn at `f = 1`. The sized picture has the label `<slate-figure>`:
     // the rule for that label, after the deck template, gives it to `draw.figure`.
-    #let figureimg(p, width: none) = [#metadata((p: p, w: width)) <slate-fig>]
+    #let figureimg(p, width: none, hook: false) = [#metadata((p: p, w: width, hook: hook)) <slate-fig>]
     // The natural width in CSS px (1/96 in), which is `u` on the slide, of a PNG (its pixel width: a
     // browser does not read its density) or an SVG. A PDF figure (a Makie figure) shows on the live
-    // deck as a PNG at twice its size, so it fills its column: `none`.
-    #let natural-w(p, n) = if lower(p).ends-with(".png") {
+    // deck as a PNG at twice its size, so it fills its column: `none`. A picture of a figure hook
+    // (`hook`) has the size at which the live deck draws its value: the page size of a PDF or an SVG,
+    // and a PNG at `FigureContext.scale` (2) px for each px.
+    #let natural-w(p, n, hook: false) = if lower(p).ends-with(".png") {
       let b = read(p, encoding: none)
-      b.at(16) * 16777216 + b.at(17) * 65536 + b.at(18) * 256 + b.at(19)
-    } else if lower(p).ends-with(".svg") { n.width / (1in / 96) }
+      (b.at(16) * 16777216 + b.at(17) * 65536 + b.at(18) * 256 + b.at(19)) / if hook { 2 } else { 1 }
+    } else if hook or lower(p).ends-with(".svg") { n.width / (1in / 96) }
     // A video or audio file of markdown alone in its paragraph (Julia `_clip_typ`). A PDF cannot play
     // it, so it draws a placeholder in the box that the live deck gives the clip: a frame with a play
     // mark and `label`. A video of `w` × `h` px fills the width of its column at that aspect, up to the
@@ -944,7 +946,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #let drawfig(v, f) = layout(c => {
       let clip = v.at("clip", default: none)
       let n = if clip == none { measure(image(v.p)) } else { (width: clip.w * u, height: clip.h * u) }
-      let nw = if clip == none { natural-w(v.p, n) } else { none }
+      let nw = if clip == none { natural-w(v.p, n, hook: v.at("hook", default: false)) } else { none }
       let cw = if v.w != none { if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) } } else if nw == none { c.width } else { calc.min(c.width, nw * u) }
       let h = calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))
       align(center, figrec(if clip == none { box(image(v.p, height: h)) } else { clipframe(h * (n.width / n.height), h, clip.label) }))
@@ -1208,7 +1210,8 @@ end
 # value's captured figure (from its figure hook, else from its component), written into the project
 # dir on first ask, or `nothing`. Staging is the caller's job (only it has `dir`), so this closes over
 # it and registers the figure's width in `media.json` — the one place a markdown image can carry a size.
-# A hook figure is drawn for its column, so it takes the width of the column.
+# A hook figure is drawn at most as wide as its column, at the size of the live value: `media.json`
+# marks it with `hook`, so the preamble takes the size of the picture (`natural-w`).
 function _compfig_stager(c::Cell, dir::AbstractString, base::AbstractString, compfigs::_CompFigs, sizes)
     slotof = Dict(i => s for (s, i) in _component_slots(c))
     # A staged file has the number of its value in its name, so that an exporter finds the value.
@@ -1224,6 +1227,7 @@ function _compfig_stager(c::Cell, dir::AbstractString, base::AbstractString, com
             e = Dict{String,Any}("block" => true)
             pct = hook === nothing ? _comp_fig_width_pct(bytes, ext) : nothing
             pct === nothing || (e["width"] = (Float64(pct), "%"))
+            hook === nothing || (e["hook"] = true)
             sizes[fname] = e
         end
         return fname
@@ -1801,9 +1805,11 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
         data, ext = fig
         write(joinpath(dir, base * "." * ext), data)
         # A component keeps its on-screen proportions rather than filling the column like a figure
-        # the author sized for print; everything else takes `figureimg`'s default.
+        # the author sized for print; a hook picture has the size of the live value (`natural-w`);
+        # everything else takes `figureimg`'s default.
         pct = _has_component(o) && !hooked ? _comp_fig_width_pct(data, ext) : nothing
-        print(io, blk("figure", string("#figureimg(\"", base, ".", ext, "\"", pct === nothing ? "" : ", width: $(pct)%", ")\n");
+        opts = string(pct === nothing ? "" : ", width: $(pct)%", hooked ? ", hook: true" : "")
+        print(io, blk("figure", string("#figureimg(\"", base, ".", ext, "\"", opts, ")\n");
                       file = base * "." * ext))
     elseif !isempty(_echarts_specs(c))
         # A client-rendered chart that no browser tab was open to snapshot (headless export) —
