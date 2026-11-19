@@ -289,6 +289,7 @@
       r.el.querySelectorAll('[style*="view-transition-name"]').forEach(n => n.style.removeProperty('view-transition-name'));
       r.el.querySelectorAll('.deck-ctl-hidden').forEach(n => n.classList.remove('deck-ctl-hidden'));
       r.el.querySelectorAll('[style*="--fitw"]').forEach(n => n.style.removeProperty('--fitw'));
+      r.el.querySelectorAll('[style*="--fitk"]').forEach(n => { n.style.removeProperty('--fitk'); n.style.removeProperty('--fith'); });
       r.el.querySelectorAll('[data-deck-title]').forEach(m => { m.title = m.dataset.deckTitle; delete m.dataset.deckTitle; });
       _restoreCellCharts(r.el);
       if (r.slot.isConnected) r.slot.appendChild(r.el);
@@ -744,19 +745,27 @@
     return { s: lo, f: bestF(lo, tie(lo)), atFloor: false };
   }
   // Fit a slide body: set the text scale (`--shrink`) and the figure scale of its pictures (slide
-  // figures, image outputs, markdown images, the chart snapshots of a preview) and of its `charts`.
-  // At figure scale `f` a figure is `f` of the size that fills its column, capped at `FIT.figCap` of
-  // the slide height; a picture keeps its aspect, so `--fitw` (notebook.css) caps its width. True when
-  // the slide is at the floor.
+  // figures, image outputs, markdown images, the chart snapshots of a preview), of its HTML figures
+  // and of its `charts`. At figure scale `f` a figure is `f` of the size that fills its column, capped
+  // at `FIT.figCap` of the slide height; a picture keeps its aspect, so `--fitw` (notebook.css) caps
+  // its width. True when the slide is at the floor.
+  // An HTML figure is an HTML output that draws an SVG or a canvas and holds no table (a Plotly plot,
+  // a widget). Its size is its own, so it gets `--fitk`: notebook.css scales it, text included, as
+  // the slides PDF scales the picture of its figure hook. A transform keeps the layout synchronous,
+  // so the search measures each step, and the plot does not redraw: its hover and zoom map the
+  // pointer through the transform.
   function _fitBody(body, charts) {
     const slide = body.parentNode;
     _fitSettings(slide);
     const capH = FIT.figCap * slide.clientHeight;
     const figs = [...body.querySelectorAll('.slidefig, :is(.output, .md, .snap) :is(img, video)')]
       .filter(e => !e.closest('.slidefig > *') && getComputedStyle(e).position !== 'absolute');
+    const htmls = [...body.querySelectorAll('.output .disp.html:has(svg, canvas):not(:has(table))')]
+      .filter(e => !e.closest('.slidefig') && getComputedStyle(e).position !== 'absolute');
     const over = (s, f) => {
       slide.style.setProperty('--shrink', s);
       figs.forEach(e => e.style.removeProperty('--fitw'));
+      htmls.forEach(e => e.style.removeProperty('--fitk'));
       for (const c of charts) {
         const hw = (c.dom.parentElement && c.dom.parentElement.clientWidth) || c.natW;
         const k = f * Math.min(hw / c.natW, capH / c.natH);
@@ -769,6 +778,11 @@
       const full = figs.map(e => e.tagName === 'IMG' && e.naturalHeight && e.clientHeight
         ? Math.min(e.clientWidth, e.clientHeight * e.naturalWidth / e.naturalHeight) : e.clientWidth);
       figs.forEach((e, i) => { if (f < 1 || full[i] < e.clientWidth - 0.5) e.style.setProperty('--fitw', full[i] * f + 'px'); });
+      const nat = htmls.map(e => [e.scrollWidth, e.offsetHeight, e.clientWidth]);
+      htmls.forEach((e, i) => {
+        const [w, h, hw] = nat[i], k = f * Math.min(1, capH / h, hw / w);
+        if (h && k < 0.999) { e.style.setProperty('--fitk', k); e.style.setProperty('--fith', h + 'px'); }
+      });
       return body.scrollHeight - body.clientHeight;
     };
     const r = _fitSearch(over);

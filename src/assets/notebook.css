@@ -3251,6 +3251,12 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
   max-height: var(--figcap); height: auto; border-radius: var(--deck-figures-radius); }
 .deck-slide :is(.output, .md, .snap) :is(img, video) { max-width: 100%; }
 .deck-slide :is(.output, .md, .snap) :is(img, video)[style*="--fitw"] { max-width: min(100%, var(--fitw)) !important; }
+/* `--fitk` is the scale the fit pass gives an HTML figure (a Plotly plot, a widget), `--fith` its
+   height at scale 1. The box takes the scaled height and the content overflows it before the
+   transform, so the layout holds the scaled figure. A negative margin would collapse through the
+   output and leave its height. */
+.deck-slide .disp.html[style*="--fitk"] { transform: scale(var(--fitk)); transform-origin: top center;
+  height: calc(var(--fith) * var(--fitk)); }
 /* A video fills the width of its column at its own aspect, up to the figure cap: its natural size in
    px means nothing on a slide (a 64 px clip cannot be played, a 1080p clip is wider than the slide).
    `--clip-ar` is its aspect, which core.js sets once the metadata loads; 2 is the aspect of the
