@@ -911,9 +911,11 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // it a dictionary.
     #let metarest(m, rest) = if type(m) == dictionary { m + (rest: rest) } else { m + align(center, rest) }
     #let codeblock(s) = block(width: 100%, fill: $(p.codebg), inset: 21 * u, radius: 11 * u, text(size: $(_slide_code_size(code)), raw(block: true, lang: "julia", s)))
-    #let outblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.outbg), radius: 8 * u, text(size: 0.7em, fill: $(p.outfg), raw(s)))
-    #let valblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.valbg), radius: 8 * u, text(size: 0.7em, fill: $(p.valfg), raw(s)))
-    #let errblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.errbg), radius: 8 * u, text(size: 0.7em, fill: $(p.errfg), raw(s)))
+    // The text of an output is 0.7 em of the body, as the live `.deck-slide .output`. Typst sets raw
+    // text at 0.8 em of the text around it, so the size is 0.7 / 0.8 em.
+    #let outblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.outbg), radius: 8 * u, text(size: 0.875em, fill: $(p.outfg), raw(s)))
+    #let valblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.valbg), radius: 8 * u, text(size: 0.875em, fill: $(p.valfg), raw(s)))
+    #let errblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.errbg), radius: 8 * u, text(size: 0.875em, fill: $(p.errfg), raw(s)))
     // A figure is a marker that `fit` sizes for the slide. `width` is an upper bound on its drawn
     // width: a ratio of the column, or a length. With no `width`, the full size of a figure is the
     // natural size of the picture that the live deck shows (`natural-w`), at most its column. At

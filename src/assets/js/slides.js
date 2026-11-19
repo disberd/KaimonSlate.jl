@@ -762,10 +762,13 @@
         const k = f * Math.min(hw / c.natW, capH / c.natH);
         _sizeChart(c, c.natW * k, c.natH * k);
       }
-      if (f < 1) {
-        const full = figs.map(e => e.clientWidth);
-        figs.forEach((e, i) => e.style.setProperty('--fitw', full[i] * f + 'px'));
-      }
+      // The full width of a picture is the width it draws at: an image that the figure cap limits
+      // is the cap height times its aspect wide. Chrome gives an image that both `max-width: 100%`
+      // and `max-height` limit the full column width and stretches it, so such an image gets
+      // `--fitw` at `f = 1` too. The slides PDF sizes a picture the same way (`drawfig`).
+      const full = figs.map(e => e.tagName === 'IMG' && e.naturalHeight && e.clientHeight
+        ? Math.min(e.clientWidth, e.clientHeight * e.naturalWidth / e.naturalHeight) : e.clientWidth);
+      figs.forEach((e, i) => { if (f < 1 || full[i] < e.clientWidth - 0.5) e.style.setProperty('--fitw', full[i] * f + 'px'); });
       return body.scrollHeight - body.clientHeight;
     };
     const r = _fitSearch(over);
