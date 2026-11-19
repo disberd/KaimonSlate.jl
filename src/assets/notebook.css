@@ -3251,6 +3251,11 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
   max-height: var(--figcap); height: auto; border-radius: var(--deck-figures-radius); }
 .deck-slide :is(.output, .md, .snap) :is(img, video) { max-width: 100%; }
 .deck-slide :is(.output, .md, .snap) :is(img, video)[style*="--fitw"] { max-width: min(100%, var(--fitw)) !important; }
+/* A video fills the width of its column at its own aspect, up to the figure cap: its natural size in
+   px means nothing on a slide (a 64 px clip cannot be played, a 1080p clip is wider than the slide).
+   `--clip-ar` is its aspect, which core.js sets once the metadata loads; 2 is the aspect of the
+   300 × 150 box of a video with no known size. The slides PDF sizes the clip the same way (`drawfig`). */
+.deck-slide .md video { width: min(100%, calc(var(--figcap) * var(--clip-ar, 2))); }
 /* An audio clip has the size of the browser's audio controls at `--u` 1 (300 × 54 CSS pixels in
    Chrome), in `u`, so the slides PDF can give it the same box. */
 .deck-slide .md audio { width: calc(var(--u) * 300); height: calc(var(--u) * 54); }
@@ -3295,9 +3300,15 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
 .deck-slide .md pre { font-size: var(--deck-code-size); }
 /* Code takes `code.font` and `code.fill` of the deck settings, as in the slides PDF: all code text is in
    the code font, and the text blocks of an output (stdout, value, error) have the fill of the PDF
-   `outblock`, `valblock` and `errblock`. A code block of a markdown cell has no fill in the PDF. */
+   `outblock`, `valblock` and `errblock` and its text roles (dim, accent, ink). A code block and inline
+   code of a markdown cell have no fill in the PDF, so on a slide they lose the fill of the notebook
+   theme and take the deck text colour. */
 .deck-slide :is(.md pre, .output pre, .output .err) { font-family: var(--deck-code-font); }
 .deck-slide .output :is(.out, .val, .err) { background: var(--deck-code-fill); }
+.deck-slide .output .out { color: var(--deck-dim); }
+.deck-slide .output .val { color: var(--deck-accent); }
+.deck-slide .output .err { color: var(--deck-ink); }
+.deck-slide .md code { background: none; padding: 0; color: inherit; }
 /* A block quote has the gap between cells below it. `:where` keeps the rule below a deck template's
    own. */
 .deck-slide :where(.md, .markdown) blockquote { margin: 0 0 var(--deck-rhythm-cell-gap); }

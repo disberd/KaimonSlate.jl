@@ -370,6 +370,13 @@ function _assetMediaUrl(path) {
   if (a.url) return a.url;
   return a.data !== undefined ? 'data:' + (a.mime || 'application/octet-stream') + ';base64,' + a.data : null;
 }
+// The aspect of each video, for the slide rule that fills a column with it (notebook.css `--clip-ar`).
+// `loadedmetadata` does not bubble, so one capture listener sees every video, also the copies of the
+// deck sheet and print.
+document.addEventListener('loadedmetadata', e => {
+  const v = e.target;
+  if (v.tagName === 'VIDEO' && v.videoWidth && v.videoHeight) v.style.setProperty('--clip-ar', v.videoWidth / v.videoHeight);
+}, true);
 function _hydrateAssetMedia(root) {
   if (!root || !root.querySelectorAll) return;
   for (const el of root.querySelectorAll('[data-slate-src], [data-slate-poster]')) {

@@ -930,8 +930,9 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     } else if lower(p).ends-with(".svg") { n.width / (1in / 96) }
     // A video or audio file of markdown alone in its paragraph (Julia `_clip_typ`). A PDF cannot play
     // it, so it draws a placeholder in the box that the live deck gives the clip: a frame with a play
-    // mark and `label`. A video is a figure of natural size `w` × `h` (px, which is `u`). An audio file
-    // has the size of the live audio controls, 300 × 54 u, in the centre of its column.
+    // mark and `label`. A video of `w` × `h` px fills the width of its column at that aspect, up to the
+    // figure cap, as on the live deck (notebook.css `--clip-ar`). An audio file has the size of the live
+    // audio controls, 300 × 54 u, in the centre of its column.
     #let clipframe(w, h, label) = box(width: w, height: h, inset: 8 * u, clip: true, fill: settings.roles.dim.transparentize(80%), align(center + horizon, {
         let s = calc.min(0.4 * h, 64 * u)
         let mark = polygon(fill: settings.roles.dim, (0 * u, 0 * u), (0.87 * s, s / 2), (0 * u, s))
@@ -941,7 +942,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #let drawfig(v, f) = layout(c => {
       let clip = v.at("clip", default: none)
       let n = if clip == none { measure(image(v.p)) } else { (width: clip.w * u, height: clip.h * u) }
-      let nw = if clip == none { natural-w(v.p, n) } else { clip.w }
+      let nw = if clip == none { natural-w(v.p, n) } else { none }
       let cw = if v.w != none { if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) } } else if nw == none { c.width } else { calc.min(c.width, nw * u) }
       let h = calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))
       align(center, figrec(if clip == none { box(image(v.p, height: h)) } else { clipframe(h * (n.width / n.height), h, clip.label) }))
@@ -1646,8 +1647,8 @@ end
 
 # The Typst text that draws the video or audio file `clip` of a figure block in place of its markdown
 # file `file` (the alt text): `clipfig` of the slides preamble. The label is the alt text, else the file
-# name. A video has the size of the file, else 300 × 150, the size that the live deck gives a video
-# with no known size (the default size of a CSS replaced element).
+# name. A video gives the aspect of the file, else that of 300 × 150, the size that the live deck gives a
+# video with no known size (the default size of a CSS replaced element); `drawfig` fills the column with it.
 function _clip_typ(clip::AbstractString, text::AbstractString, file::AbstractString)
     audio = startswith(_site_ctype(clip), "audio/")
     w, h = audio ? (0, 0) : something(_mp4_size(clip), (300, 150))

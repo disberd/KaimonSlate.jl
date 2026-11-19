@@ -1412,9 +1412,10 @@ function _mp4(w, h)
 end
 
 # A markdown video or audio file alone in its paragraph has the box of the live deck, in the slides PDF
-# and in the deck value: a video its natural size (the `tkhd` box of the file), or 300 × 150 when the
-# file gives none; an audio file the 300 × 54 u of the live audio controls. Each is in the centre of its
-# column. The PDF draws a placeholder with the alt text, else the file name.
+# and in the deck value: a video fills the width of its column at the aspect of the file (its `tkhd`
+# box), or 2:1 when the file gives none, up to the figure cap; an audio file has the 300 × 54 u of the
+# live audio controls. Each is in the centre of its column. The PDF draws a placeholder with the alt
+# text, else the file name.
 @testset "slides PDF: a video or audio file has the box of the live deck" begin
     root = mktempdir()
     write(joinpath(root, "wide.mp4"), _mp4(1280, 720))
@@ -1427,8 +1428,10 @@ end
                  "#%% md id=n\n## N\n\n![](nosize.mp4)\n\n#%% md id=a\n## A\n\n![The sound](talk.mp3)\n")
     nb.report.meta["assetbase"] = root
     boxes = [only(b["box"] for b in s["blocks"] if b["kind"] == "figure") for s in NS.exporter_deck(nb)["slides"]]
-    # The column of a markdown cell of the base deck at 16:9 is 1648 u wide, from x = 136.
-    want = [(320, 1280, 720), (640, 640, 480), (810, 300, 150), (810, 300, 54)]
+    # The column of a markdown cell of the base deck at 16:9 is 1648 u wide, from x = 136. The figure cap
+    # is 0.7 of the 1080 u slide height: each video here is 756 u high.
+    want = [(136 + (1648 - 1344) / 2, 1344, 756), (136 + (1648 - 1008) / 2, 1008, 756),
+            (136 + (1648 - 1512) / 2, 1512, 756), (810, 300, 54)]
     @test all(isapprox.([b[k] for b in boxes, k in ("x", "w", "h")], [w[i] for w in want, i in 1:3]; atol = 0.01))
     f = tempname() * ".pdf"
     write(f, NS.export_pdf(nb; layout = "slides"))
