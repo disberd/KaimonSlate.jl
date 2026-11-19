@@ -235,6 +235,9 @@ were written when they went out. They are marked.
   the live deck. It was 0.56 em.
 - On the live deck an image that the figure cap limits keeps its aspect: it is the cap height times
   its aspect wide, and the fit makes it smaller from there. Chrome stretched it to the column width.
+- On the live deck the fit scales an HTML output that draws an SVG or a canvas (a Plotly plot, a
+  widget) as a figure, text included, up to the figure cap. Such an output kept its own size, so a
+  plot taller than the cap did not shrink. The plot keeps its hover and zoom.
 - On the live deck, a heading that is not the first block of its cell has `rhythm.heading-above`
   above it. A block quote has no indent and the gap between cells below it. A nested list has the item
   spacing above and below it; it had 0.6 em below it. The padding of a markdown cell is in slide units,
