@@ -2964,21 +2964,6 @@ function __slate_figure_vector(; cell::String = "")
     return bytes === nothing ? (; ok = false) : (; ok = true, b64 = Base64.base64encode(bytes))
 end
 
-"""The picture of the figure that output `slot` of `cell` showed, from its figure hook (`figure_export`):
-`(; held, mime, b64, error, type)`. The context fields are those of `SlateExtensionsBase.FigureContext`;
-`max_height` 0 means none (a document). `held` is false when the worker keeps no value for the output;
-`mime` is empty when the hook declines or throws (`error` then holds the first line of the error)."""
-function __slate_export_figure(; cell::String = "", slot::Int = 0, mimes::Vector = Any[], width::Float64 = 0.0,
-                               max_height::Float64 = 0.0, scale::Float64 = 2.0, slate_palette::String = "",
-                               dark::Bool = false)
-    _FIGURE_HOOK_OK || return (; held = false, mime = "", b64 = "", error = "", type = "")
-    ctx = SlateExtensionsBase.FigureContext(; width, max_height = max_height > 0 ? max_height : nothing, scale,
-                                            slate_palette, dark)
-    r = figure_export(cell, slot, String[String(m) for m in mimes], ctx)
-    return (; held = r.held, mime = get(r, :mime, ""), b64 = haskey(r, :bytes) ? Base64.base64encode(r.bytes) : "",
-            error = get(r, :error, ""), type = get(r, :type, ""))
-end
-
 function tools()
     return KaimonGate.GateTool[
         KaimonGate.GateTool("__slate_cluster_status", __slate_cluster_status),
@@ -2988,6 +2973,7 @@ function tools()
         KaimonGate.GateTool("__slate_rerender_fig", __slate_rerender_fig),
         KaimonGate.GateTool("__slate_figure_vector", __slate_figure_vector),
         KaimonGate.GateTool("__slate_export_figure", __slate_export_figure),
+        KaimonGate.GateTool("__slate_export", __slate_export),
         KaimonGate.GateTool("__slate_running", __slate_running),
         KaimonGate.GateTool("__slate_run_chunks", __slate_run_chunks),
         KaimonGate.GateTool("__slate_chunk_status", __slate_chunk_status),

@@ -255,7 +255,9 @@ function _paletteIsDark(vars) {
 }
 // `fig` holds the size of the figure that the hub computed from the columns of the page, as for a Julia
 // figure hook (SlateExtensionsBase `FigureContext`): `width` of its column in CSS px (the slide unit on a
-// slide), `max_height` (the figure cap on a slide, `null` in a document) and `scale` for a raster.
+// slide), `max_height` (the figure cap on a slide, `null` in a document), `scale` for a raster,
+// `text_size` (the body text size of the page in the same px) and `roles` (the colour roles as hex, by
+// role name).
 async function _slateComponentFig(reqid, cellId, slot, theme, fig) {
   const out = { reqid, ok: false, svg: '', png: '', err: '' };
   try {
@@ -269,7 +271,8 @@ async function _slateComponentFig(reqid, cellId, slot, theme, fig) {
     const impl = (window.slateWidgets || {})[kind];
     if (el && impl && typeof impl.exportFigure === 'function') {
       const vars = (typeof _themeVarsFor === 'function') ? _themeVarsFor(theme) : {};
-      const size = { width: (fig && fig.width) || null, max_height: (fig && fig.max_height) || null, scale: (fig && fig.scale) || 2 };
+      const size = { width: (fig && fig.width) || null, max_height: (fig && fig.max_height) || null, scale: (fig && fig.scale) || 2,
+                     text_size: (fig && fig.text_size) || null, roles: (fig && fig.roles) || {} };
       const r = await impl.exportFigure(el, { params: props, kind, theme, vars, dark: _paletteIsDark(vars), ...size });
       if (r && r.svg) out.svg = String(r.svg);
       else if (r && r.png) out.png = String(r.png);

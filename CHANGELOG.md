@@ -18,9 +18,11 @@ were written when they went out. They are marked.
   worker manifest carries only a hash of the template. The hub keeps the template for each notebook and
   asks the worker for the bytes only when the hash changes, so 1 to 3 MB of template does not cross the
   gate on each run. A notebook that pins an older `SlateExtensionsBase` has no hash and no template, and
-  still gets every other manifest field. This needs a `SlateExtensionsBase` newer than 0.11.3.
+  still gets every other manifest field. This needs `SlateExtensionsBase` 0.11.4, and KaimonSlate
+  now requires at least that version.
 - The PDF deck export applies the deck template of the notebook. The template source goes after the
-  default Typst preamble, so a `#let slide` in it replaces the default one. The template files are
+  default Typst preamble, so a `#let slide` in it replaces the default one; the default one stays
+  callable as `base-slide`, and the default `fit` as `base-fit`. The template files are
   written into the Typst project directory, which is the `--root` of the compile. When the project
   has a `fonts` directory, Typst gets `--font-path` for it. The Typst bundle export carries the same
   files. To rebuild a deck with template fonts from an unpacked bundle, run
@@ -65,15 +67,55 @@ were written when they went out. They are marked.
   with a `SlateExtensionsBase.slate_export_figure(io, mime, x, ctx)` method for each format it can
   write. The export asks for PDF, then SVG, then PNG, on the worker that ran the cell, so it needs no
   open tab. `ctx` (`FigureContext`) gives the width of the figure's column in px (1 px = 1 u on a
-  slide, 1/96 inch in a document), the figure cap on a slide, the raster scale and the Slate palette of
-  the figures. A method that declines or throws lets the export take the figure as before; a throw
-  adds an export warning. The worker keeps the value of each output whose type has such a method,
-  until the cell runs again or is deleted. A notebook opened from its stored outputs and not run has
-  no values: the export warns "N figures from stored output". A component's `exportFigure` gets the
-  same `width`, `max_height` and `scale` in its `ctx`, beside its old keys. A deck template states
-  the width of its body with `provide_deck_template!(…; body_width)`, in `u`.
+  slide, 1/96 inch in a document), the figure cap on a slide, the raster scale, the Slate palette of
+  the figures, the body text size in the same px (`text_size`: 34 u on a base slide) and the colour
+  roles as hex (`roles`: on a slide, those of the deck settings of the notebook). A method that
+  declines or throws lets the export take the figure as before; a throw adds an export warning. The
+  worker keeps the value of each output whose type has such a method, until the cell runs again or
+  is deleted. A cell that the hub restored from the memo, or that a notebook opened from its stored
+  outputs has not run, has no value. A run of the notebook restores such a cell from the memo again,
+  so the export warning names the cells and says to run each of them with its ▶ button (a forced
+  run). A component's `exportFigure` gets the same `width`, `max_height`, `scale`, `text_size` and
+  `roles` in its `ctx`, beside its old keys. A deck template states the width of its body with
+  `provide_deck_template!(…; body_width)`, in `u`.
 - The deck setting `text.list-marker` sets the colour of list bullets, on the live deck and in the
   PDF deck. Its base value is the role `accent`.
+- Regions of a slide. The base Typst preamble of the PDF deck gives `region(name, body)`: a deck
+  template puts each region that it draws from notebook content in it (`"title"`, `"subtitle"`,
+  `"byline"`, `"abstract"`). The base title slide and the title of each base slide use it. On the
+  live deck `.slide-title` has `data-deck-region="title"`, and the subtitle and the byline of a
+  `title` cell and the text of an `abstract` cell are in `<slate-subtitle>`, `<slate-byline>` and
+  `<slate-abstract>` elements. The elements make no box outside a slide.
+- The export dialog shows a warning for each region of a PDF deck that is out of its area, or over
+  another region or a block.
+- The PDF deck can give the box, the text size and the line height of each block and of each region.
+  A compile of the Typst project with `--input slate-marks=1` writes them as metadata under the label
+  `<slate>`, in the slide unit `u`: read them with `typst query doc.typ "<slate>" --input slate-marks=1`.
+  A compile with no such input writes none, and the pages are the same.
+- The deck setting `table.rule-width` sets the width of the rule under each table row, on the live
+  deck and in the PDF deck. Its base value is 2 u. With `0u` the rows have no rule and take no room
+  for it.
+- Exporters. A package that a notebook loads can add an export format of the slide deck with
+  `SlateExtensionsBase.register_exporter!(f, name; label, ext, mime, figure_mimes)`. The export dialog
+  shows `label` next to the built-in formats, the route `/api/<notebook>/export/<name>` gives the file,
+  and so does the new tool `export(notebook; format, path)`. The hub compiles the slides PDF with its
+  marks, builds the deck value (deck title, slide size and ratio, deck settings in the palette of the Theme picker,
+  slides with their layout, title, notes, transition, regions and blocks, each block with its markdown
+  (the `text/plain` value of a code cell as a fenced code block) or its figure forms, its box, its text
+  size and its line height; regions with their text, box, text
+  size and line height), and the worker calls `f(deck)` through the gate tool
+  `__slate_export`. The hub checks the name (`^[a-z0-9][a-z0-9-]{0,31}$`), the file extension
+  (`^[a-z0-9]{1,8}$`) and each MIME type (`type/subtype`), and drops an exporter that fails with a
+  warning in its log. The route serves only registered names (404 for another name), passes nothing of
+  its query to the exporter, and refuses a file of more than 256 MiB. An exporter can give export
+  warnings with its file (`f` returns `(bytes, warnings)`). The export warnings of the slides PDF, then
+  those of the exporter, show in the dialog, in the header `X-Slate-Warnings` and in the tool answer.
+- A markdown video or audio file of the project (`![a clip](clip.mp4)`, `![](talk.mp3)`) reaches an
+  exporter as a figure block with one form: the bytes of the file under the MIME type of its
+  extension, when the `figure_mimes` of the exporter has that type. The markdown of the block holds the
+  alt text. A file larger than 256 MiB gives no form and an export warning; a missing file gives the
+  warning of a missing image. The box of the block is the box that the live deck gives the clip (see
+  Visible changes).
 
 ### Changed
 
@@ -123,6 +165,12 @@ were written when they went out. They are marked.
   of a markdown cell. A markdown cell and an output add no space above or below them: the gap
   between the cells of a slide is the only space between them. A cell that held only the slide
   heading is not drawn once the heading is in the slide title.
+- A `Markdown.MD` value of a code cell (`md"…"`, `Markdown.parse`, `@doc`) now shows its markdown
+  form, rendered as a markdown cell is, on the live deck, in the notebook and in the HTML export. It
+  takes the markdown look of Slate in place of the HTML of Julia's `Markdown`, and its blocks get their
+  kinds: a block quote in it is a key message, a paragraph that is all emphasis a caption, and its
+  tables and admonitions take the deck settings on a slide, as in the PDF deck. A `[name](@ref)` link
+  of a docstring stays a link to the docs panel.
 - The export dialog shows a warning for each slide of a PDF deck that does not fit at the smallest
   text size. The PDF is written all the same.
 - In the PDF deck, the slide unit `u` is 1/1920 of the page width at 16:9 and 16:10 and 1/1440 at
@@ -153,6 +201,13 @@ were written when they went out. They are marked.
   the bottom right, and the title below the 12 u padding of the live title. Headings take the sizes
   of the deck settings and the weights of the live deck, and a level-2 heading has the accent bar of
   the live deck under it.
+- The base title slide of the PDF deck (from a `title` cell) takes the sizes and the spacing of the
+  live title slide. The title is at 0.94 em of the body text (it was 2.4 em), in bold 800. The
+  subtitle is at the size of its heading level in the deck settings, in the dim colour (it was
+  1.4 em in the title colour). The byline is at the body size in the text colour (it was 0.9 em,
+  dimmed). The gaps between them are the margins of the live title slide.
+- On the live deck, the title and the subtitle of the title slide (from a `title` cell) are centred on
+  the slide, as in the PDF deck. They started at the left edge of the column of the title slide.
 - The PDF deck spaces lines and blocks as the live deck does. Each line has the line box of CSS: the
   ascender to the descender of the font, as Typst measures it, with half of the rest of the line
   height above and below. Paragraphs, lists and headings take the spacing of the deck settings, the
@@ -161,13 +216,28 @@ were written when they went out. They are marked.
   markdown cell centres its cells, as on the live deck. The default `slide` draws its body in the new
   `base-rhythm(body)`; a deck template that draws its own pages keeps its own rules, or calls
   `base-rhythm` around its `fit`.
+- In the PDF deck a top-level list item gets the marker `•`, a nested item `◦` and the next level
+  `▪`, as on the live deck. A top-level item got `▪`.
+- On the live deck, code takes the `[code]` deck settings, as in the PDF deck: code text is set in
+  `code.font`, and the stdout, value and error blocks of an output are on a band of `code.fill`. An
+  error block loses its red tint on a slide.
+- In the PDF deck the value, error and parameter blocks take `code.fill`, as the code and output
+  blocks do. They lose their own tints.
 - Base tables, on the live deck and in the PDF deck, take the `[table]` deck settings: the full width
   of their column, text at 0.8 em, a line height of 1.2, padding in em, a bold header row on a fill
   and a rule under each row. In the PDF deck the column widths follow the automatic table layout of
   CSS.
 - In the PDF deck a figure with no width of its own is drawn at its natural size (1 px of the picture
   is 1 u of the slide), at most as wide as its column, as on the live deck. It used to fill its
-  column.
+  column. A picture from a figure hook has the size of the live value: the page size of its PDF or
+  SVG, its PNG at half its pixel width.
+- In the PDF deck the text of an output (printed text, a value, an error) is 0.7 em of the body, as on
+  the live deck. It was 0.56 em.
+- On the live deck an image that the figure cap limits keeps its aspect: it is the cap height times
+  its aspect wide, and the fit makes it smaller from there. Chrome stretched it to the column width.
+- On the live deck the fit scales an HTML output that draws an SVG or a canvas (a Plotly plot, a
+  widget) as a figure, text included, up to the figure cap. Such an output kept its own size, so a
+  plot taller than the cap did not shrink. The plot keeps its hover and zoom.
 - On the live deck, a heading that is not the first block of its cell has `rhythm.heading-above`
   above it. A block quote has no indent and the gap between cells below it. A nested list has the item
   spacing above and below it; it had 0.6 em below it. The padding of a markdown cell is in slide units,
@@ -191,9 +261,40 @@ were written when they went out. They are marked.
 - The export dialog says that the deck template fixes the colours only when no value of the merged
   deck settings, admonition category accents included, follows the Slate palette. The warning about a
   fixed `roles.surface` also names the admonition accents that follow the Slate palette.
+- The PDF deck draws the other lines of a `title` cell on the title slide, after the byline. It
+  drew only the title, the first subheading and the first paragraph. A byline of several lines is
+  one byline now, not its first line only.
+- The Typst project of a PDF deck has one markdown file for each block of a cell (`s2f1b1.md`,
+  `s2f1b2.md`), not one for each cell, and each block is in a `#blk(…)[…]` call. The markdown output
+  of a code cell (a `Markdown.MD` value) splits into blocks by the same rules. The pages do not
+  change.
+- In the PDF deck a markdown video or audio file alone in its paragraph (`![a clip](clip.mp4)`) has the
+  box that the live deck gives it, with a placeholder in it: a frame, a play mark and the alt text,
+  else the file name. It showed one line of alt text. A video has its natural size, from the `tkhd`
+  box of an MP4 or QuickTime file (300 × 150 when the file gives none, as on the live deck), under the
+  width rule, the figure cap and the fit of a picture. An audio file is 300 × 54 u. An exporter gets
+  this box as the box of the figure block. The document PDF still shows the alt text.
+- An audio file from image syntax (`![](talk.mp3)`) alone in its paragraph shows its controls in the
+  notebook and on the live deck. The rule that centres a figure gave it `height: auto`, so it was 0
+  high and the controls did not show. On the live deck it is 300 × 54 u, the size of the audio
+  controls of Chrome at `--u` 1, so the PDF deck can give it the same box.
 
 ### Fixed
 
+- A markdown image whose file is not in the project (a missing file, a file outside the project, a
+  remote address) does not stop the PDF export, the PDF deck or an exporter now. Typst stopped the
+  whole compile on it with "file not found". The export shows the alt text of the image in its place,
+  or its address when it has no alt text, and gives an export warning with the cell and the image. An
+  image in code stays code.
+- A cell on a slide that stopped with an error, and a `{{ }}` on a slide that threw, give an export
+  warning with the slide, the cell and the first line of the error, in the PDF deck and for an
+  exporter. The export left the value of the `{{ }}` out with no message before, so a slide could
+  lose its text silently.
+- The box of a picture that is narrower than its column, in the layout of the slides PDF and in the deck
+  value of an exporter, is the drawn picture. It had the x of the left edge of the column, and a
+  picture with a height of its own (`{height=…}`) had the y of its bottom edge. An exporter now puts
+  such a picture in the centre of its column, where the live deck and the PDF draw it. The PDF does
+  not change.
 - `?deck=sheet`, `?deck=print` and `?deck=S.K` wait for the cells' images before they copy a slide.
   A markdown cell or an output with an image fills in only after the image decodes, so a capture
   taken at once showed the cell empty: a contact sheet with no figures and no markdown images.

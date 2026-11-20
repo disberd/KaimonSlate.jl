@@ -1,6 +1,6 @@
 // Asserts the `ctx` that a component's `exportFigure` gets for a PDF export: the keys it always had
-// (`params`, `kind`, `theme`, `vars`, `dark`) and the size fields of the figure from the hub (`width`,
-// `max_height`, `scale`).
+// (`params`, `kind`, `theme`, `vars`, `dark`) and the fields of the figure from the hub (`width`,
+// `max_height`, `scale`, `text_size`, `roles`).
 //
 //   node test/js/component_fig_ctx.mjs      # exit 0 = pass, 1 = mismatch
 import { readFileSync } from 'node:fs';
@@ -29,10 +29,12 @@ const eq = (a, b, what) => {
   if (JSON.stringify(a) !== JSON.stringify(b)) { console.error(`component ctx: ${what}\n  got:  ${JSON.stringify(a)}\n  want: ${JSON.stringify(b)}`); bad++; }
 };
 
-await window._slateComponentFig('r1', 'c1', 0, 'midnight', { width: 816, max_height: 756, scale: 2 });
-eq(Object.keys(got).sort(), ['dark', 'kind', 'max_height', 'params', 'scale', 'theme', 'vars', 'width'], 'the keys');
+await window._slateComponentFig('r1', 'c1', 0, 'midnight',
+  { width: 816, max_height: 756, scale: 2, text_size: 34, roles: { fg: '#d6dae8', accent: '#7aa2ff' } });
+eq(Object.keys(got).sort(), ['dark', 'kind', 'max_height', 'params', 'roles', 'scale', 'text_size', 'theme', 'vars', 'width'], 'the keys');
 eq([got.params, got.kind, got.theme], [{ n: 3 }, 'demo', 'midnight'], 'the old keys keep their values');
 eq([got.width, got.max_height, got.scale], [816, 756, 2], 'the size of the figure');
+eq([got.text_size, got.roles], [34, { fg: '#d6dae8', accent: '#7aa2ff' }], 'the text size and the colour roles');
 eq([posted.ok, posted.svg], [true, '<svg/>'], 'the picture goes back to the hub');
 
 // A document has no figure cap: `max_height` is null.

@@ -710,7 +710,8 @@ end
 @testset "the worker keeps figure-hook values by (cell, slot) until a run or a delete" begin
     RE_H = ReportEngine
     ctx = RE_H.SlateExtensionsBase.FigureContext(; width = 840.0, max_height = 756.0, scale = 2.0,
-                                                 slate_palette = "midnight", dark = true)
+                                                 slate_palette = "midnight", dark = true, text_size = 34.0,
+                                                 roles = Dict{String,String}())
     svg(cell, slot = 0) = (f = RE_H.figure_export(cell, slot, ("application/pdf", "image/svg+xml"), ctx);
                            f.held && !isempty(f.mime) ? String(f.bytes) : f.held)
     m = Module(:HookFigCell)
@@ -741,6 +742,26 @@ end
     end
     @test RE_H._figure_held("ib1") === nothing && RE_H._figure_held("ib2") !== nothing
     foreach(i -> RE_H._figure_forget!("hb$i"), 1:RE_H._FIGURE_KEEP + 1)
+end
+
+# `export_figure` of a gate kernel reads the answer of the worker tool `__slate_export_figure`. The
+# worker gives a NamedTuple `(; held, mime, b64, error, type)`, and the gate carries it as it is.
+@testset "the answer of the worker's figure tool gives the picture" begin
+    RE_G = ReportEngine
+    m = Module(:GateFigCell)
+    Core.eval(m, :(const HookFig = $HookFig))
+    run_capture(m, "HookFig.Plot(3)", "cell:gf")
+    ctx = RE_G.SlateExtensionsBase.FigureContext(; width = 500.0, max_height = nothing, scale = 2.0,
+                                                 slate_palette = "", dark = false, text_size = 14.0,
+                                                 roles = Dict{String,String}())
+    f = RE_G.figure_export("gf", 0, ["image/svg+xml"], ctx)
+    answer = (; held = f.held, mime = f.mime, b64 = RE_G.Base64.base64encode(f.bytes), error = "", type = "")
+    r = RE_G._gate_figure(answer)
+    @test r.held && r.mime == "image/svg+xml" && String(copy(r.bytes)) == "<svg width=\"500.0\">3</svg>"
+    @test RE_G._gate_figure(Dict{String,Any}(String(k) => v for (k, v) in pairs(answer))) == r
+    @test RE_G._gate_figure((; held = false, mime = "", b64 = "", error = "", type = "")).held == false
+    @test RE_G._gate_figure(nothing) === nothing && RE_G._gate_figure((; ok = false)) === nothing
+    RE_G._figure_forget!("gf")
 end
 
 @testset "the kind table" begin

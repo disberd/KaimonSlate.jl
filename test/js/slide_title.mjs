@@ -51,6 +51,7 @@ const setup = () => {
   _hoistTitle(slide, cell, '## Heading\n\ntext');
   const titles = slide.querySelectorAll('.slide-title');
   ok(titles.length === 1, 'one .slide-title');
+  ok(titles[0].dataset.deckRegion === 'title', '.slide-title is the title region');
   ok(titles[0].parentElement === slide && !body.contains(titles[0]), '.slide-title sits outside the body');
   ok(slide.children.indexOf(titles[0]) < slide.children.indexOf(body), '.slide-title comes before the body');
   ok(titles[0].children[0] === h, 'the heading moved, not cloned');

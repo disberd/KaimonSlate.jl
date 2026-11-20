@@ -27,9 +27,21 @@ Two things to know about the published GitHub releases for this package:
   does for a file-backed front-end script, so an edit reaches Slate without a worker restart.
 - **`slate_export_figure(io, mime, x, ctx)`** and **`FigureContext`**: the figure export hook. A package
   adds one method for each MIME that it can write for its type and returns `true`; the default method
-  returns `false` (decline). `FigureContext` holds `width`, `max_height`, `scale`, `slate_palette` and
-  `dark`; a later version can add fields. `provide_deck_template!` takes `body_width`, the width of the
-  template's content body in slide units; `deck_template()` returns it, and it is part of the hash.
+  returns `false` (decline). `FigureContext` holds `width`, `max_height`, `scale`, `slate_palette`,
+  `dark`, `text_size` (the body text size of the page in px, default 16) and `roles` (the colour roles
+  as hex, default none). A later version can add fields, each with a default, so a package test that
+  makes a context from the first five fields keeps working. `provide_deck_template!` takes
+  `body_width`, the width of the template's content body in slide units; `deck_template()` returns
+  it, and it is part of the hash.
+- **`register_exporter!(f, name; label, ext, mime, figure_mimes = ["image/png"])`**: an export format of
+  a slide deck. Slate builds the deck value, a `Dict{String,Any}` of plain Base types that the docstring
+  documents key by key (deck title, slide size and ratio, deck settings, slides with their regions and blocks, the
+  boxes, text sizes and line heights of the slides PDF, figure forms in the order of `figure_mimes`), and calls
+  `f(deck)` on the worker; `f` gives the bytes of the file, or the tuple `(bytes, warnings)` with its
+  export warnings as a `Vector{String}`. `extension_manifest()` gains an `exporters`
+  field with the name, label, extension and MIME types of each exporter. A video or audio type in
+  `figure_mimes` asks for the video and audio files of markdown: each one is a figure with the bytes of
+  the file as its form.
 
 ## [0.11.3] - 2026-11-05
 

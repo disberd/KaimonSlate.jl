@@ -1764,17 +1764,25 @@ when the kernel keeps no value for the output, and `mime` is empty when the hook
 """
 function export_figure(k::GateKernel, cellid::AbstractString, slot::Integer, mimes, ctx)
     res = try
-        _tool(k, "__slate_export_figure", Dict{String,Any}("cell" => String(cellid), "slot" => Int(slot),
-              "mimes" => String[String(m) for m in mimes], "width" => Float64(ctx.width),
-              "max_height" => Float64(something(ctx.max_height, 0.0)), "scale" => Float64(ctx.scale),
-              "slate_palette" => String(ctx.slate_palette), "dark" => ctx.dark); timeout = _eval_timeout())
+        _tool(k, "__slate_export_figure", _export_figure_args(cellid, slot, mimes, ctx); timeout = _eval_timeout())
     catch
         return nothing
     end
-    field(k) = get(res, k, get(res, String(k), ""))
-    (res !== nothing && field(:held) isa Bool) || return nothing
-    b64 = String(field(:b64))
-    bytes = try; Base64.base64decode(b64); catch; return nothing; end
+    return _gate_figure(res)
+end
+# The arguments of the worker tool `__slate_export_figure` (capture.jl) for `export_figure`.
+_export_figure_args(cellid, slot, mimes, ctx) =
+    Dict{String,Any}("cell" => String(cellid), "slot" => Int(slot), "mimes" => String[String(m) for m in mimes],
+                     "width" => Float64(ctx.width), "max_height" => Float64(something(ctx.max_height, 0.0)),
+                     "scale" => Float64(ctx.scale), "slate_palette" => String(ctx.slate_palette), "dark" => ctx.dark,
+                     "text_size" => Float64(ctx.text_size), "roles" => Dict{String,String}(ctx.roles))
+# The answer of the worker tool `__slate_export_figure` as the result of `export_figure`, or `nothing`
+# when it is no answer. The gate carries the NamedTuple of the worker as it is; a dictionary with
+# string keys is read too.
+function _gate_figure(res)
+    field(k) = res isa AbstractDict ? get(res, String(k), "") : hasproperty(res, k) ? getproperty(res, k) : ""
+    field(:held) isa Bool || return nothing
+    bytes = try; Base64.base64decode(String(field(:b64))); catch; return nothing; end
     return (; held = field(:held), mime = String(field(:mime)), bytes, error = String(field(:error)),
             type = String(field(:type)))
 end
@@ -1782,6 +1790,34 @@ function export_figure(::Kernel, cellid::AbstractString, slot::Integer, mimes, c
     r = figure_export(cellid, slot, mimes, ctx)
     return (; held = r.held, mime = get(r, :mime, ""), bytes = get(r, :bytes, UInt8[]), error = get(r, :error, ""),
             type = get(r, :type, ""))
+end
+
+"""
+    run_exporter(kernel, name, deck; maxbytes) -> NamedTuple
+
+The file that the exporter `name` (`SlateExtensionsBase.register_exporter!`) of the kernel's packages
+makes of the deck value `deck`, through the worker tool `__slate_export`, as `(; bytes, warnings)`:
+`warnings` are the export warnings of the exporter, a `Vector{String}`. Throws an `ErrorException`
+with the reason when the exporter throws, when it gives more than `maxbytes` bytes, or when the round
+trip fails. The round trip has the timeout of an evaluation (`_eval_timeout`).
+"""
+function run_exporter(k::GateKernel, name::AbstractString, deck; maxbytes::Integer)
+    res = _tool(k, "__slate_export", _export_args(name, deck, maxbytes); timeout = _eval_timeout())
+    return _gate_export(res, maxbytes)
+end
+# The arguments of the worker tool `__slate_export` (widgets.jl) for `run_exporter`.
+_export_args(name, deck, maxbytes) = Dict{String,Any}("name" => String(name), "deck" => deck, "maxbytes" => Int(maxbytes))
+run_exporter(::Kernel, name::AbstractString, deck; maxbytes::Integer) = _gate_export(exporter_wire(name, deck, maxbytes), maxbytes)
+
+# The file and the export warnings of an answer of `__slate_export` (`exporter_wire`). The hub checks
+# the size again: it does not trust the worker for it.
+function _gate_export(res, maxbytes::Integer)
+    field(k) = res isa AbstractDict ? get(res, String(k), nothing) : hasproperty(res, k) ? getproperty(res, k) : nothing
+    field(:ok) === true || error("the exporter failed: ", something(field(:error), "no answer from the worker"))
+    bytes = field(:bytes)
+    bytes isa AbstractVector{UInt8} || error("the exporter gave no bytes")
+    length(bytes) > maxbytes && error("the exporter gave $(length(bytes)) bytes, more than the limit of $maxbytes bytes")
+    return (; bytes = Vector{UInt8}(bytes), warnings = String[String(w) for w in something(field(:warnings), String[])])
 end
 
 # Fetch a byte asset an extension registered on the WORKER via `provide_served_asset!` (keyed by content

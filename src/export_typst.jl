@@ -113,7 +113,8 @@ function _warm_component_figs!(nb::LiveNotebook, figs::_CompFigs, geo; theme::Ab
         progress === nothing || (try; progress(cid); catch; end)
         ctx = _figure_ctx(geo, cid, i)
         got = try
-            request_live_compfig(nb, cid, slot, theme; width = ctx.width, max_height = ctx.max_height, scale = ctx.scale)
+            request_live_compfig(nb, cid, slot, theme; width = ctx.width, max_height = ctx.max_height, scale = ctx.scale,
+                                 text_size = ctx.text_size, roles = ctx.roles)
         catch
             nothing
         end
@@ -152,48 +153,98 @@ _hook_output(o) = o !== nothing && any(ch -> ch.mime == ReportEngine._FIGURE_HOO
 
 # The size of a figure for an export: `width` maps `(cell id, slot)` to the width of the column of the
 # figure in px, `body` is the width of a figure that is not in it, `max_height` the figure cap (`nothing`
-# in a document) and `palette` the Slate palette of the figures.
+# in a document), `palette` the Slate palette of the figures, `text_size` the body text size in px and
+# `roles` the colour roles as hex.
 _figure_ctx(geo, cid::AbstractString, slot::Integer) =
     SlateExtensionsBase.FigureContext(; width = get(geo.width, (String(cid), Int(slot)), geo.body),
                                       max_height = geo.max_height, scale = 2.0, slate_palette = geo.palette,
-                                      dark = !_export_is_light(geo.palette))
+                                      dark = !_export_is_light(geo.palette), text_size = geo.text_size,
+                                      roles = geo.roles)
+
+# The colour roles of the settings `s` as hex, in the Slate palette `palette` (`deck_settings_dict`).
+_figure_roles(s, palette::AbstractString) =
+    Dict{String,String}(k => String(v) for (k, v) in deck_settings_dict(s; palette)["roles"])
+
+# The outputs whose value has a figure hook, as `(cell, slot, region, held)`: slot 0 is the output of a
+# code cell, slot `i` the `i`-th `{{ }}` or fence value of a markdown cell. `held` is false for the
+# output of a code cell that the memo restored: that run did not happen, so a value that its worker
+# keeps is of an earlier run, maybe with other inputs.
+_hook_targets(nb::LiveNotebook) = lock(nb.lock) do
+    out = Tuple{String,Int,String,Bool}[]
+    for c in nb.report.cells
+        renders(c.kind) || continue
+        if is_prose(c.kind)
+            for (i, o) in enumerate(c.interp)
+                _hook_output(o) && push!(out, (c.id, i, _cell_region(c), true))
+            end
+        elseif _hook_output(c.output)
+            push!(out, (c.id, 0, _cell_region(c), c.output.memo != "restored"))
+        end
+    end
+    out
+end
+
+_hook_throw_warning(cid, r) =
+    "Cell $cid: the figure hook of $(r.type) threw an error, so the output prints as it shows: $(r.error)"
 
 # Ask the figure hook for the picture of each marked output and keep it in `figs`. A hook that throws
-# adds a line to `warnings`. The outputs whose worker keeps no value add one line together: their
-# notebook opened from its stored outputs and did not run, or its worker is not running. Called before
-# the caller takes `nb.lock`, like the other warm passes.
+# adds a line to `warnings`. The cells whose worker keeps no value for an output add one line together,
+# with their ids. Their output comes from storage: the hub restored it from the memo, or the notebook
+# opened from its stored outputs and did not run, or its worker is not running. A run of the notebook
+# restores such a cell from the memo again; only a forced run of the cell (its ▶) computes the value.
+# Called before the caller takes `nb.lock`, like the other warm passes.
 function _warm_hook_figs!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{String}, geo; progress = nothing)
-    targets = lock(nb.lock) do
-        out = Tuple{String,Int,String}[]
-        for c in nb.report.cells
-            renders(c.kind) || continue
-            if is_prose(c.kind)
-                for (i, o) in enumerate(c.interp)
-                    _hook_output(o) && push!(out, (c.id, i, _cell_region(c)))
-                end
-            elseif _hook_output(c.output)
-                push!(out, (c.id, 0, _cell_region(c)))
-            end
-        end
-        out
-    end
-    stored = 0
-    for (cid, slot, region) in targets
-        k = _running_kernel(nb, region)
-        k === nothing && (stored += 1; continue)
+    stored = String[]
+    for (cid, slot, region, held) in _hook_targets(nb)
+        k = held ? _running_kernel(nb, region) : nothing
+        k === nothing && (push!(stored, cid); continue)
         progress === nothing || (try; progress(cid); catch; end)
         r = try; ReportEngine.export_figure(k, cid, slot, _TYPST_FIGURE_MIMES, _figure_ctx(geo, cid, slot)); catch; nothing; end
         r === nothing && continue
         if !r.held
-            stored += 1
+            push!(stored, cid)
         elseif !isempty(r.mime)
             figs[(cid, _hook_slot(slot))] = (r.bytes, _FIGURE_MIME_EXT[r.mime])
         elseif !isempty(r.error)
-            push!(warnings, "Cell $cid: the figure hook of $(r.type) threw an error, so the output prints as it shows: $(r.error)")
+            push!(warnings, _hook_throw_warning(cid, r))
         end
     end
-    stored > 0 && push!(warnings, "$stored figure$(stored == 1 ? "" : "s") from stored output: run the notebook for vector figures")
+    isempty(stored) || push!(warnings, _stored_figs_warning(unique!(stored)))
     return figs
+end
+
+# The pictures of the figure hooks in the MIME types of an exporter (`plan.mimes`), into `plan.forms`:
+# the hook gets one MIME type at a time, so each output can give a form in each type. The picture of
+# the Typst pass (`figs`, from `_warm_hook_figs!`) is the form of its type, with no second round trip,
+# and a video or audio type is not asked: a figure hook draws pictures only. A throw stops the search
+# for that output and adds the warning of the Typst export.
+function _hook_forms!(plan, nb::LiveNotebook, warnings::Vector{String}, geo, figs::_CompFigs)
+    for (cid, slot, region, held) in _hook_targets(nb)
+        k = held ? _running_kernel(nb, region) : nothing
+        k === nothing && continue
+        typst = get(figs, (cid, _hook_slot(slot)), nothing)   # (bytes, file extension)
+        forms = Tuple{String,Vector{UInt8}}[]
+        for m in plan.mimes
+            (startswith(m, "video/") || startswith(m, "audio/")) && continue
+            typst !== nothing && get(_FIGURE_MIME_EXT, m, "") == typst[2] && (push!(forms, (m, typst[1])); continue)
+            r = try; ReportEngine.export_figure(k, cid, slot, [m], _figure_ctx(geo, cid, slot)); catch; nothing; end
+            (r === nothing || !r.held) && break
+            isempty(r.error) || (push!(warnings, _hook_throw_warning(cid, r)); break)
+            isempty(r.mime) || push!(forms, (r.mime, r.bytes))
+        end
+        isempty(forms) || (plan.forms[(cid, slot)] = forms)
+    end
+    return plan
+end
+
+# The warning for the cells whose figure output comes from storage. The advice comes first and the cell
+# ids last, so that the header of the export dialog (300 characters a line) cuts ids, not the advice.
+function _stored_figs_warning(cells::Vector{String})
+    one = length(cells) == 1
+    return string("The output of ", one ? "a cell" : "$(length(cells)) cells", " comes from storage (the memo or ",
+                  "the saved notebook), so the figure hook has no value to draw and the PDF has the output as it ",
+                  "shows. Run ", one ? "the cell" : "each cell", " with its ▶ button, then export again: a run of ",
+                  "the notebook restores it from the memo. ", one ? "Cell: " : "Cells: ", join(cells, ", "), ".")
 end
 
 # The width of each `{{ }}` value of the markdown `src` (numbered from `ib + 1`) in a column `w` px wide,
@@ -231,7 +282,8 @@ end
 # template, else the slide width less the base margins (240 u). A row of `n` cells shares it with
 # `columns.row-gap` between the cells. A markdown cell has the 16 u padding of `mdcell` on each side.
 # The figure cap is `fit.figure-cap` of the slide height.
-function _slide_figure_geometry(nb::LiveNotebook, ds, ratio::AbstractString, level::Integer, palette::AbstractString)
+function _slide_figure_geometry(nb::LiveNotebook, ds, ratio::AbstractString, level::Integer, palette::AbstractString;
+                                page_palette::AbstractString = palette)
     W, H = deck_canvas(ratio)
     t = notebook_deck_template(nb)
     body = something(t === nothing ? nothing : t.body_width, W - 240.0)
@@ -251,7 +303,8 @@ function _slide_figure_geometry(nb::LiveNotebook, ds, ratio::AbstractString, lev
             end
         end
     end
-    return (; width, body, max_height = ds.values["fit"]["figure-cap"] * H, palette = String(palette))
+    return (; width, body, max_height = ds.values["fit"]["figure-cap"] * H, palette = String(palette),
+            text_size = Float64(ds.values["text"]["size"].value), roles = _figure_roles(ds.values, page_palette))
 end
 
 # The figure geometry of a document (see `_figure_ctx`), in px at 96 dpi: the text width of the A4 page,
@@ -279,7 +332,9 @@ function _doc_figure_geometry(nb::LiveNotebook; style::AbstractString, cols::Int
             end
         end
     end
-    return (; width, body = colw, max_height = nothing, palette = String(palette))
+    return (; width, body = colw, max_height = nothing, palette = String(palette),
+            text_size = parse(Float64, chop(_body_size(body); tail = 2)) * 96 / 72,
+            roles = _figure_roles(deck_settings("", "").values, palette))
 end
 
 # LaTeX macro shims for commands mitex lacks. mitex honors parameterized \newcommand, so
@@ -513,7 +568,8 @@ const _FIT_TYPST = "(text-floor: settings.fit.text-floor, fig-floor: 0.25, fig-c
 # `layout` is the slide's layout tag and `title` its heading (a `heading` element), both `none` when
 # unset; `n` is the slide number on a notes page. A template that is added after this preamble can
 # redefine `slide` or `slidecols` to draw each layout its own way. It must draw the body through `fit`,
-# because `fit` sizes the figures and records the fit.
+# because `fit` sizes the figures and records the fit. `base-slide` and `base-fit` are the base `slide`
+# and `fit`, so that a template that redefines them can still call them.
 # The page copies the geometry of the live base deck (notebook.css `.deck-slide`, `.slide-title`,
 # `.slide-num`): the body padding, the body at the top of the slide, the slide number, the title. The
 # base `slide` draws the body in `base-rhythm`, the vertical rhythm of the live deck from the deck
@@ -560,7 +616,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // the difference, and the inset half of it on each side. A rule of `TRULE` under each row adds its
     // width to the row, as a CSS border does.
     #let TL = settings.table.line-height
-    #let TRULE = 2 * u
+    #let TRULE = settings.table.rule-width
     #let tinset(pad) = pad - (settings.text.line-height - TL) / 2 * 1em
     // The plain text of a table cell, for its widest word.
     #let plaintext(c) = if type(c) == str { c } else if c.has("text") and type(c.text) == str { c.text } else if c.has("children") { c.children.map(plaintext).sum(default: "") } else if c.has("body") { plaintext(c.body) } else if c.has("child") { plaintext(c.child) } else { " " }
@@ -668,8 +724,9 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       show raw.where(block: true): set text(..edges(settings.text.line-height / CODE-INLINE))
       set par(leading: 0em, spacing: settings.text.paragraph-after)
       set block(spacing: 0em)
+      // Typst counts the list depth from 0: a top-level item gets "•", as on the live deck.
       set list(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
-        marker: depth => box(width: settings.text.list-indent - 0.5em, align(right, text(fill: settings.text.list-marker, ("•", "◦", "▪").at(calc.rem(depth - 1, 3))))))
+        marker: depth => box(width: settings.text.list-indent - 0.5em, align(right, text(fill: settings.text.list-marker, ("•", "◦", "▪").at(calc.rem(depth, 3))))))
       set enum(spacing: settings.text.list-item-after, indent: 0em, body-indent: 0.5em,
         numbering: n => box(width: settings.text.list-indent - 0.5em, align(right, [#n.])))
       show list: set block(above: settings.text.paragraph-after, below: 0.6em)
@@ -699,6 +756,10 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #let MEDIASZ = json("media.json")
     #let mdlen(e) = if e == none { auto } else if e.at(1) == "%" { e.at(0) * 1% } else if e.at(1) == "em" { e.at(0) * 1em } else { e.at(0) * 1pt }
     #let mdalign(s) = if s == "left" { left } else if s == "right" { right } else { center }
+    // `figrec(body)` gives `body` the label `<slate-figure>` inside a box of its own, so that the figure
+    // record of the marks has the top left corner of `body`. A record in the line of a labelled inline
+    // box has the y of the baseline, and inside `layout` the x of the start of the line.
+    #let figrec(body) = box([#body <slate-figure>])
     // An image alone in its paragraph is a figure — centred, matching the notebook and the HTML export.
     // A centred one with no height is a `<slate-fig>` marker that `fit` sizes, as an image output is
     // (see `figureimg`); its `width` is an upper bound. One sitting in a run of prose stays inline,
@@ -707,10 +768,10 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       let a = MEDIASZ.at(src, default: (:))
       let (w, h) = (a.at("width", default: none), a.at("height", default: none))
       if a.at("block", default: false) and h == none and a.at("align", default: "center") == "center" {
-        return [#metadata((p: src, w: if w == none { none } else { mdlen(w) })) <slate-fig>]
+        return [#metadata((p: src, w: if w == none { none } else { mdlen(w) }, hook: a.at("hook", default: false))) <slate-fig>]
       }
       let im = image(src, alt: alt, width: mdlen(w), height: mdlen(h))
-      if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), [#box(im) <slate-figure>]) } else { im }
+      if a.at("block", default: false) { align(mdalign(a.at("align", default: "center")), figrec(box(im))) } else { im }
     }
     // Code in markdown as on the live deck: inline code at `CODE-INLINE` of its text, a code block at
     // `code.size` with its code at `CODE-INLINE` of that. Typst sets raw text at 0.8em of the text
@@ -743,37 +804,157 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       slate-table: (attrs, body) => draw-kind(draw, own, "table", attrs + (body: body), body),
     )
     $(_CITE_SHOW)
-    #let metablock(title, subtitle, byline, abstract) = align(center + horizon)[
-      #text(size: 2.4em, weight: "bold", fill: $(p.title))[#title]
-      #if subtitle != none { v(0.42em); text(size: 1.4em, fill: $(p.title))[#subtitle] }
-      #if byline != none { v(0.74em); text(size: 0.9em, fill: $(p.parlabel))[#byline] }
-      #if abstract != none { v(0.84em); block(width: 80%, text(size: 0.8em, style: "italic")[#abstract]) }
-    ]
+    // Marks: the layout source of an exporter. With `--input slate-marks=1` each block (`blk`) and
+    // each region (`region`) of a slide writes records under the label `<slate>`; without it they
+    // draw their body and nothing else. All lengths of a record are in `u`, from the top left corner
+    // of the page.
+    // - `(kind: "block", frag, cell, i, block, page, x, y, w, h, nw, ah, size, lh)`: block `i` of the cell
+    //   fragment `frag` ("s<slide>f<fragment>") of cell `cell`, of block kind `block`. `x`, `y` and `w` are the left
+    //   edge, the top and the width of its column, `h` its height and `nw` the width of its content.
+    //   `ah` is the height of its container, when that has one. `size` is the text size at its place,
+    //   `lh` the line pitch `P` at its place (see below).
+    // - `(kind: "region", name, page, x, y, w, h, nw, ah, size, lh)`: the same for a region.
+    // - `(kind: "text", size, lh, page, …)`: the text size and the line pitch of a paragraph, a heading,
+    //   a list or a code block inside a block or a region, with the `frag` and `i` of the block or the
+    //   `name` of the region. The first one of a block is the text size and the line pitch of the block.
+    // - `(kind: "figure", page, x, y, w, h, frag, i)`: the picture of a figure block, after the fit.
+    // - `(kind: "cell", col, row, end, page, x, y, size, lh, frag, i)`: a corner of a cell in the first
+    //   row or the first column of a table block: the top left one (`end` false) and the bottom right
+    //   one (`end` true). They give the start and the end of each column and of each row, and the text
+    //   size and the line pitch of the cells.
+    // The box of prose, of a caption and of a region holds whole line boxes of CSS (`lines`): a line
+    // of pitch `P` (its top edge, its bottom edge and the leading) has `(P - (A + D)) / 2` above its
+    // ascender `A` and below its descender `D`, measured on the font in use. Inside `base-rhythm` a
+    // line has those edges already, so nothing is added, and `P` is the CSS line height.
+    // The mark is placed, so it takes no space: the layout is the same with and without marks. The
+    // measured copies of `fit` draw the body with no mark.
+    #let MARKS = sys.inputs.at("slate-marks", default: "0") == "1"
+    #let slate-mark(rec, body, lines: false) = {
+      let id = rec + (kind: "text")
+      let here-u() = { let p = here().position(); (page: p.page, x: p.x / u, y: p.y / u) }
+      // The line pitch `P` in force, in `u`. Call it inside `context`.
+      let pitch() = (measure(text(bottom-edge: "baseline", "x")).height + measure(text(top-edge: "baseline", "x")).height
+        + par.leading.to-absolute()) / u
+      let sized(it) = context { [#metadata(id + (page: here().page(), size: text.size / u, lh: pitch())) <slate>]; it }
+      place(layout(c => context {
+        let (above, below) = if lines {
+          let m(t, b) = measure(text(top-edge: t, bottom-edge: b, "x")).height
+          let (A, D) = (m("ascender", "baseline"), m("baseline", "descender"))
+          let (t, b) = (measure(text(bottom-edge: "baseline", "x")).height, measure(text(top-edge: "baseline", "x")).height)
+          let half = (pitch() * u - A - D) / 2
+          (A + half - t, D + half - b)
+        } else { (0 * u, 0 * u) }
+        let sz = measure(width: c.width, body)
+        let p = here-u()
+        [#metadata(rec + p + (y: p.y - above / u, w: c.width / u, h: (sz.height + above + below) / u, nw: sz.width / u,
+          ah: if c.height < 100 * SLIDE_H { c.height / u }, size: text.size / u, lh: pitch())) <slate>]
+      }))
+      show par: sized
+      show heading: sized
+      show list: sized
+      show enum: sized
+      // An output of a code cell (`outblock`, `valblock`, `errblock`) is inline raw text, with no
+      // paragraph: in a code block the first line of any raw text gives the record.
+      show raw: it => if it.block or rec.at("block", default: none) == "code" { show raw.line.where(number: 1): sized; it } else { it }
+      show <slate-figure>: it => { context { let s = measure(it); [#metadata(id + here-u() + (kind: "figure", w: s.width / u, h: s.height / u)) <slate>] }; it }
+      show table.cell: it => if rec.at("block", default: none) == "table" and (it.x == 0 or it.y == 0) {
+        let corner(end) = context [#metadata(id + here-u() + (kind: "cell", col: it.x, row: it.y, end: end, size: text.size / u, lh: pitch())) <slate>]
+        place(top + left, corner(false))
+        place(bottom + right, corner(true))
+        it
+      } else { it }
+      body
+    }
+    #show <slate-mark>: it => slate-mark(it.value.rec, it.value.body, lines: it.value.lines)
+    // `blk(i, kind, frag: …, cell: …)[…]` is block `i` of a cell fragment: Slate writes one call for
+    // each block of a slide body.
+    #let blk(i, kind, body, frag: none, cell: none) = if MARKS {
+      [#metadata((rec: (kind: "block", frag: frag, cell: cell, i: i, block: kind), body: body, lines: kind in ("prose", "caption"))) <slate-mark>]
+    } else { body }
+    // `region(name, body)` draws `body` as the region `name` of the slide: "title", "subtitle",
+    // "byline" or "abstract". A deck template puts each region that it draws from notebook content in
+    // it, inside the text size of the region and inside the box that is the area of the region. Slate
+    // warns when the region is taller than that box, off the page, or over a block or another region.
+    // Only a region in `region` is in the layout source: a template that draws its own layout and
+    // does not call it gives an exporter no region and no region text.
+    #let region(name, body) = if MARKS { [#metadata((rec: (kind: "region", name: name), body: body, lines: true)) <slate-mark>] } else { body }
+    // The base title slide draws the regions of a `title` cell with the sizes and the spacing of the
+    // live title slide. The title is at 0.94 em, weight 800, in the strong colour, with 0.18 em above
+    // it and 0.2 of its size below it. The subtitle is at the size of its heading level in the deck
+    // settings (`SUBLEVEL`, 2 or 3, which the document sets before the title slide), weight 500, in
+    // the dim colour, with 0.08 of its size above it. Both have the line height of a heading
+    // (`HEAD-LH`). The byline is a paragraph of body text with `text.paragraph-after` below it.
+    // `linebox(L, body)` gives `body` the line box of CSS for the line height `L`, as `base-rhythm` does.
+    #let SUBLEVEL = state("slate-subtitle-level", 3)
+    #let linebox(L, body) = context {
+      let m(t, b) = measure(text(top-edge: t, bottom-edge: b, "x")).height / text.size
+      let (A, D) = (m("ascender", "baseline"), m("baseline", "descender"))
+      text(top-edge: (A + (L - A - D) / 2) * 1em, bottom-edge: -(D + (L - A - D) / 2) * 1em, body)
+    }
+    // A region holds a block as wide as the column, so that its mark has the box of the column. The
+    // line box is set outside the region, so that its mark records the line height of its lines.
+    #let metablock(title, subtitle, byline, abstract) = align(center, {
+      let line(name, L, body) = linebox(L, region(name, block(width: 100%, body)))
+      if title != none {
+        block(inset: (top: 0.18em), text(size: 0.94em, weight: 800, fill: $(p.title),
+          block(inset: (bottom: 0.2em), line("title", HEAD-LH, title))))
+      }
+      if subtitle != none {
+        context text(size: if SUBLEVEL.get() == 2 { settings.heading.h2 } else { settings.heading.h3 }, weight: 500,
+          fill: settings.roles.dim, block(inset: (top: 0.08em), line("subtitle", HEAD-LH, subtitle)))
+      }
+      if byline != none { region("byline", block(width: 100%, byline)); v(settings.text.paragraph-after) }
+      if abstract != none { v(0.84em); block(width: 80%, text(size: 0.8em, style: "italic")[#region("abstract", abstract)]) }
+    })
+    // `metarest(m, rest)` adds `rest`, the blocks of the title cell that are no region, to the result
+    // `m` of `metablock`: below it when it is content, as the field `rest` when a deck template makes
+    // it a dictionary.
+    #let metarest(m, rest) = if type(m) == dictionary { m + (rest: rest) } else { m + align(center, rest) }
     #let codeblock(s) = block(width: 100%, fill: $(p.codebg), inset: 21 * u, radius: 11 * u, text(size: $(_slide_code_size(code)), raw(block: true, lang: "julia", s)))
-    #let outblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.outbg), radius: 8 * u, text(size: 0.7em, fill: $(p.outfg), raw(s)))
-    #let valblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.valbg), radius: 8 * u, text(size: 0.7em, fill: $(p.valfg), raw(s)))
-    #let errblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.errbg), radius: 8 * u, text(size: 0.7em, fill: $(p.errfg), raw(s)))
+    // The text of an output is 0.7 em of the body, as the live `.deck-slide .output`. Typst sets raw
+    // text at 0.8 em of the text around it, so the size is 0.7 / 0.8 em.
+    #let outblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.outbg), radius: 8 * u, text(size: 0.875em, fill: $(p.outfg), raw(s)))
+    #let valblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.valbg), radius: 8 * u, text(size: 0.875em, fill: $(p.valfg), raw(s)))
+    #let errblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.errbg), radius: 8 * u, text(size: 0.875em, fill: $(p.errfg), raw(s)))
     // A figure is a marker that `fit` sizes for the slide. `width` is an upper bound on its drawn
     // width: a ratio of the column, or a length. With no `width`, the full size of a figure is the
     // natural size of the picture that the live deck shows (`natural-w`), at most its column. At
     // figure scale `f`, a figure is `f` of its full size, and at most `FIT.fig-cap` of the slide
     // height. Outside `fit` it is drawn at `f = 1`. The sized picture has the label `<slate-figure>`:
     // the rule for that label, after the deck template, gives it to `draw.figure`.
-    #let figureimg(p, width: none) = [#metadata((p: p, w: width)) <slate-fig>]
+    #let figureimg(p, width: none, hook: false) = [#metadata((p: p, w: width, hook: hook)) <slate-fig>]
     // The natural width in CSS px (1/96 in), which is `u` on the slide, of a PNG (its pixel width: a
     // browser does not read its density) or an SVG. A PDF figure (a Makie figure) shows on the live
-    // deck as a PNG at twice its size, so it fills its column: `none`.
-    #let natural-w(p, n) = if lower(p).ends-with(".png") {
+    // deck as a PNG at twice its size, so it fills its column: `none`. A picture of a figure hook
+    // (`hook`) has the size at which the live deck draws its value: the page size of a PDF or an SVG,
+    // and a PNG at `FigureContext.scale` (2) px for each px.
+    #let natural-w(p, n, hook: false) = if lower(p).ends-with(".png") {
       let b = read(p, encoding: none)
-      b.at(16) * 16777216 + b.at(17) * 65536 + b.at(18) * 256 + b.at(19)
-    } else if lower(p).ends-with(".svg") { n.width / (1in / 96) }
+      (b.at(16) * 16777216 + b.at(17) * 65536 + b.at(18) * 256 + b.at(19)) / if hook { 2 } else { 1 }
+    } else if hook or lower(p).ends-with(".svg") { n.width / (1in / 96) }
+    // A video or audio file of markdown alone in its paragraph (Julia `_clip_typ`). A PDF cannot play
+    // it, so it draws a placeholder in the box that the live deck gives the clip: a frame with a play
+    // mark and `label`. A video of `w` × `h` px fills the width of its column at that aspect, up to the
+    // figure cap, as on the live deck (notebook.css `--clip-ar`). An audio file has the size of the live
+    // audio controls, 300 × 54 u, in the centre of its column.
+    #let clipframe(w, h, label) = box(width: w, height: h, inset: 8 * u, clip: true, fill: settings.roles.dim.transparentize(80%), align(center + horizon, {
+        let s = calc.min(0.4 * h, 64 * u)
+        let mark = polygon(fill: settings.roles.dim, (0 * u, 0 * u), (0.87 * s, s / 2), (0 * u, s))
+        let t = text(size: 0.7em, fill: settings.roles.dim, label)
+        if h < 120 * u { grid(columns: 2, column-gutter: 12 * u, align: horizon, mark, t) } else { stack(spacing: 16 * u, align(center, mark), t) }
+      }))
     #let drawfig(v, f) = layout(c => {
-      let n = measure(image(v.p))
-      let nw = natural-w(v.p, n)
+      let clip = v.at("clip", default: none)
+      let n = if clip == none { measure(image(v.p)) } else { (width: clip.w * u, height: clip.h * u) }
+      let nw = if clip == none { natural-w(v.p, n, hook: v.at("hook", default: false)) } else { none }
       let cw = if v.w != none { if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) } } else if nw == none { c.width } else { calc.min(c.width, nw * u) }
-      align(center, [#box(image(v.p, height: calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width))))) <slate-figure>])
+      let h = calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))
+      align(center, figrec(if clip == none { box(image(v.p, height: h)) } else { clipframe(h * (n.width / n.height), h, clip.label) }))
     })
     #show <slate-fig>: it => drawfig(it.value, 1)
+    #let clipfig(kind, w, h, label) = if kind == "audio" { align(center, figrec(clipframe(300 * u, 54 * u, label))) } else {
+      [#metadata((p: none, w: none, clip: (w: w, h: h, label: label))) <slate-fig>]
+    }
     #let notefig(s) = block(width: 100%, inset: 19 * u, text(size: 0.7em, style: "italic", fill: $(p.parlabel), s))
     #let figcaption(lbl, body) = block(width: 100%, inset: (x: 64 * u, y: 11 * u), text(size: 0.7em, fill: $(p.parlabel))[#text(weight: "bold")[#lbl.] #body])
     #let paramblock(items) = block(width: 100%, inset: (x: 21 * u, y: 13 * u), fill: $(p.parbg), radius: 8 * u, stroke: 1.33 * u + $(p.parborder),
@@ -801,7 +982,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
         show <slate-fig>: it => drawfig(it.value, f)
         body
       }
-      let tall(s, f) = measure(block(width: sz.width, { show regex("§c§[^§]*§[^§]+§[^§]*§"): it => [[0]]; draw(s, f) })).height
+      let tall(s, f) = measure(block(width: sz.width, { show regex("§c§[^§]*§[^§]+§[^§]*§"): it => [[0]]; show <slate-mark>: it => it.value.body; draw(s, f) })).height
       let fits(s, f) = tall(s, f) <= sz.height
       let tie(s) = (1 + s) / 2
       // The largest `f` in [lo, 1] that fits at text scale `s`, or `lo` when none does.
@@ -859,12 +1040,15 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
           show heading.where(level: 3): it => if layout == "section" { text(fill: $(p.text).transparentize(40%), it) } else { it }
           if layout == "notes" { text(fill: luma(130))[Notes · slide #n]; v(0.32em) } else if title != none {
             v(12 * u)
-            pad(x: 16 * u, { if layout == "section" { text(size: 1.6em, title) } else { title }; block(height: 0em) })
+            pad(x: 16 * u, { if layout == "section" { text(size: 1.6em, region("title", title)) } else { region("title", title) }; block(height: 0em) })
           }
           body
         }))
       ]
     }
+    // A deck template that defines its own `slide` or `fit` calls the base one by these names.
+    #let base-fit = fit
+    #let base-slide = slide
 
     """
 end
@@ -962,25 +1146,28 @@ function _rewrite_text_citations(text, citekeys, emit; figrefs = Dict{String,Tup
         end
     end)
 end
-# Rewrite citations across a markdown source, skipping fenced code blocks AND inline `code` spans
-# (so a literal `[@key]` shown in backticks is left untouched). `emit` selects sentinel vs HTML link;
-# `figrefs`/`figemit` handle `[@fig:label]` figure cross-references.
-function _rewrite_citations(md::AbstractString, citekeys = Set{String}(); emit = _cite_sentinel,
-                            figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text)
+# Apply `f` to the text of a markdown source outside its fenced code blocks and inline `code` spans:
+# `f` gets one line at a time, with each code span masked, and the spans come back after it.
+function _map_outside_code(f, md::AbstractString)
     out = IOBuffer(); infence = false
     for (li, ln) in enumerate(split(md, '\n'))
         li == 1 || print(out, '\n')
         if occursin(r"^\s*(```|~~~)", ln); infence = !infence; print(out, ln); continue; end
         if infence; print(out, ln); continue; end
-        # Protect inline `code` spans, rewrite the text between them, then restore the spans.
         spans = SubString{String}[]
         masked = replace(ln, r"`[^`]*`" => s -> (push!(spans, s); "\x00$(length(spans))\x00"))
-        done = _rewrite_text_citations(masked, citekeys, emit; figrefs = figrefs, figemit = figemit)
+        done = f(masked)
         for (i, s) in enumerate(spans); done = replace(done, "\x00$(i)\x00" => s); end
         print(out, done)
     end
     return String(take!(out))
 end
+# Rewrite citations across a markdown source, skipping fenced code blocks AND inline `code` spans
+# (so a literal `[@key]` shown in backticks is left untouched). `emit` selects sentinel vs HTML link;
+# `figrefs`/`figemit` handle `[@fig:label]` figure cross-references.
+_rewrite_citations(md::AbstractString, citekeys = Set{String}(); emit = _cite_sentinel,
+                   figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text) =
+    _map_outside_code(t -> _rewrite_text_citations(t, citekeys, emit; figrefs = figrefs, figemit = figemit), md)
 
 # Bare text of a `{{ expr }}` interpolation for the Typst export — mirrors the live renderer's
 # `_math_value`: a scalar's text, else a `text/latex` chunk's TeX with its `$`/`$$` delimiters
@@ -1023,23 +1210,24 @@ end
 # value's captured figure (from its figure hook, else from its component), written into the project
 # dir on first ask, or `nothing`. Staging is the caller's job (only it has `dir`), so this closes over
 # it and registers the figure's width in `media.json` — the one place a markdown image can carry a size.
-# A hook figure is drawn for its column, so it takes the width of the column.
+# A hook figure is drawn at most as wide as its column, at the size of the live value: `media.json`
+# marks it with `hook`, so the preamble takes the size of the picture (`natural-w`).
 function _compfig_stager(c::Cell, dir::AbstractString, base::AbstractString, compfigs::_CompFigs, sizes)
     slotof = Dict(i => s for (s, i) in _component_slots(c))
-    n = Ref(0)
+    # A staged file has the number of its value in its name, so that an exporter finds the value.
     return function (i::Integer)
         hook = get(compfigs, (c.id, _hook_slot(i)), nothing)
         slot = get(slotof, Int(i), nothing)
         got = hook !== nothing ? hook : slot === nothing ? nothing : get(compfigs, (c.id, slot), nothing)
         got === nothing && return nothing
         bytes, ext = got
-        n[] += 1
-        fname = string(base, "_comp", n[], ".", ext)
+        fname = string(base, "_comp", i, ".", ext)
         write(joinpath(dir, fname), bytes)
         if sizes !== nothing
             e = Dict{String,Any}("block" => true)
             pct = hook === nothing ? _comp_fig_width_pct(bytes, ext) : nothing
             pct === nothing || (e["width"] = (Float64(pct), "%"))
+            hook === nothing || (e["hook"] = true)
             sizes[fname] = e
         end
         return fname
@@ -1439,15 +1627,66 @@ end
 _output_chunk(o, mime) = (i = findfirst(ch -> ch.mime == mime, o.display); i === nothing ? nothing : String(copy(o.display[i].data)))
 _has_figure_bytes(o) = any(ch -> ch.mime in ("application/pdf", "image/svg+xml", "image/png"), o.display)
 
+# The display size `(w, h)` in px of the first video track of an MP4 or QuickTime file: the width and
+# the height of its `tkhd` box (16.16 fixed point). A browser shows a video at this natural size.
+# `nothing` when the file gives no size.
+_mp4_size(path::AbstractString) = try open(io -> _mp4_walk(io, filesize(path)), path) catch; nothing end
+function _mp4_walk(io::IO, stop::Integer)
+    while position(io) + 8 <= stop
+        start = position(io)
+        n, typ = Int(ntoh(read(io, UInt32))), String(read(io, 4))
+        n == 1 && (n = Int(ntoh(read(io, UInt64))))
+        n == 0 && (n = stop - start)
+        n < 8 && return nothing
+        if typ in ("moov", "trak")
+            sz = _mp4_walk(io, start + n)
+            sz === nothing || return sz
+        elseif typ == "tkhd"
+            skip(io, read(io, UInt8) == 1 ? 87 : 75)   # to the width, after the version byte
+            w, h = ntoh(read(io, UInt32)) / 65536, ntoh(read(io, UInt32)) / 65536
+            w > 0 && h > 0 && return (w, h)           # a sound track has 0 × 0
+        end
+        seek(io, start + n)
+    end
+    return nothing
+end
+
+# The Typst text that draws the video or audio file `clip` of a figure block in place of its markdown
+# file `file` (the alt text): `clipfig` of the slides preamble. The label is the alt text, else the file
+# name. A video gives the aspect of the file, else that of 300 × 150, the size that the live deck gives a
+# video with no known size (the default size of a CSS replaced element); `drawfig` fills the column with it.
+function _clip_typ(clip::AbstractString, text::AbstractString, file::AbstractString)
+    audio = startswith(_site_ctype(clip), "audio/")
+    w, h = audio ? (0, 0) : something(_mp4_size(clip), (300, 150))
+    label = isempty(strip(replace(text, r"</?slate-figure>" => ""))) ? string("\"", _typ_str(basename(clip)), "\"") : _md_render(file)
+    return string("#clipfig(\"", audio ? "audio" : "video", "\", ", w, ", ", h, ", ", label, ")")
+end
+
+# Write the markdown `md` of an output (block kinds marked) to `file` and print its `cmarker` call
+# through `blk`, with `tail` after it. On a slide (`blk` is a `_block_printer`) each block of `md` is a
+# block of the layout source, split by the rules of a markdown cell, in a file of its own. A figure
+# block gets the video or audio file of its media mark (`_take_media_marks`) as its `file`, and draws
+# its placeholder (`_clip_typ`).
+function _emit_output_md!(io::IO, dir, file, md, tail, blk)
+    parts = blk === _plain_block ? [(kind = "prose", text = md)] : ReportRender._md_split(md)
+    for (k, b) in enumerate(parts)
+        f = k == 1 ? file : string(chopsuffix(file, ".md"), "_", k, ".md")
+        text, clip = _take_media_marks(b.text)
+        clip = b.kind == "figure" ? clip : nothing
+        write(joinpath(dir, f), text)
+        print(io, blk(b.kind, string(clip === nothing ? "#" * _md_render(f) : _clip_typ(clip, text, f), tail); src = text, file = clip))
+    end
+end
+
 # Emit an output's markdown or math form natively; false if it has neither, or Typst can't set it.
-function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString, o)
+# `stage` gets the markdown before it is written (see `_emit_output!`).
+function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString, o; blk = _plain_block, stage = identity)
     _has_figure_bytes(o) && return false
     md = _output_chunk(o, "text/markdown")
     if md !== nothing
         src = _normalize_math_delims(md; tex = _portable_tex)
         if _typst_typesets(:md, src)
-            write(joinpath(dir, base * ".md"), ReportRender._md_kinds(src; plain = true))
-            print(io, "#", _md_render(base * ".md"), "\n")
+            _emit_output_md!(io, dir, base * ".md", stage(ReportRender._md_kinds(src; plain = true)), "\n", blk)
             return true
         end
     end
@@ -1456,7 +1695,7 @@ function _emit_typeset_output!(io::IO, dir::AbstractString, base::AbstractString
         src = _portable_tex(_strip_math_delims(tex))
         if _typst_typesets(:tex, src)
             write(joinpath(dir, base * ".tex"), src)
-            print(io, "#align(center, mathfn(read(\"", base, ".tex\"), block: true))\n")
+            print(io, blk("prose", string("#align(center, mathfn(read(\"", base, ".tex\"), block: true))\n")))
             return true
         end
     end
@@ -1493,13 +1732,20 @@ end
 # Emit a code cell's outputs (value / stdout / error / figure / tables) into the doc.
 # Export output-verbosity: `"all"` (everything), `"figures"` (only figures / charts / tables / rendered
 # math — drop scalar text reprs, stdout, and errors, the "working output" noise), `"none"` (nothing).
+# Each output goes through `blk(kind, typ)`, which gives the Typst text to print for it. On a slide
+# each output is one block of the layout source (`_block_printer`); a document prints `typ` as it is.
 _outputs_text_ok(outputs) = String(outputs) == "all"
 _outputs_any(outputs) = String(outputs) != "none"
+_plain_block(kind, typ; kw...) = typ
 
 function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::LiveNotebook, c::Cell;
                        theme::AbstractString = "light", charttheme::AbstractString = "",
                        override::Bool = false, outputs::AbstractString = "all",
-                       compfigs::_CompFigs = _NO_COMPFIGS)
+                       compfigs::_CompFigs = _NO_COMPFIGS, blk = _plain_block, warnings = nothing)
+    put(kind, parts...) = print(io, blk(kind, string(parts...)))
+    # The images of a markdown output are staged as those of a markdown cell (`warnings` gets a line
+    # for each image whose file is not in the project).
+    stage(md) = _stage_typst_md_media(md, dir, base * "_out", _proj_root(nb); warnings, cell = c.id, media = true)
     o = c.output
     (o === nothing || !_outputs_any(outputs)) && return
     texts = _outputs_text_ok(outputs)
@@ -1511,30 +1757,32 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
     if o.exception !== nothing
         texts || return                                # figures-only: skip error text
         write(joinpath(dir, base * ".err"), rstrip(plain(o.exception)))
-        print(io, "#errblock(read(\"", base, ".err\"))\n")
+        put("code", "#errblock(read(\"", base, ".err\"))\n")
         return
     end
     if texts && !isempty(strip(o.stdout))
         write(joinpath(dir, base * ".out"), rstrip(plain(o.stdout)))
-        print(io, "#outblock(read(\"", base, ".out\"))\n")
+        put("code", "#outblock(read(\"", base, ".out\"))\n")
     end
     # A figure hook that gave a picture wins over the text forms of the value too.
     hooked = haskey(compfigs, (c.id, _hook_slot(0)))
     md = hooked ? nothing : ReportRender._markdown_output(o)
     if md !== nothing
         # Prose: typeset as a markdown cell's would be, rather than rasterized as HTML.
-        write(joinpath(dir, base * "_out.md"), ReportRender._md_kinds(_normalize_math_delims(md); plain = true))
-        print(io, "#", _md_render(base * "_out.md"), "\n\n")
+        _emit_output_md!(io, dir, base * "_out.md", stage(ReportRender._md_kinds(_normalize_math_delims(md); plain = true)), "\n\n", blk)
         return
     end
     if texts && isempty(o.display) && !isempty(o.value_repr)
-        write(joinpath(dir, base * ".val"), plain(o.value_repr))
-        print(io, "#valblock(read(\"", base, ".val\"))\n")
+        val = plain(o.value_repr)
+        write(joinpath(dir, base * ".val"), val)
+        # The `text/plain` value is the one output whose text an exporter gets, as a code block.
+        print(io, blk("code", string("#valblock(read(\"", base, ".val\"))\n");
+                      src = strip(ReportEngine._md_fence_block("", val), '\n') * "\n"))
     end
     # Math, and HTML with a markdown form, print as text and formulas — ahead of any page snapshot.
-    if !hooked && _emit_typeset_output!(io, dir, base, o)
+    if !hooked && _emit_typeset_output!(io, dir, base, o; blk, stage)
         for spec in _table_specs(c)
-            print(io, _typst_table(spec; theme = theme))
+            put("table", _typst_table(spec; theme = theme))
         end
         return
     end
@@ -1557,23 +1805,25 @@ function _emit_output!(io::IO, dir::AbstractString, base::AbstractString, nb::Li
         data, ext = fig
         write(joinpath(dir, base * "." * ext), data)
         # A component keeps its on-screen proportions rather than filling the column like a figure
-        # the author sized for print; everything else takes `figureimg`'s default.
+        # the author sized for print; a hook picture has the size of the live value (`natural-w`);
+        # everything else takes `figureimg`'s default.
         pct = _has_component(o) && !hooked ? _comp_fig_width_pct(data, ext) : nothing
-        print(io, "#figureimg(\"", base, ".", ext, "\"",
-              pct === nothing ? "" : ", width: $(pct)%", ")\n")
+        opts = string(pct === nothing ? "" : ", width: $(pct)%", hooked ? ", hook: true" : "")
+        print(io, blk("figure", string("#figureimg(\"", base, ".", ext, "\"", opts, ")\n");
+                      file = base * "." * ext))
     elseif !isempty(_echarts_specs(c))
         # A client-rendered chart that no browser tab was open to snapshot (headless export) —
         # don't silently drop it, note the gap (mirrors the HTML export path).
-        print(io, "#notefig(\"[chart not captured — open this notebook in a browser, then re-export]\")\n")
+        put("prose", "#notefig(\"[chart not captured — open this notebook in a browser, then re-export]\")\n")
     elseif _has_component(o)
-        print(io, "#notefig(\"[component not captured — open this notebook in a browser, then re-export]\")\n")
+        put("prose", "#notefig(\"[component not captured — open this notebook in a browser, then re-export]\")\n")
     elseif _hook_output(o)
-        print(io, "#notefig(\"[figure not captured — run the notebook, then re-export]\")\n")
+        put("prose", "#notefig(\"[figure not captured — run this cell with its ▶ button, then re-export]\")\n")
     elseif _has_html_output(c)
-        print(io, "#notefig(\"[figure not captured — open this notebook in a browser, then re-export]\")\n")
+        put("prose", "#notefig(\"[figure not captured — open this notebook in a browser, then re-export]\")\n")
     end
     for spec in _table_specs(c)
-        print(io, _typst_table(spec; theme = theme))
+        put("table", _typst_table(spec; theme = theme))
     end
     return
 end
@@ -1613,22 +1863,18 @@ end
 # as a font path. `rest` follows the input file; the command's stdout goes to `out`.
 # Every stream is given explicitly: a detached host process can have its stdin/stdout closed, and
 # a child that inherits a closed descriptor fails to spawn (EBADF).
+# Typst_jll is used in its `Cmd` form, which carries its own environment: the do-block form changes
+# the process `ENV` and restores it, so two runs at the same time (the compile and the query of a
+# slides PDF) can restore each other's `ENV`.
 function _typst_run(sub::String, typ::String, rest::Vector{String}; out::Union{IO,Nothing} = nothing)
     root = dirname(typ)
     fonts = joinpath(root, "fonts")
     fontflags = isdir(fonts) ? ["--font-path", fonts] : String[]
     sys = Sys.which("typst")
+    exe = sys === nothing ? Typst_jll.typst() : `$sys`
     err = IOBuffer()
-    go(exe) = run(pipeline(`$exe $sub --root $root $fontflags $typ $rest`; stdin = devnull,
-                           stdout = something(out, err), stderr = err))
     try
-        if sys !== nothing
-            go(sys)
-        else
-            Typst_jll.typst() do exe
-                go(exe)
-            end
-        end
+        run(pipeline(`$exe $sub --root $root $fontflags $typ $rest`; stdin = devnull, stdout = something(out, err), stderr = err))
     catch e
         # `run` throws only `ProcessExited(1)` — useless on its own. Surface Typst's actual diagnostic
         # (the source line + reason) so an export failure is debuggable instead of opaque.
@@ -1642,19 +1888,55 @@ end
 _typst_compile(typ::String, pdf::String) = _typst_run("compile", typ, [pdf])
 
 # The values of the metadata elements that `selector` (for example "<slate>") finds in the document.
-# `typst query` compiles the document again.
-function _typst_query(typ::String, selector::AbstractString)
+# `typst query` compiles the document again. `marks` turns on the block and region marks of a slides
+# project (`slate-mark` of its preamble), so that their records are among the values.
+function _typst_query(typ::String, selector::AbstractString; marks::Bool = false)
     out = IOBuffer()
-    _typst_run("query", typ, [String(selector), "--field", "value"]; out)
+    _typst_run("query", typ, [String(selector), "--field", "value", (marks ? ["--input", "slate-marks=1"] : String[])...]; out)
     return JSON.parse(String(take!(out)))
 end
 
-# An export warning for each slide that a fit record marks at the floor. `unit` names the number of the
-# record: "Slide" for the live index of the deck print, "Page" for the PDF page of the slides preamble
-# `fit` (the PDF drops a slide with no content, so a page number is not always the slide number).
-_fit_warnings(records; unit::AbstractString = "Slide") =
-    ["$unit $(r["slide"]) does not fit at the smallest text size: its end runs past the page bottom."
+# The box `(x, y, w, h)` of a mark record, in `u`.
+_mark_box(r) = (x = Float64(r["x"]), y = Float64(r["y"]), w = Float64(r["w"]), h = Float64(r["h"]))
+
+# An export warning for each region of a slide (a `region` record of the marks) that is out of its
+# area, or over another region or a block. A region is out of its area when it is taller than its
+# container, or when it is not inside the page; `canvas` is the page size in `u`. Boxes that only
+# touch are not over each other: the check lets them share 1 u. `label(p)` names page `p` in the
+# warning (`_page_label`).
+function _region_warnings(records, canvas, label)
+    W, H = canvas
+    of(kind) = [r for r in records if r isa AbstractDict && get(r, "kind", "") == kind]
+    over(a, b) = a.x < b.x + b.w - 1 && b.x < a.x + a.w - 1 && a.y < b.y + b.h - 1 && b.y < a.y + a.h - 1
+    regions, blocks = of("region"), of("block")
+    out = String[]
+    for (i, r) in enumerate(regions)
+        b, p, name = _mark_box(r), r["page"], r["name"]
+        ah = get(r, "ah", nothing)
+        (b.x < -1 || b.y < -1 || b.x + b.w > W + 1 || b.y + b.h > H + 1 || (ah !== nothing && b.h > ah + 1)) &&
+            push!(out, "$(label(p)): the $name region is out of its area.")
+        for q in @view regions[i+1:end]
+            q["page"] == p && over(b, _mark_box(q)) && push!(out, "$(label(p)): the $name region is over the $(q["name"]) region.")
+        end
+        for k in blocks
+            k["page"] == p && over(b, _mark_box(k)) && push!(out, "$(label(p)): the $name region is over a block of cell $(k["cell"]).")
+        end
+    end
+    return out
+end
+
+# An export warning for each slide that a fit record marks at the floor. `label(n)` names the number
+# `n` of the record: the deck print gives the live index of the slide, the slides preamble `fit` the
+# page of the PDF (`_page_label`).
+_fit_warnings(records; label = n -> "Slide $n") =
+    ["$(label(r["slide"])) does not fit at the smallest text size: its end runs past the page bottom."
      for r in records if r isa AbstractDict && get(r, "kind", "") == "fit" && get(r, "at_floor", false) === true]
+
+# The name of page `p` of a slides PDF in a warning: "Slide N", with N the number of its slide in the
+# deck (`plan.pages`). The PDF drops a slide with no content and gives a title cell its own page, so a
+# page number is not always the slide number. A page that holds no slide of the deck (the references,
+# the notes) is "Page p".
+_page_label(plan, p) = (si = get(plan.pages, p, 0); si > 0 ? "Slide $si" : "Page $p")
 
 # An export warning for each key of the `draw` dictionary of a deck template that is no block kind
 # (the warning records of `_SLIDES_TAIL`).
@@ -1662,6 +1944,40 @@ _draw_warnings(records) =
     ["The deck template sets `draw.$(r["key"])`, which is not a block kind (" * join(ReportRender._WRAPPED_KINDS, ", ") *
      "). Slate does not use it."
      for r in records if r isa AbstractDict && get(r, "kind", "") == "warning" && get(r, "about", "") == "draw"]
+
+# The export warnings of a slides PDF from the records of its marks compile: the checks of the deck
+# settings, the `draw` keys, the slides at the fit floor, the regions out of place, then `figwarns`.
+# `plan` is the plan of the slides project (`_SlidePlan`): it maps a page to its slide.
+function _slides_warnings(nb::LiveNotebook, recs, figwarns, plan)
+    label = p -> _page_label(plan, p)
+    return vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; label),
+                _region_warnings(recs, deck_canvas(String(get(nb.report.meta, "slideratio", "16:9"))), label), figwarns)
+end
+
+# One export warning for each part of slide `si` that stopped with an error: a code cell whose output
+# is an error, and a `{{ }}` of a markdown cell that threw (the export leaves its value out). `parts`
+# holds `(cell, src, interpbase)` as the fragments of `slide_deck` do; `src === nothing` is the whole
+# cell.
+function _error_warnings!(warnings::Vector{String}, si::Integer, parts)
+    line(e) = (l = first(split(strip(ReportEngine.strip_sgr(e)), '\n')); length(l) > 120 ? first(l, 119) * "…" : l)
+    for (c, src, ib) in parts
+        if is_prose(c.kind)
+            exprs = ReportEngine._md_template(something(src, c.source))[2]
+            for (i, e) in enumerate(exprs)
+                o = get(c.interp, ib + i, nothing)
+                (o === nothing || o.exception === nothing) && continue
+                f = ReportEngine._fence_call(e)
+                what = f === nothing ? string("`{{ ", length(strip(e)) > 60 ? first(strip(e), 59) * "…" : strip(e), " }}`") :
+                       string("the `", f.lang, "` code block")
+                push!(warnings, string("Slide ", si, ", cell ", c.id, ": ", what,
+                                       " stopped with an error, so the export leaves its value out: ", line(o.exception)))
+            end
+        elseif c.output !== nothing && c.output.exception !== nothing
+            push!(warnings, string("Slide ", si, ", cell ", c.id, ": the cell stopped with an error, so its output is the error: ",
+                                   line(c.output.exception)))
+        end
+    end
+end
 
 """
     export_pdf(nb; include_source=true, style="article", columns=1,
@@ -1684,20 +2000,34 @@ cell the document title falls back to the first markdown H1 (then the notebook f
 export_pdf(nb::LiveNotebook; kwargs...) = first(_export_pdf_report(nb; kwargs...))
 
 # `export_pdf` and the export warnings of the PDF: the figure warnings of every layout (a figure hook
-# that threw, figures from stored output) and, for slides, the checks of the deck settings and the
-# slides at the fit floor.
+# that threw, figures from stored output) and, for slides, the checks of the deck settings, the
+# slides at the fit floor and the regions that are out of place.
+# For slides, the query of the marks runs as a second Typst process beside the compile. The compile
+# always waits for it, so no `typst` process stays behind, and a compile error is the error of the
+# export. A query that fails does not stop the export: it gives one warning, with the reason from
+# Typst.
 function _export_pdf_report(nb::LiveNotebook; kwargs...)
     figwarns = String[]
-    dir = _build_typst_project(nb; warnings = figwarns, kwargs...)
+    plan = _SlidePlan()                                    # a slides project writes its pages here
+    dir = _build_typst_project(nb; warnings = figwarns, plan, kwargs...)
     try
         typ = joinpath(dir, "doc.typ"); pdf = joinpath(dir, "out.pdf")
-        _typst_compile(typ, pdf)
-        warns = figwarns
-        if get(kwargs, :layout, "") == "slides"
-            recs = _typst_query(typ, "<slate>")
-            warns = vcat(notebook_deck_settings(nb).warnings, _draw_warnings(recs), _fit_warnings(recs; unit = "Page"), figwarns)
+        slides = get(kwargs, :layout, "") == "slides"
+        query = slides ? @async(try _typst_query(typ, "<slate>"; marks = true) catch e; e end) : nothing
+        try
+            _typst_compile(typ, pdf)
+        finally
+            query === nothing || wait(query)
         end
-        return read(pdf), warns
+        slides || return read(pdf), figwarns
+        recs = fetch(query)
+        recs isa Exception || return read(pdf), _slides_warnings(nb, recs, figwarns, plan)
+        # The reason is the first `error:` line of Typst (its warnings come first), else the first line.
+        lines = split(replace(sprint(showerror, recs), r"^typst query failed:\n" => ""), '\n')
+        why = strip(lines[something(findfirst(startswith("error:"), lines), 1)])
+        qwarn = "The layout check of the slides did not run, so the export cannot warn about a slide that does not fit " *
+                "or a region that is out of place. Typst says: " * (length(why) > 200 ? first(why, 199) * "…" : why)
+        return read(pdf), _slides_warnings(nb, Any[], [qwarn; figwarns], plan)
     finally
         rm(dir; recursive = true, force = true)
     end
@@ -1859,7 +2189,14 @@ end
 # hoisted into the title block and dropped from the body (their ids land in `skip`). With no `:title`
 # cell, the document title falls back to the first markdown H1 (then the notebook filename). One
 # resolver for PDF, slides, and HTML.
-function _parse_title_cell(src)
+#
+# `_title_cell` gives the parts of a `title` cell. `title`, `subtitle` and `byline` are plain text: the
+# first H1, the first H2 or H3, and the first paragraph that is no heading. `marked` is the markdown of
+# the cell with the subtitle in a `<slate-subtitle>` element and the byline in a `<slate-byline>`
+# element. The live deck draws `marked`, and each target reads the regions of the title slide from
+# this one function. `rest` is the markdown of the lines that are no region: the body blocks of the
+# title slide. `sublevel` is the heading level of the subtitle, 2 or 3 (3 when there is no subtitle).
+function _title_cell(src)
     # The byline/subtitle are usually authored with markdown emphasis (`*A pipeline over…*`), but
     # the title block renders them as PLAIN Typst text — literal asterisks in the PDF. The block
     # already styles them, so strip one surrounding emphasis layer rather than render markdown.
@@ -1872,29 +2209,51 @@ function _parse_title_cell(src)
         end
         return t
     end
-    title = ""; subtitle = ""; byline = ""
-    for ln in split(String(src), '\n')
-        s = strip(ln); isempty(s) && continue
+    lines = split(String(src), '\n')
+    title = ""; subtitle = ""; byline = ""; sublevel = 3
+    marked = String[]; rest = String[]
+    region!(tag, ls) = append!(marked, ["", "<slate-$tag>", "", ls..., "", "</slate-$tag>", ""])
+    plain(l) = !isempty(strip(l)) && !startswith(strip(l), "#")
+    i = 1
+    while i <= length(lines)
+        ln = lines[i]
         if isempty(title) && (m = match(r"^#\s+(.+?)\s*#*$", ln)) !== nothing
             title = unemph(m.captures[1])
-        elseif isempty(subtitle) && (m = match(r"^#{2,3}\s+(.+?)\s*#*$", ln)) !== nothing
-            subtitle = unemph(m.captures[1])
-        elseif isempty(byline) && !startswith(s, "#")
-            byline = unemph(s)
+            push!(marked, ln)
+        elseif isempty(subtitle) && (m = match(r"^(#{2,3})\s+(.+?)\s*#*$", ln)) !== nothing
+            subtitle = unemph(m.captures[2])
+            sublevel = length(m.captures[1])
+            region!("subtitle", [ln])
+        elseif isempty(byline) && plain(ln)
+            j = i                                    # the paragraph runs to an empty line or a heading
+            while j < length(lines) && plain(lines[j+1]); j += 1; end
+            byline = unemph(join((strip(l) for l in lines[i:j]), " "))
+            region!("byline", lines[i:j])
+            i = j
+        else
+            push!(marked, ln); push!(rest, ln)
         end
+        i += 1
     end
-    return (title, subtitle, byline)
+    return (; title, subtitle, byline, sublevel, marked = join(marked, "\n"), rest = String(strip(join(rest, "\n"))))
 end
+_parse_title_cell(src) = (t = _title_cell(src); (t.title, t.subtitle, t.byline))
 
-function report_frontmatter(report)
+# `report_frontmatter` adds `rolecell`, the id of the `title` cell ("" with none), and `rest`, the
+# markdown of that cell that is no region. `untitled` is the title when no cell gives one: the title of
+# the report (a loaded notebook has its file name there) for a document, "" for the deck value.
+
+function report_frontmatter(report; untitled::AbstractString = report.title)
     cells = report.cells
-    title = report.title; subtitle = ""; byline = ""; abstract = ""
-    skip = Set{String}(); titlecell = ""
+    title = untitled; subtitle = ""; byline = ""; abstract = ""; sublevel = 3
+    skip = Set{String}(); titlecell = ""; rolecell = ""; rest = ""
     titlei = findfirst(c -> :title in c.flags, cells)
     if titlei !== nothing
-        t, s, b = _parse_title_cell(cells[titlei].source)
-        isempty(t) || (title = t); subtitle = s; byline = b
-        push!(skip, cells[titlei].id)
+        tc = _title_cell(cells[titlei].source)
+        isempty(tc.title) || (title = tc.title); subtitle = tc.subtitle; byline = tc.byline; rest = tc.rest
+        sublevel = tc.sublevel
+        rolecell = cells[titlei].id
+        push!(skip, rolecell)
     else
         # No explicit `title` role tag → derive the document title from the FIRST markdown H1, so
         # exports read the real title instead of the notebook filename. The cell KEEPS its other
@@ -1914,7 +2273,7 @@ function report_frontmatter(report)
     end
     bibcells = Cell[c for c in cells if :bibliography in c.flags]
     has = titlei !== nothing || !isempty(strip(abstract))
-    return (; title, subtitle, byline, abstract, skip, bibcells, titlecell, has)
+    return (; title, subtitle, byline, sublevel, abstract, skip, bibcells, titlecell, has, rolecell, rest)
 end
 
 # ── Figure captions + numbering ───────────────────────────────────────────────────────────────
@@ -2286,11 +2645,11 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                               body::AbstractString = "", include_params::Bool = false,
                               layout::AbstractString = "article", notes::Bool = false,
                               level::Integer = 2, outputs::AbstractString = "all",
-                              warnings::Vector{String} = String[])
+                              warnings::Vector{String} = String[], plan = _SlidePlan())
     # Slide-deck layout takes a wholly different page geometry/flow — dispatch early.
     layout == "slides" && return _build_slides_project(nb; theme = theme, charttheme = charttheme, override = override,
         code = code, include_source = include_source, include_params = include_params, notes = notes,
-        level = level, ratio = get(nb.report.meta, "slideratio", "16:9"), outputs = outputs, warnings = warnings)
+        level = level, ratio = get(nb.report.meta, "slideratio", "16:9"), outputs = outputs, warnings = warnings, plan)
     show_source = include_source && code != "hidden"
     cols = clamp(Int(columns), 1, 2)
     body = isempty(body) ? (cols == 2 ? "compact" : "normal") : body   # narrow columns → smaller default
@@ -2328,7 +2687,8 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
             absarg = "none"
             if !isempty(strip(fm.abstract))
                 write(joinpath(dir, "abstract.md"),
-                      _stage_typst_md_media(_rewrite_citations(fm.abstract, citekeys), dir, "abstract", _proj_root(nb); sizes = mediasz))
+                      _stage_typst_md_media(_rewrite_citations(fm.abstract, citekeys), dir, "abstract", _proj_root(nb);
+                                            sizes = mediasz, warnings, cell = fm.rolecell))
                 absarg = _md_render("abstract.md")
             end
             print(io, "#metablock(", arg(fm.title), ", ", arg(fm.subtitle), ", ", arg(fm.byline), ", ", absarg, ")\n\n")
@@ -2353,7 +2713,7 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                                    compfig = _compfig_stager(c, dir, base, compfigs, mediasz),
                                    fignum = get(figidx.numbers, c.id, nothing),
                                    interpbase = ibase)
-                md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = mediasz)   # author-embedded images → staged files
+                md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = mediasz, warnings, cell = c.id)   # author-embedded images → staged files
                 if isempty(strip(md))
                     inrow || continue                # empty markdown: standalone → skip; in a row → empty slot
                 else
@@ -2374,7 +2734,7 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
                 end
                 include_params && print(io, _emit_controls(c))   # frozen @bind controls — off by default
                 _emit_output!(io, dir, base, nb, c; theme = theme, charttheme = ct, override = override,
-                              outputs = outputs, compfigs = compfigs)
+                              outputs = outputs, compfigs = compfigs, warnings)
                 print(io, "\n")
             end
             if inrow                                  # close this grid slot; the row's last cell closes the grid
@@ -2469,12 +2829,15 @@ end
 # `incell` is true for the parts of a cell that a `:::: columns` group splits.
 # Returns `true` when the markdown that it printed ends with a key message, an admonition or a table.
 # On the live deck such a block has no space below it at the end of its cell, so the cell is `tight`.
-function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false)
+# Each block of the fragment goes through `blk` (`_block_printer`): a markdown fragment is split into
+# its blocks (`ReportRender._md_split`), each in a file of its own, and each output of a code cell is
+# one block. `divcolumn` is the number of the `::: column` that holds the markdown, or 0.
+function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, warnings = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false, blk = _plain_block, divcolumn::Integer = 0)
     c, srcoverride = frag.cell, frag.src     # `frag.src` is a per-frag SOURCE override (String/nothing), NOT the themed-render Bool `override`
     if is_prose(c.kind) && !incell
         cio = IOBuffer()
         tight = _emit_slide_frag!(cio, dir, base, nb, frag; theme, charttheme, override, show_source, include_params, citekeys,
-                                  outputs, sizes, compfigs, incell = true)
+                                  outputs, sizes, warnings, compfigs, blk, divcolumn, incell = true)
         position(cio) == 0 || print(io, tight ? "#mdcell(tight: true)[\n" : "#mdcell[\n", String(take!(cio)), "]\n\n")
         return false
     end
@@ -2482,18 +2845,18 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
         src = srcoverride === nothing ? c.source : srcoverride
         pieces = _split_columns(src)
         if !(length(pieces) == 1 && pieces[1] isa AbstractString)    # a `:::: columns` group splits the cell
-            kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, compfigs, incell)
+            kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, warnings, compfigs, incell, blk)
             ib = frag.interpbase     # interpolations are numbered across the cell, so each piece starts after the last
             tight = false
             for (k, p) in enumerate(pieces)
                 pbase = string(base, "p", k)
                 if p isa AbstractString
-                    tight = _emit_slide_frag!(io, dir, pbase, nb, (cell = c, src = String(p), interpbase = ib); kw...)
+                    tight = _emit_slide_frag!(io, dir, pbase, nb, (cell = c, src = String(p), interpbase = ib); divcolumn, kw...)
                     ib += _md_interp_count(p)
                 else
                     tight = false
                     _print_slidecols(io, p.widths) do j
-                        _emit_slide_frag!(io, dir, string(pbase, "c", j), nb, (cell = c, src = p.cols[j], interpbase = ib); kw...)
+                        _emit_slide_frag!(io, dir, string(pbase, "c", j), nb, (cell = c, src = p.cols[j], interpbase = ib); divcolumn = j, kw...)
                         ib += _md_interp_count(p.cols[j])
                     end
                 end
@@ -2504,22 +2867,307 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
                            compfig = _compfig_stager(c, dir, base, compfigs, sizes),
                            interpbase = frag.interpbase,
                            fignum = :caption in c.flags ? get(figure_index(nb.report).numbers, c.id, nothing) : nothing)
-        md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes = sizes)   # author-embedded images → staged files
-        isempty(strip(md)) && return false
-        write(joinpath(dir, base * ".md"), md)
-        print(io, "#", _md_render(base * ".md"), "\n\n")
+        md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes, warnings, cell = c.id, media = true)   # author-embedded images → staged files
+        isempty(strip(first(_take_media_marks(md)))) && return false
+        for (k, b) in enumerate(ReportRender._md_split(md))
+            file = string(base, "b", k, ".md")
+            text, clip = _take_media_marks(b.text)
+            clip = b.kind == "figure" ? clip : nothing
+            write(joinpath(dir, file), text)
+            print(io, blk(b.kind, string(clip === nothing ? "#" * _md_render(file) : _clip_typ(clip, text, file), "\n\n"); src = text, divcolumn, file = clip))
+        end
         return occursin(r"</slate-(?:key-message|admonition|table)>\s*$", md)
     else
         if show_source && !(:hidecode in c.flags) && isempty(c.binds) && !_is_web_cell(c) && !isempty(strip(c.source))
             write(joinpath(dir, base * ".jl"), c.source)
-            print(io, "#codeblock(read(\"", base, ".jl\"))\n")
+            print(io, blk("code", string("#codeblock(read(\"", base, ".jl\"))\n")))
         end
-        include_params && print(io, _emit_controls(c))
+        ctl = include_params ? _emit_controls(c) : ""
+        isempty(ctl) || print(io, blk("prose", ctl))
         _emit_output!(io, dir, base, nb, c; theme = theme, charttheme = charttheme, override = override,
-                      outputs = outputs, compfigs = compfigs)
+                      outputs = outputs, compfigs = compfigs, blk, warnings)
         print(io, "\n")
     end
     return false
+end
+
+# What `_build_slides_project` writes down about the slides that it draws, for `slide_layout`.
+# `deck` is the slide model. `pages[p]` is the index in `deck` of the slide on page `p` of the PDF
+# (0 for the title page of a notebook with no `title` cell); the pages after `pages` hold no slide of
+# the model (the references, the notes). `blocks` holds each block in the order of the document:
+# `(slide, frag, index, kind, cell, row, column, divcolumn, src, file)`; `file` is the picture of a figure
+# output in the project directory, or the video or audio file of a figure of markdown, else `nothing`.
+# `texts` holds the markdown of each region, by `(slide, name)`. For an exporter (`exporter_deck`),
+# `mimes` are its figure MIME types and `forms` the pictures of the figure hooks in those types, by
+# output `(cell, slot)`.
+mutable struct _SlidePlan
+    deck::Vector{NamedTuple}
+    pages::Vector{Int}
+    blocks::Vector{NamedTuple}
+    texts::Dict{Tuple{Int,String},String}
+    mimes::Vector{String}
+    forms::Dict{Tuple{String,Int},Vector{Tuple{String,Vector{UInt8}}}}
+end
+_SlidePlan(mimes::Vector{String} = String[]) =
+    _SlidePlan(NamedTuple[], Int[], NamedTuple[], Dict{Tuple{Int,String},String}(), mimes,
+               Dict{Tuple{String,Int},Vector{Tuple{String,Vector{UInt8}}}}())
+
+# The `blk` function of `_emit_slide_frag!` for fragment `frag` of slide `slide`; `f` holds the cell,
+# the row and the column of the fragment. It numbers the blocks of the fragment in reading order,
+# writes each one down in `plan`, and gives the Typst text that draws it: `typ` inside
+# `#blk(i, kind, frag: "s<slide>f<frag>", cell: "<id>")[…]`, with the line ends that follow `typ`.
+function _block_printer(plan::_SlidePlan, slide::Integer, frag::Integer, f)
+    n = Ref(0)
+    return function (kind, typ; src = nothing, divcolumn = 0, file = nothing)
+        n[] += 1
+        push!(plan.blocks, (; slide, frag, index = n[], kind, cell = f.cell, row = f.row, column = f.column, divcolumn, src, file))
+        body = rstrip(typ)
+        return string("#blk(", n[], ", \"", kind, "\", frag: \"s", slide, "f", frag, "\", cell: \"", _typ_str(f.cell), "\")[", lstrip(body), "]",
+                      SubString(typ, ncodeunits(body) + 1))
+    end
+end
+
+"""
+    slide_layout(nb; level = <the notebook's slide level>, ratio = <the notebook's slide ratio>, kwargs...) -> Vector{NamedTuple}
+
+The slide model of `slide_deck` with the layout of the slides PDF: each entry has two more fields,
+`regions` and `blocks`. The boxes come from one `typst query` on the slides project of the notebook,
+compiled with the block and region marks on (`slate-mark` of the slides preamble). `kwargs` are the
+other options of the slides PDF (`theme`, `charttheme`, `outputs`, …). Internal: it is not exported.
+
+A box is `(x, y, w, h)` in the slide unit `u`, from the top left corner of the page. The box of prose,
+of a caption and of a region holds whole line boxes of CSS. A text size is in `u`. A line height is
+the line pitch of the text in `u`, from the top of a line to the top of the next line: inside the base
+rhythm, the CSS line height times the text size.
+
+- `regions`: each region that the PDF draws, as `(name, page, box, size, lineheight)`. `name` is
+  "title", "subtitle", "byline" or "abstract".
+- `blocks`: each block of the body, in reading order, as
+  `(kind, cell, frag, index, row, column, divcolumn, src, page, box, size, lineheight, cols, rows)`.
+  - `kind`: one of `ReportRender.BLOCK_KINDS`.
+  - `cell`, `row`, `column`: the cell, the row and the `column=` value of its fragment, as in `frags`.
+  - `frag`: the index of its fragment in `frags`; 0 for a block of the `title` cell.
+  - `index`: its number in the fragment, in reading order. A `::: column` holds blocks: the blocks of
+    column 1 come before the blocks of column 2. `divcolumn` is the number of that column, or 0.
+  - `src`: its markdown, with `{{ }}` resolved and the block kinds marked; `nothing` for an output
+    of a code cell, with two exceptions. A markdown output splits into blocks as a markdown cell
+    does. The `text/plain` value is a fenced code block of its text.
+  - `page`, `box`, `size`, `lineheight`: its page in the PDF, its box, its text size and its line
+    height; `nothing` when the PDF does not draw it. The box of a figure is the picture, the box of a
+    table is the table, the box of each other block is as wide as its column. The text size and the
+    line height of a table are those of its cells, and those of a code block are those of its code text.
+  - `cols`, `rows`: the column widths and the row heights of a table, in `u`; else `nothing`.
+"""
+function slide_layout(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slidelevel", 2),
+                      ratio::AbstractString = get(nb.report.meta, "slideratio", "16:9"), kwargs...)
+    plan = _SlidePlan()
+    dir = _build_slides_project(nb; level, ratio, plan, kwargs...)
+    try
+        return _slide_layout(plan, _typst_query(joinpath(dir, "doc.typ"), "<slate>"; marks = true))
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+# The widths (or heights) of the tracks of a table, in order: `cells` holds the two corner records of
+# each cell of one row (or one column), `at` is their track number ("col" or "row") and `pos` the
+# coordinate ("x" or "y").
+function _tracks(cells, at, pos)
+    span = Dict{Int,Vector{Float64}}()
+    foreach(c -> push!(get!(span, Int(c[at]), Float64[]), Float64(c[pos])), cells)
+    return [maximum(span[k]) - minimum(span[k]) for k in sort!(collect(keys(span)))]
+end
+
+# Join the mark records of a slides project to its plan (see `slide_layout`).
+function _slide_layout(plan::_SlidePlan, records)
+    recs = Dict{String,Vector{Any}}()
+    for r in records
+        r isa AbstractDict && push!(get!(recs, String(get(r, "kind", "")), Any[]), r)
+    end
+    of(kind) = get(recs, kind, Any[])
+    # The first record of `kind` for each block, and the cells of each table, in the order of the document.
+    key(r) = (get(r, "frag", nothing), get(r, "i", nothing))
+    firstof(kind) = (d = Dict{Any,Any}(); foreach(r -> get!(d, key(r), r), of(kind)); d)
+    marks, texts, figs = firstof("block"), firstof("text"), firstof("figure")
+    cells = Dict{Any,Vector{Any}}()
+    foreach(r -> push!(get!(cells, key(r), Any[]), r), of("cell"))
+    regions = [NamedTuple[] for _ in plan.deck]
+    for r in of("region")
+        si = get(plan.pages, r["page"], 0)
+        si == 0 && continue
+        t = findfirst(t -> get(t, "name", nothing) == r["name"] && t["page"] == r["page"], of("text"))
+        tr = t === nothing ? r : of("text")[t]
+        push!(regions[si], (name = String(r["name"]), page = Int(r["page"]), box = _mark_box(r),
+                            size = Float64(tr["size"]), lineheight = Float64(tr["lh"])))
+    end
+    blocks = [NamedTuple[] for _ in plan.deck]
+    for b in plan.blocks
+        b.slide == 0 && continue
+        k = ("s$(b.slide)f$(b.frag)", b.index)
+        r = get(marks, k, nothing)
+        page = box = size = lineheight = cols = rows = nothing
+        if r !== nothing
+            page, box = Int(r["page"]), _mark_box(r)
+            tr = get(texts, k, r)
+            size, lineheight = Float64(tr["size"]), Float64(tr["lh"])
+            tc = get(cells, k, Any[])
+            if b.kind == "figure" && haskey(figs, k)
+                box = _mark_box(figs[k])
+            elseif b.kind == "table" && !isempty(tc)
+                xs, ys = [Float64(c["x"]) for c in tc], [Float64(c["y"]) for c in tc]
+                box = (x = minimum(xs), y = minimum(ys), w = maximum(xs) - minimum(xs), h = maximum(ys) - minimum(ys))
+                cols = _tracks([c for c in tc if c["row"] == 0], "col", "x")
+                rows = _tracks([c for c in tc if c["col"] == 0], "row", "y")
+                size, lineheight = Float64(first(tc)["size"]), Float64(first(tc)["lh"])
+            end
+        end
+        push!(blocks[b.slide], (; b.kind, b.cell, b.frag, b.index, b.row, b.column, b.divcolumn, b.src, page, box, size,
+                                lineheight, cols, rows))
+    end
+    return [merge(sl, (regions = regions[si], blocks = blocks[si])) for (si, sl) in enumerate(plan.deck)]
+end
+
+# ── Exporters ─────────────────────────────────────────────────────────────────────────────────────
+# The deck value of an exporter (`SlateExtensionsBase.register_exporter!`; its docstring states the
+# keys) and the export through it.
+
+const _EXPORT_MAX_BYTES = 256 * 1024^2   # the size cap of the file that an exporter gives
+
+# The MIME type of a picture that the slides project staged, by its file extension.
+const _STAGED_MIME = Dict("pdf" => "application/pdf", "svg" => "image/svg+xml", "png" => "image/png",
+                          "jpg" => "image/jpeg", "jpeg" => "image/jpeg", "gif" => "image/gif", "webp" => "image/webp")
+
+# The markdown of a block for an exporter: each citation goes back from the sentinel of the Typst
+# export (`_cite_token`) to its markdown, `[@key]`, `[@key, supplement]` or `@key`.
+const _CITE_SENTINEL_RE = r"§c§([^§]*)§([^§]+)§([^§]*)§"
+_exporter_markdown(src::AbstractString) = replace(src, _CITE_SENTINEL_RE => function (s)
+    m = match(_CITE_SENTINEL_RE, s)
+    return m[1] == "p" ? "@" * m[2] : string("[@", m[2], isempty(m[3]) ? "" : ", " * m[3], "]")
+end)
+
+_deck_box(b) = b === nothing ? nothing : Dict{String,Any}("x" => b.x, "y" => b.y, "w" => b.w, "h" => b.h)
+
+# The `forms` of figure block `b`, in the order of `plan.mimes`. For each MIME type: the picture of the
+# figure hook, else a chunk of that type of the output, else the picture that the slides project
+# staged when it has that type. `file` is the staged picture of an output; a figure of a markdown cell
+# names its staged picture in its markdown, and a `{{ }}` value has its number in that name. A figure
+# of markdown with a video or audio file has that file as `file` (see `_media_forms`).
+function _figure_forms(plan::_SlidePlan, b, file, cells, dir, warnings)
+    slot, o = 0, nothing
+    if b.src === nothing
+        o = cells[b.cell].output
+    elseif file !== nothing
+        return _media_forms(plan, file, b.cell, warnings)
+    else
+        m = match(r"!\[[^\]]*\]\(<?([^)\s>]+)", b.src)
+        file = m === nothing ? nothing : String(m[1])
+        s = file === nothing ? nothing : match(r"_comp(\d+)\.\w+$", file)
+        slot = s === nothing ? -1 : parse(Int, s[1])
+        interp = cells[b.cell].interp
+        o = 1 <= slot <= length(interp) ? interp[slot] : nothing
+    end
+    hook = get(plan.forms, (b.cell, slot), Tuple{String,Vector{UInt8}}[])
+    root = normpath(dir) * Base.Filesystem.path_separator
+    path = file === nothing ? "" : normpath(joinpath(dir, file))
+    staged = startswith(path, root) && isfile(path) ? get(_STAGED_MIME, lowercase(chopprefix(splitext(path)[2], ".")), "") : ""
+    forms = Tuple{String,Vector{UInt8}}[]
+    for m in plan.mimes
+        i = findfirst(f -> first(f) == m, hook)
+        j = o === nothing ? nothing : findfirst(ch -> ch.mime == m, o.display)
+        bytes = i !== nothing ? hook[i][2] : j !== nothing ? copy(o.display[j].data) : staged == m ? read(path) : nothing
+        bytes === nothing || push!(forms, (m, bytes))
+    end
+    return forms
+end
+
+# The form of the video or audio file `path` of a markdown figure: its bytes under the MIME type of its
+# extension, when `plan.mimes` has that type. A file over the size cap gives no form and a warning.
+function _media_forms(plan::_SlidePlan, path, cell, warnings)
+    mime = first(split(_site_ctype(path), ';'))
+    mime in plan.mimes || return Tuple{String,Vector{UInt8}}[]
+    if filesize(path) > _EXPORT_MAX_BYTES
+        push!(warnings, string("Cell ", cell, ": the file `", basename(path), "` is larger than ", _EXPORT_MAX_BYTES >> 20,
+                               " MiB, so the export shows its alt text in its place."))
+        return Tuple{String,Vector{UInt8}}[]
+    end
+    return [(mime, read(path))]
+end
+
+function _deck_block(si, b, plan::_SlidePlan, files, cells, dir, warnings)
+    d = Dict{String,Any}("kind" => b.kind, "cell" => b.cell, "frag" => b.frag, "index" => b.index, "row" => b.row,
+                         "column" => b.column, "divcolumn" => b.divcolumn,
+                         "markdown" => b.src === nothing ? nothing : _exporter_markdown(b.src),
+                         "box" => _deck_box(b.box), "size" => b.size, "lineheight" => b.lineheight)
+    b.kind == "table" && (d["cols"] = b.cols; d["rows"] = b.rows)
+    b.kind == "figure" && (d["forms"] = _figure_forms(plan, b, get(files, (si, b.frag, b.index), nothing), cells, dir, warnings))
+    return d
+end
+
+function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir, warnings)
+    t = sl.title
+    return Dict{String,Any}(
+        "layout" => sl.layout, "transition" => sl.transition, "auto" => sl.auto,
+        "title" => t === nothing ? nothing : Dict{String,Any}("text" => get(plan.texts, (si, "title"), String(t.text)),
+                                                              "depth" => Int(t.depth), "cell" => String(t.cell)),
+        "notes" => String[cells[id].source for id in sl.notes],
+        "regions" => Any[Dict{String,Any}("name" => r.name, "text" => get(plan.texts, (si, r.name), nothing),
+                                          "box" => _deck_box(r.box), "size" => r.size, "lineheight" => r.lineheight)
+                 for r in sl.regions],
+        "blocks" => Any[_deck_block(si, b, plan, files, cells, dir, warnings) for b in sl.blocks])
+end
+
+"""
+    exporter_deck(nb; figure_mimes = ["image/png"], theme = "light", charttheme = "", warnings = String[]) -> Dict{String,Any}
+
+The deck value that an exporter gets (`SlateExtensionsBase.register_exporter!`, whose docstring states
+its keys): the slide model of the notebook with the boxes and the text sizes of its slides PDF, at the
+slide ratio and the slide level of the notebook. A figure block has a form for each type of
+`figure_mimes` that Slate has a picture of. `theme` and `charttheme` choose the Slate palette of the
+colour roles and of the figures, as for the slides PDF. The export warnings of the slides PDF go into
+`warnings`.
+"""
+function exporter_deck(nb::LiveNotebook; figure_mimes = ["image/png"], theme::AbstractString = "light",
+                       charttheme::AbstractString = "", warnings::Vector{String} = String[])
+    ratio = String(get(nb.report.meta, "slideratio", "16:9"))
+    plan = _SlidePlan(String[String(m) for m in figure_mimes])
+    figwarns = String[]
+    dir = _build_slides_project(nb; level = get(nb.report.meta, "slidelevel", 2), ratio, theme, charttheme, plan,
+                                warnings = figwarns)
+    try
+        recs = _typst_query(joinpath(dir, "doc.typ"), "<slate>"; marks = true)
+        append!(warnings, _slides_warnings(nb, recs, figwarns, plan))
+        files = Dict((b.slide, b.frag, b.index) => b.file for b in plan.blocks)
+        cells, title = lock(() -> (Dict(c.id => c for c in nb.report.cells),
+                                   String(report_frontmatter(nb.report; untitled = "").title)), nb.lock)
+        W, H = deck_canvas(ratio)
+        return Dict{String,Any}("title" => title, "size" => (Float64(W), Float64(H)), "ratio" => ratio,
+            "settings" => deck_settings_dict(notebook_deck_settings(nb).values; palette = _chart_theme(charttheme, theme)),
+            "slides" => Any[_deck_slide(si, sl, plan, files, cells, dir, warnings) for (si, sl) in enumerate(_slide_layout(plan, recs))])
+    finally
+        rm(dir; recursive = true, force = true)
+    end
+end
+
+"""
+    export_with(nb, name; theme = "light", charttheme = "", maxbytes = 256 MiB) -> Union{Nothing,NamedTuple}
+
+The file of the exporter `name` that a package of the notebook registers, as `(; exporter, bytes,
+warnings)`: Slate builds the deck value (`exporter_deck`) and the exporter runs on the main worker of
+the notebook. `warnings` are the export warnings of the slides PDF, then those of the exporter.
+`nothing` when no package of the notebook registers `name`. Throws when the exporter
+throws, or when its file has more than `maxbytes` bytes.
+"""
+function export_with(nb::LiveNotebook, name::AbstractString; theme::AbstractString = "light",
+                     charttheme::AbstractString = "", maxbytes::Integer = _EXPORT_MAX_BYTES)
+    _refresh_extensions_for_page!(nb)       # a package loaded since the last drain
+    i = findfirst(e -> e.name == name, notebook_exporters(nb))
+    i === nothing && return nothing
+    exporter = notebook_exporters(nb)[i]
+    warnings = String[]
+    deck = exporter_deck(nb; figure_mimes = exporter.figure_mimes, theme, charttheme, warnings)
+    out = ReportEngine.run_exporter(_running_kernel(nb, ""), exporter.name, deck; maxbytes)
+    append!(warnings, out.warnings)
+    return (; exporter, out.bytes, warnings = unique!(warnings))
 end
 
 # Write a deck template's files into the project `dir` and append its source to `io`, after the base
@@ -2551,7 +3199,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                                override::Bool = false, ratio::AbstractString = "16:9", code::AbstractString = "hidden",
                                include_source::Bool = false, include_params::Bool = false,
                                notes::Bool = false, level::Integer = 2, outputs::AbstractString = "all",
-                               warnings::Vector{String} = String[])
+                               warnings::Vector{String} = String[], plan::_SlidePlan = _SlidePlan())
     show_source = include_source && code != "hidden"
     # Pull the manifest now, so an edit to a file-backed template part (`@pkg_asset`) reaches this export
     # without a run or a worker restart.
@@ -2559,8 +3207,9 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
     ds = notebook_deck_settings(nb)
     palette = _chart_theme(charttheme, theme)       # the Slate palette of the `slate.` colours
     ct = _deck_figure_palette(ds.values, palette)   # the Slate palette the figures render in
-    geo = _slide_figure_geometry(nb, ds, ratio, level, ct)
+    geo = _slide_figure_geometry(nb, ds, ratio, level, ct; page_palette = palette)
     compfigs = _warm_hook_figs!(nb, _CompFigs(), warnings, geo; progress = cid -> _export_progress(nb, cid))
+    isempty(plan.mimes) || _hook_forms!(plan, nb, warnings, geo, compfigs)
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_html_rasters!(nb; theme = ct, figs = compfigs)   # one round-trip, under the EXPORT's palette (see above)
@@ -2583,12 +3232,33 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
         fm = report_frontmatter(nb.report)
         citekeys = Set(e.key for e in bibliography_index(nb.report, dirname(abspath(nb.path))))
         arg(s) = isempty(strip(s)) ? "none" : "\"" * _typ_str(s) * "\""
-        if fm.has
-            print(io, "#slide(layout: \"title\", metablock(", arg(fm.title), ", ", arg(fm.subtitle), ", ",
-                  arg(fm.byline), ", ", arg(fm.abstract), "))\n\n")
-        end
         bycell = Dict(c.id => c for c in cells)
         deck = slide_deck(nb; level = level, drop = c -> c.id in fm.skip || :bibliography in c.flags)
+        plan.deck = deck
+        fragkw = (; theme = "deck", charttheme = ct, override = override, show_source = show_source,
+                  include_params = include_params, citekeys = citekeys, outputs = outputs, sizes = mediasz, warnings,
+                  compfigs = compfigs)
+        if fm.has
+            # The title page belongs to the slide of the model that holds the `title` cell. The lines of
+            # that cell that are no region are the blocks of fragment 0 of that slide.
+            tsi = something(findfirst(sl -> (sl.title !== nothing && sl.title.cell == fm.rolecell) ||
+                                            any(f -> f.cell == fm.rolecell, sl.frags), slide_deck(nb; level = level)), 0)
+            rio = IOBuffer()
+            if !isempty(fm.rest)
+                tc = bycell[fm.rolecell]
+                _emit_slide_frag!(rio, dir, "s$(tsi)f0", nb,
+                                  (cell = tc, src = fm.rest, interpbase = _md_interp_count(tc.source) - _md_interp_count(fm.rest));
+                                  blk = _block_printer(plan, tsi, 0, (cell = tc.id, row = 1, column = 1)), fragkw...)
+            end
+            meta = string("metablock(", arg(fm.title), ", ", arg(fm.subtitle), ", ", arg(fm.byline), ", ", arg(fm.abstract), ")")
+            print(io, "#SUBLEVEL.update(", fm.sublevel, ")\n")   # the heading level of the subtitle, for `metablock`
+            print(io, "#slide(layout: \"title\", ", position(rio) == 0 ? meta : string("metarest(", meta, ", [\n", String(take!(rio)), "])"), ")\n\n")
+            haskey(bycell, fm.rolecell) && _error_warnings!(warnings, tsi, [(bycell[fm.rolecell], nothing, 0)])
+            push!(plan.pages, tsi)
+            for (name, text) in (("title", fm.title), ("subtitle", fm.subtitle), ("byline", fm.byline), ("abstract", fm.abstract))
+                isempty(strip(text)) || get!(plan.texts, (tsi, name), String(text))
+            end
+        end
         titles = fill("", length(deck))   # per slide: its `title: …` argument, or "" without a title
         for (si, sl) in enumerate(deck)
             t = sl.title
@@ -2596,14 +3266,19 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             (t === nothing || (t.cell == fm.titlecell && t.depth == 1)) && continue
             md = _md_for_typst(bycell[t.cell], t.text; citekeys = citekeys, interpbase = t.interpbase)
             write(joinpath(dir, "s$(si)title.md"),
-                  _stage_typst_md_media(md, dir, "s$(si)title", _proj_root(nb); sizes = mediasz))
+                  _stage_typst_md_media(md, dir, "s$(si)title", _proj_root(nb); sizes = mediasz, warnings, cell = t.cell))
             titles[si] = "title: heading(level: $(t.depth), $(_md_render("s$(si)title.md")))"
+            get!(plan.texts, (si, "title"), _exporter_markdown(md))   # the text that the PDF draws, `{{ }}` resolved
         end
         for (si, sl) in enumerate(deck)
             frags = [(cell = bycell[b.cell], src = b.src, interpbase = b.interpbase) for b in sl.frags]
+            parts = Any[(f.cell, f.src, f.interpbase) for f in frags]
+            sl.title === nothing || pushfirst!(parts, (bycell[sl.title.cell], sl.title.text, sl.title.interpbase))
+            _error_warnings!(warnings, si, parts)
             (isempty(frags) && isempty(titles[si])) && continue
             args = filter(!isempty, [sl.layout === nothing ? "" : "layout: \"$(_typ_str(sl.layout))\"", titles[si]])
             print(io, isempty(args) ? "#slide[\n" : "#slide($(join(args, ", ")))[\n")
+            push!(plan.pages, si)
             # Each side-by-side row of the model is one `slidecols` call with a column per fragment. Rows
             # that print something have the gap between cells of the live deck between them.
             gap = false
@@ -2617,9 +3292,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
                         body, off = _body_after_hoisted_h1(f.cell)
                         f = (cell = f.cell, src = body, interpbase = off)
                     end
-                    _emit_slide_frag!(rio, dir, "s$(si)f$(fi)", nb, f; theme = "deck", charttheme = ct, override = override,
-                                      show_source = show_source, include_params = include_params, citekeys = citekeys,
-                                      outputs = outputs, sizes = mediasz, compfigs = compfigs)
+                    _emit_slide_frag!(rio, dir, "s$(si)f$(fi)", nb, f; blk = _block_printer(plan, si, fi, sl.frags[fi]), fragkw...)
                 end
                 rio = IOBuffer()
                 # A row that holds a markdown cell centres its cells, as on the live deck.
@@ -2642,13 +3315,17 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             for (si, sl) in enumerate(deck)
                 isempty(sl.notes) && continue
                 ntext = join((_md_for_typst(bycell[id]; citekeys = citekeys) for id in sl.notes), "\n\n")
-                ntext = _stage_typst_md_media(ntext, dir, "notes$(si)", _proj_root(nb); sizes = mediasz)   # embedded images → staged files
+                ntext = _stage_typst_md_media(ntext, dir, "notes$(si)", _proj_root(nb); sizes = mediasz, warnings,
+                                              cell = join(sl.notes, ", "))   # embedded images → staged files
                 isempty(strip(ntext)) && continue
                 write(joinpath(dir, "notes$(si).md"), ntext)
                 print(io, "#slide(", join(filter(!isempty, ["layout: \"notes\"", titles[si], "n: $(si)"]), ", "), ")[\n",
                       "#", _md_render("notes$(si).md"), "\n]\n\n")
             end
         end
+        # The slide of the title page has the layout of that page (`"title"`) in the plan, unless its tag
+        # sets one. After the pages: a body page of that slide keeps the layout of its tag.
+        fm.has && tsi > 0 && plan.deck[tsi].layout === nothing && (plan.deck[tsi] = merge(plan.deck[tsi], (; layout = "title")))
         write(joinpath(dir, "media.json"), JSON.json(mediasz))   # always present: the preamble reads it
         write(joinpath(dir, "doc.typ"), String(take!(io)))
         return dir

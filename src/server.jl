@@ -74,6 +74,9 @@ SseClient(n::Integer) = SseClient(Channel{String}(n), n, Threads.Atomic{Float64}
 const DeckTemplate = @NamedTuple{hash::String, source::String, settings::String, files::Dict{String,Vector{UInt8}},
                                  body_width::Union{Nothing,Float64}}
 
+# An exporter that the notebook's packages registered (`register_exporter!`), as the hub checked it.
+const Exporter = @NamedTuple{name::String, label::String, ext::String, mime::String, figure_mimes::Vector{String}}
+
 mutable struct LiveNotebook
     id::String                           # hub id (unique; used in /n/<id> + /api/<id>/…)
     path::String
@@ -109,6 +112,8 @@ mutable struct LiveNotebook
     deck_template::Union{Nothing,DeckTemplate}   # the Typst deck template the packages declare, with its hash; its
                                          # bytes come from the worker only when the manifest's hash changes. See
                                          # `_refresh_deck_template!` and `notebook_deck_template`.
+    exporters::Vector{Exporter}          # the exporters the packages declare, from the same manifest, each checked
+                                         # by `_merge_exporters!`. The functions stay on the worker.
     # Set the moment the notebook starts closing. Work started for it in the background (a prepare, a
     # placement, a connect) checks it before creating anything for the notebook or running its cells.
     closed::Bool
@@ -126,7 +131,7 @@ mutable struct LiveNotebook
     LiveNotebook(id, path, report, kernel, version, undo, redo, lock, listeners, llock, agent_id, agent_busy, agents) =
         new(id, path, report, kernel, version, undo, redo, lock, listeners, llock, agent_id, agent_busy, agents,
             Cell[], @NamedTuple{id::String, js::String, esm::Bool, kind::String}[], Dict{String,String}(),
-            Dict{String,String}(), Set{String}(), nothing, false, false, 0, Dict{String,UInt}())
+            Dict{String,String}(), Set{String}(), nothing, Exporter[], false, false, 0, Dict{String,UInt}())
 end
 
 # ── Notebook-lock protocol (`nb.lock`) ─────────────────────────────────────────────────────────────
@@ -2167,6 +2172,7 @@ function _merge_manifest!(nb::LiveNotebook, manifest)
         _refresh_fences!(nb, Set{String}(String(f) for f in fl))
     end && (changed = true))
     _refresh_deck_template!(nb, manifest) && (changed = true)
+    _merge_exporters!(nb, manifest) && (changed = true)
     return changed
 end
 
@@ -2199,6 +2205,58 @@ function _refresh_deck_template!(nb::LiveNotebook, manifest)
     end
     return false
 end
+
+# The checks of an exporter (`register_exporter!`). Its name goes into a URL path, its file extension
+# and MIME type into HTTP headers, so each must match a strict pattern. A MIME type is `type/subtype`
+# with the characters of RFC 6838. The patterns end in `\z`, not `$`, which also matches before a last
+# line feed.
+const _EXPORTER_NAME_RE = r"\A[a-z0-9][a-z0-9-]{0,31}\z"
+const _EXPORTER_EXT_RE = r"\A[a-z0-9]{1,8}\z"
+const _MIME_RE = r"\A[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\z"
+const _EXPORTER_WARNED = Set{String}()   # each reason is logged once in a hub session: a manifest comes with each drain
+const _EXPORTER_WARNED_LOCK = ReentrantLock()
+
+# Keep the notebook's exporters in step with the manifest. An exporter that fails a check is dropped, with
+# a warning in the hub log. A manifest without `exporters` (an older SlateExtensionsBase) has none.
+# Returns true when the list changed.
+function _merge_exporters!(nb::LiveNotebook, manifest)
+    list = Exporter[]
+    for e in something(_manifest_field(manifest, :exporters), ())
+        x = _check_exporter(e)
+        x isa Exporter && (push!(list, x); continue)
+        fresh = lock(_EXPORTER_WARNED_LOCK) do
+            x in _EXPORTER_WARNED ? false : (push!(_EXPORTER_WARNED, x); true)
+        end
+        fresh && @warn "slate: an exporter of the notebook's packages is dropped: $x" notebook = nb.id
+    end
+    return lock(nb.lock) do
+        list == nb.exporters && return false
+        nb.exporters = list
+        return true
+    end
+end
+
+# The exporter `e` of a manifest as an `Exporter`, or the reason why it fails a check, as a `String`.
+function _check_exporter(e)
+    str(k) = (v = _manifest_field(e, k); v isa AbstractString ? String(v) : nothing)
+    name, label, ext, mime = str(:name), str(:label), str(:ext), str(:mime)
+    (name !== nothing && occursin(_EXPORTER_NAME_RE, name)) ||
+        return "the name $(repr(name)) is not 1 to 32 lowercase letters, digits and `-`"
+    (label !== nothing && !isempty(strip(label))) || return "exporter `$name` has no label"
+    (ext !== nothing && occursin(_EXPORTER_EXT_RE, ext)) ||
+        return "exporter `$name`: the file extension $(repr(ext)) is not 1 to 8 lowercase letters and digits"
+    (mime !== nothing && occursin(_MIME_RE, mime)) || return "exporter `$name`: $(repr(mime)) is not a type/subtype MIME type"
+    figs = String[]
+    for m in something(_manifest_field(e, :figure_mimes), ())
+        (m isa AbstractString && occursin(_MIME_RE, m)) ||
+            return "exporter `$name`: the figure MIME type $(repr(m)) is not a type/subtype MIME type"
+        push!(figs, String(m))
+    end
+    return (; name, label, ext, mime, figure_mimes = figs)
+end
+
+# The exporters that the notebook's packages declare (`register_exporter!`), checked.
+notebook_exporters(nb::LiveNotebook) = lock(() -> copy(nb.exporters), nb.lock)
 
 # Pull the manifest before serving a page its full state, so a page load sees the front-end as the worker
 # has it now. A file-backed script (`@pkg_asset`) is re-read by the worker when its file changes, so an

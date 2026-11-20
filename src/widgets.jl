@@ -66,6 +66,10 @@ function extension_manifest_wire(m)
     end
     hasproperty(m, :fences) && (out["fences"] = String[String(f) for f in m.fences])
     hasproperty(m, :deck_template_hash) && (out["deck_template_hash"] = String(m.deck_template_hash))
+    # Sent as the package gave them; the hub checks each value (`_merge_exporters!`).
+    hasproperty(m, :exporters) && (out["exporters"] = Dict{String,Any}[Dict{String,Any}(
+        "name" => string(e.name), "label" => string(e.label), "ext" => string(e.ext), "mime" => string(e.mime),
+        "figure_mimes" => String[string(x) for x in e.figure_mimes]) for e in m.exporters])
     return out
 end
 
@@ -81,6 +85,26 @@ function deck_template_wire()
         "files" => Dict{String,Any}[Dict{String,Any}("name" => n, "b64" => Base64.base64encode(b))
                                     for (n, b) in sort!(collect(t.files); by = first)])
 end
+
+# The file that the exporter `name` (`register_exporter!`) makes of `deck`, as the gate wire carries it:
+# `(; ok = true, bytes, warnings)` with the export warnings of the exporter, or `(; ok = false, error)`
+# with the first line of the error. A file of more than `maxbytes` bytes is an error, so that it does
+# not cross the gate.
+function exporter_wire(name::AbstractString, deck, maxbytes::Integer)
+    out = try
+        SlateExtensionsBase.run_exporter(name, deck)
+    catch e
+        return (; ok = false, error = String(first(split(sprint(showerror, e), '\n'))))
+    end
+    length(out.bytes) > maxbytes &&
+        return (; ok = false, error = "the exporter gave $(length(out.bytes)) bytes, more than the limit of $maxbytes bytes")
+    return (; ok = true, out.bytes, out.warnings)
+end
+
+"""The file that the exporter `name` (`SlateExtensionsBase.register_exporter!`) makes of the deck value
+`deck` that the hub built: `(; ok, bytes, warnings)` with the export warnings of the exporter, or
+`(; ok = false, error)`. A file of more than `maxbytes` bytes is an error and does not cross the gate."""
+__slate_export(; name::String = "", deck = Dict{String,Any}(), maxbytes::Int = 0) = exporter_wire(name, deck, maxbytes)
 
 # slate_fingerprint + memo-store introspection — shared notebook helpers injected below
 # (one include here serves both namespaces, mirroring how this file itself is shared).

@@ -236,8 +236,8 @@ Base.show(io::IO, ::SlateHtmlMIME, x)      = print(io, (_render(x)::SlateHtml).h
     FigureContext
 
 What Slate tells [`slate_export_figure`](@ref) about the place of a figure in an export. Slate makes
-it, and a method reads its fields. A later Slate can add a field, so a method must not make a
-`FigureContext` itself.
+it, and a method reads its fields. A package test can make one from the first five fields: each field
+after them has a default, so a later Slate can add a field and such a test keeps working.
 
 - `width::Float64`: the width of the column of the figure, in CSS px. On a slide 1 px is the slide unit
   `u` (the slide is 1920 u wide at 16:9 and 16:10, 1440 u at 4:3), so text in a figure drawn `width`
@@ -250,6 +250,14 @@ it, and a method reads its fields. A later Slate can add a field, so a method mu
 - `slate_palette::String`: the name of the Slate palette of the figures of the export, for example
   `"midnight"` or `"daylight"`.
 - `dark::Bool`: `true` when that palette is dark.
+- `text_size::Float64`: the size of the body text of the page in the same px. On a slide it is the
+  body text size of the deck at full size (34 u by default), before the fit makes a tall slide smaller.
+  In a document it is the body text size at 96 dpi. Set the text of the figure relative to it, so that
+  the figure text and the body text have the same size. Default 16, the CSS default text size.
+- `roles::Dict{String,String}`: the colour roles of the page as hex values (`"#rrggbb"`), by role
+  name: `fg`, `strong`, `dim`, `accent`, `accent2`, `surface` and `ink`. On a slide they are the roles
+  of the deck settings of the notebook (the deck template can set them), in the Slate palette of the
+  export. In a document they are the base roles in the palette of the figures. Default: no roles.
 
 Slate computes the size from the columns of the page before the layout. The export then scales the
 picture as one unit to fit the page.
@@ -260,6 +268,8 @@ Base.@kwdef struct FigureContext
     scale::Float64
     slate_palette::String
     dark::Bool
+    text_size::Float64 = 16.0
+    roles::Dict{String,String} = Dict{String,String}()
 end
 
 """
@@ -286,8 +296,10 @@ component, then the output as the cell showed it (an image, or a raster of its H
 line to the export warnings; the export does not fail.
 
 Slate keeps the value of each output whose type has a method, so that an export can call the hook. A
-run of the cell replaces the value. A notebook that is open from its stored outputs and did not run
-has no values: its export uses the stored outputs and warns.
+run of the cell replaces the value. A cell that Slate restored from its memo, or that a notebook open
+from its stored outputs did not run, has no value: the export uses the stored output and warns with
+the names of those cells. A run of the notebook restores them from the memo again; a forced run of
+each cell (its ▶ button) computes the value.
 """
 slate_export_figure(::IO, ::MIME, x, ctx) = false
 

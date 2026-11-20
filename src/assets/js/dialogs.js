@@ -597,6 +597,24 @@ async function _runDeckPrint() {
   } catch (e) { await alertDark('PDF export failed: ' + e); }
   finally { hideLoading(); }
 }
+// An export format of a package of the notebook (`register_exporter!`, format `x:<name>`): the hub
+// builds the deck and the exporter writes the file. The Theme picker chooses the Slate palette of the
+// deck settings that the exporter gets; the exporter has no other option.
+async function _runExporter(name) {
+  const x = ((nbState && nbState.exporters) || []).find(e => e.name === name);
+  if (!x) return;
+  localStorage.setItem('slate_pdftheme', document.getElementById('pdftheme').value);
+  showLoading('Exporting the deck…');
+  try {
+    const { theme, charttheme } = _resolveExportTheme(document.getElementById('pdftheme').value);
+    _pdfShowWarnings([]);
+    const r = await fetch(_apipath('/api/export/' + encodeURIComponent(name)) + '?theme=' + theme + '&charttheme=' + encodeURIComponent(charttheme));
+    if (!r.ok) { await alertDark('Export failed:\n' + (await r.text())); return; }
+    _saveBlob(await r.blob(), '.' + x.ext);
+    _pdfShowWarnings(JSON.parse(r.headers.get('X-Slate-Warnings') || '[]'));
+  } catch (e) { await alertDark('Export failed: ' + e); }
+  finally { hideLoading(); }
+}
 // ── The unified modal ─────────────────────────────────────────────────────────
 function _exFormat() { return document.getElementById('exfmt').value; }
 function closeExportModal() { document.getElementById('exportbg').classList.remove('show'); }
@@ -608,18 +626,20 @@ function _pdfSyncThemeWarn() {
   if (row) row.style.display = (_exFormat() === 'pdf' && !_pdfPresent() && pick && pick !== 'asis') ? '' : 'none';
 }
 // Show the speaker-notes row only for the slides layout (PDF only), and the line that says the deck
-// template fixes the colours (the Theme picker changes nothing then) for both deck layouts.
+// template fixes the colours (the Theme picker changes nothing then) for both deck layouts and for an
+// exporter, whose deck value takes the colours of the Theme picker too.
 function _pdfSyncSlides() {
   const lay = document.getElementById('pdflayout').value || '';
   const slides = lay.startsWith('slides');
   const row = document.getElementById('pdfnotesrow');
   if (row) row.style.display = (_exFormat() === 'pdf' && slides) ? '' : 'none';
   const fixed = document.getElementById('pdffixedrow');
-  if (fixed) fixed.style.display = (_exFormat() === 'pdf' && (slides || _pdfPresent()) && nbState && nbState.deckFixesColours) ? '' : 'none';
+  const deck = _exFormat().startsWith('x:') || (_exFormat() === 'pdf' && (slides || _pdfPresent()));
+  if (fixed) fixed.style.display = (deck && nbState && nbState.deckFixesColours) ? '' : 'none';
 }
 // Show only the rows for the selected format.
 function _exSyncRows() {
-  const f = _exFormat();
+  const f = _exFormat().startsWith('x:') ? 'exporter' : _exFormat();   // all exporters share their rows
   document.querySelectorAll('#exportbg .exrow').forEach(el => { el.style.display = el.classList.contains('fmt-' + f) ? '' : 'none'; });
   if (f === 'pdf') {
     // The Chrome layout needs a browser on the hub's machine: without one it is listed but cannot
@@ -637,6 +657,7 @@ function _exSyncRows() {
     document.getElementById('pdfratiorow').style.display = deck ? '' : 'none';
     document.getElementById('pdfratio').value = (nbState && nbState.slideRatio) || '16:9';
   }
+  if (f === 'exporter') _pdfSyncSlides();
   if (f === 'docs') _docsPrefill();
   // A write's log row is part of its format's rows, but has nothing to show until something is written.
   [['appoutrow', 'appout'], ['docsoutrow', 'docsout'], ['pdfwarnrow', 'pdfwarns']].forEach(([r, o]) => {
@@ -833,6 +854,13 @@ function openExport(preset) {
   let fmt = preset === 'slides' ? 'pdf' : preset === 'website' ? 'website' : (localStorage.getItem('slate_exfmt') || 'html');
   if (preset !== 'website' && fmt === 'website') fmt = 'html';   // Website is Publish now, not an Export format
   const exf = document.getElementById('exfmt');
+  // One entry for each exporter of the notebook's packages. The label is text, never HTML.
+  exf.querySelectorAll('option[data-exporter]').forEach(o => o.remove());
+  ((nbState && nbState.exporters) || []).forEach(x => {
+    const o = document.createElement('option');
+    o.value = 'x:' + x.name; o.dataset.exporter = ''; o.textContent = x.label;
+    exf.appendChild(o);
+  });
   if (![...exf.options].some(o => o.value === fmt)) fmt = 'html';   // a saved format the dialog no longer offers
   exf.value = fmt;
   ['pdftheme', 'pdflayout', 'pdfbody', 'pdfcode', 'pdfsteps'].forEach(id => {
@@ -942,6 +970,7 @@ function closeExport(go) {
   }
   if (fmt === 'website') return;   // publishing runs via the ☁ button → publishToSite(), not through closeExport
   if (fmt === 'app' || fmt === 'docs') return;       // …and the app export via "Write app folder" → exportApp(), which keeps the dialog open
+  if (fmt.startsWith('x:')) return _runExporter(fmt.slice(2));
   if (fmt === 'standalone') return exportStandalone();
   return _pdfPresent() ? _runDeckPrint() : _runPdfExport();
 }

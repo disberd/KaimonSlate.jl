@@ -1100,6 +1100,10 @@ function cell_json(c::Cell, bindref::Dict{String,Tuple{Cell,BindSpec}} = Dict{St
     # asset route (`_local_media`).
     is_prose(c.kind) && report !== nothing &&
         (_mdsrc = _local_media(_mdsrc, nbid, String(get(report.meta, "assetbase", ""))))
+    # The regions of the title slide of a deck: the subtitle and the byline of the `title` cell and the
+    # text of an `abstract` cell are each in an element (`_title_cell`).
+    is_prose(c.kind) && :title in c.flags && (_mdsrc = _title_cell(_mdsrc).marked)
+    is_prose(c.kind) && :abstract in c.flags && (_mdsrc = string("<slate-abstract>\n\n", _mdsrc, "\n\n</slate-abstract>"))
     d = Dict{String,Any}(
         "id"      => c.id,
         # How recent this payload is. The same cell reaches the browser over two transports, and
@@ -1191,7 +1195,12 @@ function cell_json(c::Cell, bindref::Dict{String,Tuple{Cell,BindSpec}} = Dict{St
         d["roleCaption"] = true
         if haskey(fignums, c.id)
             d["figNum"] = fignums[c.id]
-            d["output"] = "<span class=\"figlabel\">Figure " * string(fignums[c.id]) * ".</span> " * d["output"]
+            # The label goes at the start of the first paragraph of the caption, so that it stays on
+            # that line where a paragraph is a block (on a slide).
+            label = "<span class=\"figlabel\">Figure " * string(fignums[c.id]) * ".</span> "
+            first_p = r"<slate-caption number=\"\d+\">\s*<p>"
+            d["output"] = occursin(first_p, d["output"]) ? replace(d["output"], first_p => s -> s * label; count = 1) :
+                          label * d["output"]
         end
     end
     c.kind === ReportEngine.FOREIGN && (d["header"] = c.header)   # its `#%%` line as a newer Slate wrote it
@@ -1799,6 +1808,8 @@ function state_json(nb::LiveNotebook)
         meta["deckFigurePalette"] = ds.values["figures"]["slate-palette"]
     end
     meta["deckBrowser"] = chrome_status_cached().problem                    # "" = the deck print, video and captures can run
+    # The export formats of the notebook's packages (`register_exporter!`), for the export dialog.
+    meta["exporters"] = [Dict("name" => e.name, "label" => e.label, "ext" => e.ext) for e in notebook_exporters(nb)]
     meta["bibStyle"] = get(nb.report.meta, "bibstyle", "ieee")               # CSL citation/reference style
     meta["agentModel"] = get(nb.report.meta, "agentmodel", "")               # per-notebook agent-model override ("" = browser global)
     meta["agentAvailable"] = _agent_available()   # false on a standalone hub (slate --own / serve_notebook) → the UI disables agent chat

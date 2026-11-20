@@ -944,6 +944,8 @@ const _EMBED_SRC_RE = Regex(raw"""\bsrc=(["'])(data:[^"']+|/n/[^"'/]+/asset/[^"'
 # The URL, then an OPTIONAL CommonMark title (` "…"`) before the `)` — so `![a](url "cap")` still matches,
 # then an OPTIONAL `{width=…}` attribute block (capture 3), which binds to the image it directly follows.
 const _EMBED_MD_RE  = Regex(raw"""!\[([^\]]*)\]\(\s*(data:[^)\s]+|/n/[^)/\s]+/asset/[^)\s]+)(?:\s+"[^"]*")?\s*\)(\{[^{}\n]*\})?""")
+# The same shape with any URL.
+const _MD_IMG_RE    = Regex(raw"""!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)(\{[^{}\n]*\})?""")
 # Any markdown image followed by an attribute block, whatever its URL — used to drop blocks the Typst
 # path has already consumed (or can't use), so one never reaches the page as literal prose.
 const _MD_IMG_ATTR_RE = Regex(raw"""(!\[[^\]]*\]\([^)\n]*\))\{[^{}\n]*\}""")
@@ -1103,12 +1105,33 @@ function _embedded_asset_files(cells, assetbase::AbstractString)
     return out
 end
 
+# The file of an asset-route URL when it is a video or an audio file, else `nothing`.
+function _media_file(assetbase::AbstractString, url::AbstractString)
+    m = match(r"^/n/[^/]+/asset/(.*)$", url)
+    p = m === nothing ? nothing : _asset_abspath(assetbase, HTTP.URIs.unescapeuri(String(m.captures[1])))
+    return p !== nothing && _is_blob_media(_site_ctype(p)) ? p : nothing
+end
+
+# The mark of a video or audio file in staged markdown (see `_stage_typst_md_media`). The unit
+# separator does not occur in markdown text.
+const _MEDIA_MARK_RE = r"\x1fmedia:([^\x1f]*)\x1f"
+_media_mark(path::AbstractString) = string("\x1fmedia:", path, "\x1f")
+# The markdown `md` with no media marks, and the file of its first mark, or `nothing`.
+_take_media_marks(md::AbstractString) =
+    (m = match(_MEDIA_MARK_RE, md); (replace(md, _MEDIA_MARK_RE => ""), m === nothing ? nothing : String(m[1])))
+
 # Stage author-embedded Markdown images into a Typst project dir so `image()` resolves (Typst is
 # sandboxed to `dir`). Each `data:`/asset IMAGE → bytes written as `<base>_media<N>.<ext>`, its
 # `![alt](…)` rewritten to that local filename. Non-image media (audio/video, which a PDF can't play)
-# and unresolvable refs collapse to their alt text — so an embedded image never aborts the compile.
+# collapse to their alt text. With `media = true`, a video or audio file of the project also leaves a
+# mark with its path after the alt text: `_take_media_marks` removes it before the text is written.
+# An image whose file is not in `dir` after that (a missing file, a file outside the project, a remote
+# address) shows its alt text, or its address when it has no alt text, and adds a line to `warnings`
+# with the id `cell`: Typst stops the whole compile on a missing file.
+# Images in code spans and fenced code blocks stay as they are.
 function _stage_typst_md_media(md::AbstractString, dir::AbstractString, base::AbstractString,
-                               assetbase::AbstractString; sizes = nothing)
+                               assetbase::AbstractString; sizes = nothing, warnings = nothing, cell = nothing,
+                               media::Bool = false)
     s = _local_media(md, "_", assetbase)
     if occursin("data:", s) || occursin("/asset/", s)
         # Which images stand alone on their line (a figure, centred) vs sit in a run of prose (inline
@@ -1119,8 +1142,10 @@ function _stage_typst_md_media(md::AbstractString, dir::AbstractString, base::Ab
         s = replace(s, _EMBED_MD_RE => function (m)
             mm = match(_EMBED_MD_RE, m); alt = String(mm.captures[1]); url = String(mm.captures[2])
             mi[] += 1
+            clip = _media_file(assetbase, url)
+            clip === nothing || return string(isempty(alt) ? "" : _md_escape_text(alt), media ? _media_mark(clip) : "")
             got = _embedded_media(assetbase, url)
-            got === nothing && return isempty(alt) ? "" : _md_escape_text(alt)
+            got === nothing && return m   # unreadable: the pass below replaces it
             bytes, mime, ext = got
             startswith(lowercase(mime), "image/") || return isempty(alt) ? "" : _md_escape_text(alt)
             n[] += 1
@@ -1133,6 +1158,15 @@ function _stage_typst_md_media(md::AbstractString, dir::AbstractString, base::Ab
                 isempty(e) || (sizes[fname] = e)
             end
             return string("![", alt, "](", fname, ")")
+        end)
+    end
+    s = _map_outside_code(s) do t
+        replace(t, _MD_IMG_RE => function (m)
+            mm = match(_MD_IMG_RE, m); alt = String(mm.captures[1]); url = String(mm.captures[2])
+            _asset_abspath(dir, url) === nothing || return m
+            warnings === nothing || push!(warnings, string(cell === nothing ? "" : "Cell $cell: ", "the file of the image `", url,
+                "` is not in the project, so the export shows ", isempty(alt) ? "its address" : "its alt text", " in its place."))
+            return _md_escape_text(isempty(alt) ? url : alt)
         end)
     end
     return _md_drop_attrs(s)   # consumed above, or unusable — never printed

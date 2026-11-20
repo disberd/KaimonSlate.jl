@@ -357,6 +357,22 @@ function figure_export(cellid::AbstractString, slot::Integer, mimes, ctx)
     return (; held = true, mime = "")
 end
 
+"""The picture of the figure that output `slot` of `cell` showed, from its figure hook (`figure_export`):
+`(; held, mime, b64, error, type)`. The context fields are those of `SlateExtensionsBase.FigureContext`;
+`max_height` 0 means none (a document). `held` is false when the worker keeps no value for the output;
+`mime` is empty when the hook declines or throws (`error` then holds the first line of the error)."""
+function __slate_export_figure(; cell::String = "", slot::Int = 0, mimes::Vector = Any[], width::Float64 = 0.0,
+                               max_height::Float64 = 0.0, scale::Float64 = 2.0, slate_palette::String = "",
+                               dark::Bool = false, text_size::Real = 0.0, roles = Dict{String,String}())
+    _FIGURE_HOOK_OK || return (; held = false, mime = "", b64 = "", error = "", type = "")
+    ctx = SlateExtensionsBase.FigureContext(; width, max_height = max_height > 0 ? max_height : nothing, scale,
+                                            slate_palette, dark, text_size = Float64(text_size),
+                                            roles = Dict{String,String}(String(k) => String(v) for (k, v) in roles))
+    r = figure_export(cell, slot, String[String(m) for m in mimes], ctx)
+    return (; held = r.held, mime = get(r, :mime, ""), b64 = haskey(r, :bytes) ? Base64.base64encode(r.bytes) : "",
+            error = get(r, :error, ""), type = get(r, :type, ""))
+end
+
 # A layer with this many elements goes into the PDF as an image (at twice its size) rather than as
 # vector shapes: a heatmap is one rectangle per cell, and a few million of them make a PDF of tens of
 # megabytes that takes most of a minute to write. Axes, ticks and text stay vector. A layer the cell

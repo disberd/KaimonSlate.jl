@@ -19,11 +19,14 @@
 #
 # The detector looks at the top-level blocks and at the blocks of each `:::` fenced div (a div is a
 # container: print drops its fence lines and keeps its blocks). It does not look inside a block: a
-# table in an admonition is part of the admonition.
+# table in an admonition is part of the admonition. It does not look inside the element of a region
+# of the title slide (`_REGION_ELEMENTS`): the text of a region is plain text on every target, so an
+# emphasis byline is no caption. Such an element is one part of the kind `prose`.
 
 const BLOCK_KINDS = ("prose", "key-message", "caption", "admonition", "code", "figure", "table")
 const _WRAPPED_KINDS = ("key-message", "caption", "admonition", "figure", "table")
-const _SLATE_TAG_RE = Regex("<(/?)slate-(" * join(_WRAPPED_KINDS, "|") * ")(?=[\\s>])")
+const _REGION_ELEMENTS = ("subtitle", "byline", "abstract")
+const _SLATE_TAG_RE = Regex("<(/?)slate-(" * join((_WRAPPED_KINDS..., _REGION_ELEMENTS...), "|") * ")(?=[\\s>])")
 # The text after the emphasis of a caption: citations only, in the source form (`[@key]`, `@key`), as
 # the citation link of the page, or as the citation mark of the Typst export.
 const _CAPTION_TAIL_RE = r"^(?:\s*(?:\[[^\]]*@[^\]]*\]|<a class=\"(?:cite|figref)\"[^>]*>.*?</a>|§c§[^§]*§[^§]+§[^§]*§|@[\w:.\-]+)[,;.]?)*\s*$"s
@@ -148,7 +151,7 @@ function _md_blocks(src::AbstractString; plain::Bool = false, caption::Union{Not
             b = min(b, limit)
             while b > a && isempty(strip(lines[b])); b -= 1; end
             if m !== nothing && m.offset == 1 && isempty(m[1])
-                block!(String(m[2]), a, b)
+                block!(m[2] in _REGION_ELEMENTS ? "prose" : String(m[2]), a, b)
             elseif caption !== nothing
                 block!("caption", a, b; wrap = true, attrs = numbered ? "" : " number=\"$caption\"")
                 numbered = true
@@ -183,4 +186,59 @@ function _admonition_body(body)
     out = [startswith(l, '\t') ? l[2:end] : replace(l, r"^ {1,4}" => "") for l in body]
     while !isempty(out) && isempty(strip(first(out))); popfirst!(out); end
     return split(_md_kinds(join(out, "\n"); plain = true, only_admonitions = true), '\n')
+end
+
+# A footnote definition at the start of a block or of a line: `[^id]: text`.
+const _FOOTNOTE_DEF_RE = r"^ {0,3}\[\^([^\]\s]+)\]:"
+
+"""
+    _md_split(src) -> Vector{(kind, text)}
+
+The blocks of the markdown `src`, in reading order, for a reader that draws each block alone (the
+slides PDF makes one `cmarker.render` call for each block). `kind` is one of `BLOCK_KINDS`. `text`
+is the source of the block and the definitions that the block needs:
+
+- Each link reference definition of `src` goes after every block. A block that does not use a
+  definition ignores it.
+- A footnote definition is not a block. It goes before the block that refers to it, because cmarker
+  reads a footnote only when its definition is in the same call, and it draws the note where the
+  definition is. A definition that no block refers to goes before the last block.
+- When two blocks refer to one footnote, `src` stays one `prose` block: two calls with the same
+  definition give the same Typst label two times, which stops the compile.
+"""
+function _md_split(src::AbstractString)
+    blocks = @NamedTuple{kind::String, text::String}[]
+    links = String[]
+    notes = Pair{String,String}[]                    # footnote id => definition
+    innote = false                                   # the last block was a footnote definition
+    for p in _md_blocks(src; plain = true)
+        if isempty(p.kind)                           # CommonMark makes no block for a definition
+            for ln in split(p.text, '\n')
+                isempty(strip(ln)) && continue
+                m = match(_FOOTNOTE_DEF_RE, ln)
+                m === nothing ? push!(links, String(ln)) : push!(notes, String(m[1]) => String(ln))
+            end
+            continue
+        end
+        m = p.kind == "prose" ? match(_FOOTNOTE_DEF_RE, p.text) : nothing
+        if m !== nothing
+            push!(notes, String(m[1]) => p.text)
+            innote = true
+        elseif innote && p.kind == "code" && occursin(r"^(?: {4}|\t)", p.text)   # a later paragraph of the note
+            notes[end] = first(notes[end]) => string(last(notes[end]), "\n\n", p.text)
+        else
+            push!(blocks, p)
+            innote = false
+        end
+    end
+    isempty(blocks) && return blocks
+    texts = [b.text for b in blocks]
+    for (id, def) in notes
+        users = findall(b -> occursin("[^$id]", b.text), blocks)
+        length(users) > 1 && return [(kind = "prose", text = String(src))]
+        k = isempty(users) ? lastindex(texts) : only(users)
+        texts[k] = string(def, "\n\n", texts[k])
+    end
+    tail = isempty(links) ? "" : "\n\n" * join(links, "\n")
+    return [(kind = b.kind, text = t * tail) for (b, t) in zip(blocks, texts)]
 end

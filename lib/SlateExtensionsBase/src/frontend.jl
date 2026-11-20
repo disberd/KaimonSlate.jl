@@ -638,7 +638,8 @@ Declare a Typst deck template for every notebook that loads this package. `sourc
 
 `settings` is the partial deck-settings file of the template: TOML text or bytes. Slate merges it on its
 base settings key by key, and the notebook setting `decksettings` on top. Slate checks each key and
-value; see the Slate docs for the keys. On the live deck each value is a `--deck-*` custom property.
+value; its base file `src/assets/deck-settings.toml` lists every key with its unit and base value. On
+the live deck each value is a `--deck-*` custom property.
 The colour roles (`--deck-fg`, …), `--deck-font` and the palette are on the deck root (`.deck`); every
 other value is on each slide, so a CSS rule that overrides one must match `.deck-slide`, not `.deck`.
 
@@ -734,6 +735,136 @@ deck_template() = lock(_DECK_TEMPLATE_LOCK) do
     _DECK_TEMPLATE[]
 end
 
+# ── Package-declared exporters ────────────────────────────────────────────────
+# An export format of a slide deck. The function runs on the worker; the manifest carries the rest.
+const _EXPORTERS_LOCK = ReentrantLock()
+const _EXPORTERS = Dict{String,@NamedTuple{f::Any, label::String, ext::String, mime::String,
+                                           figure_mimes::Vector{String}}}()
+
+"""
+    register_exporter!(f, name; label, ext, mime, figure_mimes = ["image/png"]) -> Nothing
+
+Declare an export format of a slide deck for every notebook that loads this package. The export
+dialog of Slate shows `label` next to its own formats, the route `/api/<notebook>/export/<name>` gives
+the file, and so does the tool `export(notebook; format = name)`. On an export, Slate builds the deck
+value on the hub and calls `f(deck)` on the worker of the notebook. `f` gives the bytes of the file, as
+a `Vector{UInt8}` or a `String`. The file name ends in `.<ext>`, and the hub sends it as `mime`.
+
+`f` can also give the tuple `(bytes, warnings)`, where `warnings` is a `Vector{String}` with one line
+for each export warning, for example for content that the format cannot show. Slate adds them after
+the export warnings of the slides PDF: the export dialog shows them, the route sends them in the
+header `X-Slate-Warnings`, and the tool lists them in its answer. The file is written all the same.
+
+- `name`: 1 to 32 lowercase letters, digits and `-`. The first is a letter or a digit.
+- `label`: the text of the entry in the export dialog.
+- `ext`: 1 to 8 lowercase letters or digits, with no dot.
+- `mime`: a `type/subtype` MIME type.
+- `figure_mimes`: the MIME types of the figure pictures that `f` can use, in preference order. A video
+  or audio type (`"video/mp4"`, `"audio/mpeg"`, …) asks for the video and audio files of markdown.
+
+The hub checks `name`, `ext`, `mime` and each of `figure_mimes`, and drops an exporter that fails, with
+a warning in its log. Call this from `__init__`. A later call with the same `name` replaces the
+exporter. `f` gets no options: it reads its other options from the state of its package.
+
+# The deck value
+
+`deck` is a `Dict{String,Any}` with string keys. Its values are plain Base types: `Dict{String,Any}`,
+`Vector`, `Tuple`, `NamedTuple`, `String`, `Symbol`, `Float64`, `Int`, `Bool`, `nothing` and
+`Vector{UInt8}`. A length is in the slide unit `u`: the slide is 1920 u wide at 16:9 and 16:10, 1440 u
+at 4:3. A box is a `Dict` with the keys `"x"`, `"y"`, `"w"` and `"h"`, in `u` from the top left corner
+of the slide. The boxes, the text sizes and the line heights come from the slides PDF of the notebook.
+A line height is the line pitch of the text in `u`, from the top of a line to the top of the next line:
+divide it by the text size to get the line height as a ratio. A later Slate can add keys, so an
+exporter must not fail on a key that it does not know.
+
+| Key | Value |
+|:----|:------|
+| `"title"` | The title of the deck: the title of the front matter (the `title` cell, else the first level-1 heading), as a `String`; `""` when there is none. |
+| `"size"` | `(w, h)`, the size of the slide in `u`, as `Float64`s. |
+| `"ratio"` | The slide ratio: `"16:9"`, `"16:10"` or `"4:3"`. |
+| `"settings"` | The merged deck settings, one `Dict` for each group (`"text"`, `"roles"`, `"table"`, …). A length is `(value = 34.0, unit = :u)`, a ratio is a `Float64`, a colour is a hex string; the colour roles are hex. `"slate_palette"` is the name of the Slate palette of the figures; the Theme picker of the export dialog sets it. |
+| `"slides"` | A `Vector` with one `Dict` for each slide, in order. |
+
+Each slide:
+
+| Key | Value |
+|:----|:------|
+| `"layout"` | The `layout=` tag of the slide, or `nothing`. |
+| `"title"` | `nothing`, or a `Dict` for the heading that the slide starts with: `"text"` (its markdown), `"depth"` (its level, an `Int`) and `"cell"` (the id of its cell). The heading is not a block. |
+| `"notes"` | A `Vector{String}`: the markdown of each `notes` cell of the slide, as the author wrote it. |
+| `"transition"`, `"auto"` | The values of the `transition=` and `auto=` tags of the slide, or `nothing`. |
+| `"regions"` | A `Vector` of `Dict`s, one for each region that the slides PDF draws from notebook content and marks (see below): `"name"` (`"title"`, `"subtitle"`, `"byline"` or `"abstract"`), `"text"` (its markdown), `"box"`, `"size"` (its text size in `u`) and `"lineheight"` (its line height in `u`). |
+| `"blocks"` | A `Vector` of `Dict`s, one for each block of the body, in reading order. |
+
+Each block:
+
+| Key | Value |
+|:----|:------|
+| `"kind"` | `"prose"`, `"key-message"`, `"caption"`, `"admonition"`, `"code"`, `"figure"` or `"table"`. |
+| `"cell"` | The id of its cell. |
+| `"frag"` | The number of its cell fragment on the slide, from 1; 0 for the lines of a `title` cell that are not a region. |
+| `"index"` | Its number in the fragment, from 1, in reading order. The blocks of `::: column` 1 come before those of column 2. |
+| `"row"`, `"column"` | The row of cells of the slide that holds it, from 1, and the `column=` value of its cell. |
+| `"divcolumn"` | The number of the `::: column` that holds it, or 0. |
+| `"markdown"` | Its markdown, with `{{ }}` values resolved and each block of a kind in its `<slate-<kind>>` element. An output of a code cell has `nothing`, with two exceptions: a markdown output splits into blocks as a markdown cell does, and the `text/plain` value of the cell is a fenced code block of its text. |
+| `"box"`, `"size"`, `"lineheight"` | Its box, its text size in `u` and its line height in `u`; `nothing` when the slides PDF does not draw it. The box of a figure is the picture, the box of a table is the table, the box of each other block is as wide as its column. The text size and the line height of a table are those of its cells, and those of a code block are those of its code text. |
+| `"cols"`, `"rows"` | Only on a table: the widths of its columns and the heights of its rows in `u`, a `Vector{Float64}`. |
+| `"forms"` | Only on a figure: a `Vector` of `(mime, bytes)` pairs, in the order of `figure_mimes`, one for each MIME type that Slate has a picture of. It can be empty. A markdown video or audio file of the project (`![a clip](clip.mp4)`) gives a figure with one form: the bytes of the file under the MIME type of its extension (`video/mp4`, `audio/mpeg`, `audio/mp4` for `.m4a`, `audio/wav`, …), when `figure_mimes` has that type. Its `"markdown"` holds its alt text, and its `"box"` is the box that the live deck gives the clip: a video at its natural size under the width rule and the figure cap of a picture, an audio file 300 × 54 u. A file larger than 256 MiB gives no form and an export warning. |
+
+A region, and so its text, is in the deck value only where the Typst source calls `region(name, body)`
+of the slides preamble. The base deck calls it for the regions of its title slide and for the title of
+each slide. A deck template ([`provide_deck_template!`](@ref)) that draws its own layout (its own
+`#let slide` or `#let metablock`) must put each region that it draws from notebook content in
+`region()`. Else an exporter gets no region for it: for example, no title and no subtitle on the cover.
+
+# Example
+
+A Markdown outline of the deck, with one export warning when the deck has figures:
+
+```julia
+register_exporter!("outline"; label = "Markdown outline", ext = "md", mime = "text/markdown",
+                   figure_mimes = ["image/svg+xml", "image/png"]) do deck
+    io = IOBuffer()
+    nfig = 0
+    w, h = deck["size"]
+    println(io, "<!-- ", deck["ratio"], ", ", w, " × ", h, " u -->")
+    isempty(deck["title"]) || println(io, "\\n# ", deck["title"])
+    for (i, s) in enumerate(deck["slides"])
+        t = s["title"]
+        println(io, "\\n## ", i, ". ", t === nothing ? "(no title)" : t["text"])
+        for b in s["blocks"]
+            if b["kind"] == "figure"
+                nfig += 1
+                println(io, "\\n[figure: ", join(first.(b["forms"]), ", "), "]")
+            elseif b["markdown"] !== nothing
+                println(io, "\\n", strip(b["markdown"]))
+            end
+        end
+        foreach(n -> println(io, "\\n> Notes: ", strip(n)), s["notes"])
+    end
+    return take!(io), nfig == 0 ? String[] : ["The outline names \$nfig figures but does not show them."]
+end
+```
+"""
+function register_exporter!(f, name; label, ext, mime, figure_mimes = ["image/png"])
+    lock(_EXPORTERS_LOCK) do
+        _EXPORTERS[String(name)] = (; f, label = String(label), ext = String(ext), mime = String(mime),
+                                    figure_mimes = String[String(m) for m in figure_mimes])
+    end
+    return nothing
+end
+
+# The file that the exporter `name` makes of `deck`, as `(; bytes, warnings)`. Slate calls this on the
+# worker.
+function run_exporter(name, deck)
+    e = lock(() -> get(_EXPORTERS, String(name), nothing), _EXPORTERS_LOCK)
+    e === nothing && throw(ArgumentError("no exporter is registered with the name `$name`"))
+    out = Base.invokelatest(e.f, deck)
+    file, warnings = out isa Tuple{Any,Any} ? out : (out, String[])
+    return (; bytes = file isa AbstractString ? Vector{UInt8}(codeunits(file)) : Vector{UInt8}(file),
+            warnings = String[String(w) for w in warnings])
+end
+
 """
     frontend_scripts() -> Dict{String,String}
 
@@ -765,6 +896,8 @@ page — Slate pulls it once per run drain and merges it into the notebook. Fiel
 - `deck_template_hash`: the hash of the deck template from [`provide_deck_template!`](@ref), a string.
   The field is absent when no package declares a template. It carries no bytes: Slate pulls them in a
   separate call, and only when the hash changes.
+- `exporters`: the exporters from [`register_exporter!`](@ref), in name order, as
+  `(; name, label, ext, mime, figure_mimes)` each. The functions stay in this process.
 
 Extensible: a new kind of package registration surfaces as another field here, carried by the same
 query — no new transport per feature.
@@ -776,7 +909,11 @@ function extension_manifest()
          end,
          assets = [(; pkg = k, dir = v) for (k, v) in _ASSETS],
          imports = [(; spec = k, url = v) for (k, v) in package_imports()],
-         fences = fence_languages())
+         fences = fence_languages(),
+         exporters = lock(_EXPORTERS_LOCK) do
+             [(; name = k, v.label, v.ext, v.mime, figure_mimes = copy(v.figure_mimes))
+              for (k, v) in sort!(collect(_EXPORTERS); by = first)]
+         end)
     t = deck_template()
     return t === nothing ? m : merge(m, (; deck_template_hash = t.hash))
 end

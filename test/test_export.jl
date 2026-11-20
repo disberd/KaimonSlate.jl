@@ -1904,6 +1904,24 @@ Base.show(io::IO, ::MIME"text/markdown", ::_MdCard) = print(io, "**card**")
     @test KaimonSlate.ReportRender._render_chunks([(mime = m, data = copy(d)) for (m, d) in chunks]) == "<div class=\"disp html\"><b>card</b></div>"
 end
 
+# A `Markdown.MD` value shows its markdown form as a markdown cell does, not Julia's HTML, so its blocks
+# get their kinds on the live deck, in the notebook and in the HTML export. Julia-only markdown (a table,
+# an admonition, LaTeX) reads back through the markdown form.
+@testset "an MD value renders as a markdown cell, with its block kinds" begin
+    md = Markdown.parse("> **Key message**\n\n*A caption*\n\n| a | b |\n|:--|--:|\n| 1 | \$x^2\$ |\n\n" *
+                        "!!! note \"Heads up\"\n    Body with ``\\alpha``.\n\nSee [`sin`](@ref).\n")
+    chunks = Tuple{String, Vector{UInt8}}[]
+    @test _RE._capture_rich!(chunks, md)
+    @test first.(chunks) == ["text/html", "text/markdown"]
+    html = KaimonSlate.ReportRender._render_chunks([(mime = m, data = copy(d)) for (m, d) in chunks])
+    @test startswith(html, "<div class=\"disp md\">") && !occursin("class=\"markdown\"", html)
+    @test occursin("<slate-key-message>\n<blockquote>\n<p><strong>Key message</strong></p>", html)
+    @test occursin("<slate-caption>\n<p><em>A caption</em></p>", html)
+    @test occursin(r"<slate-table>\n<table>.*<th align=\"right\">b</th>.*<td align=\"right\">\$x\^2\$</td>"s, html)
+    @test occursin("<slate-admonition category=\"note\" heading=\"Heads up\">", html) && occursin(raw"Body with $\alpha$", html)
+    @test occursin("<span class=\"docref\" data-name=\"sin\"><code>sin</code></span>", html)   # inert, as in the HTML
+end
+
 # The same for a value an extension renders (`slate_render`): the export prints its markdown form.
 struct _MdRendered end
 NS.SlateExtensionsBase.slate_render(::_MdRendered) = NS.SlateExtensionsBase.html_fragment("<b>card</b>")
