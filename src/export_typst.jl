@@ -936,20 +936,48 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #let errblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.errbg), radius: 8 * u, text(size: 0.875em, fill: $(p.errfg), raw(s)))
     // A figure is a marker that `fit` sizes for the slide. `width` is an upper bound on its drawn
     // width: a ratio of the column, or a length. With no `width`, the full size of a figure is the
-    // natural size of the picture that the live deck shows (`natural-w`), at most its column. At
-    // figure scale `f`, a figure is `f` of its full size, and at most `FIT.fig-cap` of the slide
-    // height. Outside `fit` it is drawn at `f = 1`. The sized picture has the label `<slate-figure>`:
-    // the rule for that label, after the deck template, gives it to `draw.figure`.
+    // natural size of the picture that the live deck shows (`natural-w`), at most its column. A picture
+    // with no natural size fills its column. At figure scale `f`, a figure is `f` of its full size, and
+    // at most `FIT.fig-cap` of the slide height. Outside `fit` it is drawn at `f = 1`. The sized picture
+    // has the label `<slate-figure>`: the rule for that label, after the deck template, gives it to
+    // `draw.figure`.
     #let figureimg(p, width: none, hook: false) = [#metadata((p: p, w: width, hook: hook)) <slate-fig>]
-    // The natural width in CSS px (1/96 in), which is `u` on the slide, of a PNG (its pixel width: a
-    // browser does not read its density) or an SVG. A PDF figure (a Makie figure) shows on the live
-    // deck as a PNG at twice its size, so it fills its column: `none`. A picture of a figure hook
-    // (`hook`) has the size at which the live deck draws its value: the page size of a PDF or an SVG,
-    // and a PNG at `FigureContext.scale` (2) px for each px.
-    #let natural-w(p, n, hook: false) = if lower(p).ends-with(".png") {
+    // The root `<svg>` tag of an SVG file: `width` and `height` tell if the tag has that size as an
+    // absolute length (a number, px, pt, ...; not `%`), `aspect` is height / width of its `viewBox`,
+    // `none` without one.
+    #let svg-tag(p) = {
+      let m = read(p).match(regex("<svg[^>]*"))
+      let t = if m == none { "" } else { m.text }
+      let absolute(k) = {
+        let a = t.match(regex("[[:space:]]" + k + "[[:space:]]*=[[:space:]]*[^[:space:]>]+"))
+        a != none and not a.text.contains("%")
+      }
+      let vb = t.match(regex("[[:space:]]viewBox[[:space:]]*=[[:space:]]*.([-0-9.eE,[:space:]]+)"))
+      let q = if vb == none { () } else { vb.captures.at(0).trim().split(regex("[,[:space:]]+")) }
+      (width: absolute("width"), height: absolute("height"),
+       aspect: if q.len() == 4 and float(q.at(2)) > 0 { float(q.at(3)) / float(q.at(2)) })
+    }
+    // The size of an SVG as a browser draws it, from `n`, the size that Typst measures. With one
+    // absolute side, Typst gives the other side the viewBox size; the browser takes it from the
+    // viewBox aspect.
+    #let svg-size(n, s) = if s.aspect == none or s.width == s.height { n } else if s.width {
+      (width: n.width, height: n.width * s.aspect)
+    } else { (width: n.height / s.aspect, height: n.height) }
+    // The natural width in CSS px (1/96 in), which is `u` on the slide, or `none` for a picture with no
+    // natural size. `n` is the size of the picture and `svg` the root tag of an SVG that is not a hook
+    // picture (`svg-tag`). A PNG has its pixel width (a browser does not read its density). An SVG has
+    // a natural size only when its root tag has an absolute `width` or `height`: the browser takes the
+    // other side from the aspect. An SVG with only a `viewBox`, or with sizes in `%`, fills its column
+    // on the live deck: `none`. A PDF figure (a Makie figure) shows on the live deck as a PNG at twice
+    // its size, so it fills its column: `none`. A picture of a figure hook (`hook`) has the size at
+    // which the live deck draws its value: the page size of a PDF or an SVG, and a PNG at
+    // `FigureContext.scale` (2) px for each px.
+    #let natural-w(p, n, hook: false, svg: none) = if lower(p).ends-with(".png") {
       let b = read(p, encoding: none)
       (b.at(16) * 16777216 + b.at(17) * 65536 + b.at(18) * 256 + b.at(19)) / if hook { 2 } else { 1 }
-    } else if hook or lower(p).ends-with(".svg") { n.width / (1in / 96) }
+    } else if hook { n.width / (1in / 96) } else if svg != none {
+      if svg.width or svg.height { n.width / (1in / 96) }
+    }
     // A video or audio file of markdown alone in its paragraph (Julia `_clip_typ`). A PDF cannot play
     // it, so it draws a placeholder in the box that the live deck gives the clip: a frame with a play
     // mark and `label`. A video of `w` × `h` px fills the width of its column at that aspect, up to the
@@ -961,13 +989,20 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
         let t = text(size: 0.7em, fill: settings.roles.dim, label)
         if h < 120 * u { grid(columns: 2, column-gutter: 12 * u, align: horizon, mark, t) } else { stack(spacing: 16 * u, align(center, mark), t) }
       }))
+    // An SVG with one absolute side is drawn in the box of its browser size (`svg-size`). Typst draws
+    // the viewBox in the middle of the box that it measures, so `cover` crops the empty bands.
     #let drawfig(v, f) = layout(c => {
       let clip = v.at("clip", default: none)
-      let n = if clip == none { measure(image(v.p)) } else { (width: clip.w * u, height: clip.h * u) }
-      let nw = if clip == none { natural-w(v.p, n, hook: v.at("hook", default: false)) } else { none }
+      let hook = v.at("hook", default: false)
+      let svg = if clip == none and not hook and lower(v.p).ends-with(".svg") { svg-tag(v.p) }
+      let n = if clip != none { (width: clip.w * u, height: clip.h * u) } else if svg != none { svg-size(measure(image(v.p)), svg) } else { measure(image(v.p)) }
+      let nw = if clip == none { natural-w(v.p, n, hook: hook, svg: svg) } else { none }
       let cw = if v.w != none { if type(v.w) == ratio { c.width * v.w } else { calc.min(c.width, v.w) } } else if nw == none { c.width } else { calc.min(c.width, nw * u) }
       let h = calc.max(u, f * calc.min(FIT.fig-cap * SLIDE_H, cw * (n.height / n.width)))
-      align(center, figrec(if clip == none { box(image(v.p, height: h)) } else { clipframe(h * (n.width / n.height), h, clip.label) }))
+      let pic = if clip != none { clipframe(h * (n.width / n.height), h, clip.label) } else if svg == none { box(image(v.p, height: h)) } else {
+        box(image(v.p, width: h * (n.width / n.height), height: h, fit: "cover"))
+      }
+      align(center, figrec(pic))
     })
     #show <slate-fig>: it => drawfig(it.value, 1)
     #let clipfig(kind, w, h, label) = if kind == "audio" { align(center, figrec(clipframe(300 * u, 54 * u, label))) } else {

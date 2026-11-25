@@ -247,7 +247,9 @@ were written when they went out. They are marked.
 - In the PDF deck a figure with no width of its own is drawn at its natural size (1 px of the picture
   is 1 u of the slide), at most as wide as its column, as on the live deck. It used to fill its
   column. A picture from a figure hook has the size of the live value: the page size of its PDF or
-  SVG, its PNG at half its pixel width.
+  SVG, its PNG at half its pixel width. An SVG has a natural size only when its root tag has an
+  absolute `width` or `height`; an SVG with only a `viewBox` fills its column, as on the live deck. An
+  SVG with only one of the two takes the other side from its `viewBox` aspect, as a browser does.
 - In the PDF deck the text of an output (printed text, a value, an error) is 0.7 em of the body, as on
   the live deck. It was 0.56 em.
 - On the live deck an image that the figure cap limits keeps its aspect: it is the cap height times
