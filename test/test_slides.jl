@@ -811,6 +811,21 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test all(x -> x.cols === nothing && x.rows === nothing, b[1:6])
     end
 
+    @testset "layout source: the body of a center slide is as wide as its content" begin
+        # As on the live deck, a filled block of a `layout=center` slide is as wide as the widest line
+        # of the body and centred, not as wide as the page. A line wider than the body fills it.
+        src = "#%% md id=a layout=center\n## A\n\nThe body of a centre slide is centred on the slide.\n\n" *
+              "> **One message.**\n\n```julia\nx = 1\n```\n\n" *
+              "#%% md id=b layout=center\n## B\n\n" * repeat("A line that is wider than the body of the slide. ", 4) *
+              "\n\n> **One message.**\n"
+        short, long = NS.slide_layout(_mknb(src))
+        p, k, c = short.blocks
+        @test (p.kind, k.kind, c.kind) == ("prose", "key-message", "code")
+        @test 500 < p.box.w < 1200 && k.box.w ≈ p.box.w && c.box.w ≈ p.box.w
+        @test all(x -> x.box.x + x.box.w / 2 ≈ 960, short.blocks)
+        @test all(x -> x.box.w ≈ 1920 - 2 * 120 - 2 * 16, long.blocks)
+    end
+
     # A grid of a markdown cell in the slides PDF: the tracks and the gaps of the live CSS grid, a
     # nested grid, the path of each block and the box of each grid cell.
     @testset "layout source: a grid, its grid cells and the paths of their blocks" begin

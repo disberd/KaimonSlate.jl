@@ -344,6 +344,10 @@ were written when they went out. They are marked.
   It was that many screen px wide, so its share of the slide changed with the size of the window, and
   in a window narrower than 1920 px it was larger than in the PDF. A picture with `{width=…}` keeps
   that width.
+- The body of a `layout=center` slide in the PDF deck, and so the boxes for an exporter, is as wide as
+  its widest content and centred, as on the live deck: a key message, an admonition or code is as wide
+  as the widest line, not as the page. A deck template that draws its own centre slide gets the same
+  with `fit(center-body(body))`.
 
 ## [2.2.0] - 2026-11-16
 
