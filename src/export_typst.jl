@@ -1092,13 +1092,16 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     // A `:::: grid` group (`_print_slidegrid`): its tracks and its gap (the deck setting `grid.gap` by
     // default) between the columns and between the rows, as the CSS grid of the live deck. `gridfill`
     // reads the colour word of a grid cell: a palette name, else a colour role, else no paint. A grid
-    // cell with a fill has the pad `grid.pad`.
+    // cell with a fill has the pad `grid.pad`. `marks` are the marks of the cell (`cellmark`). The
+    // body is in a block, which the cell aligns as one: Typst puts a `place` at the start of a cell at
+    // the top of the cell, before the vertical alignment, so with no block the mark of the first block
+    // of a `middle` or `bottom` cell (`slate-mark`) would be at the top of the cell, not at its text.
     #let slidegrid(columns: (1fr,), gap: settings.grid.gap, ..cells) = grid(columns: columns,
       column-gutter: gap, row-gutter: gap, ..cells.pos())
     #let gridfill(n) = settings.palette.at(n, default: settings.roles.at(n, default: none))
-    #let gridcell(fill: none, align: left + top, size: none, body) = grid.cell(align: align,
+    #let gridcell(fill: none, align: left + top, size: none, marks, body) = grid.cell(align: align,
       fill: if fill == none { none } else { gridfill(fill) }, inset: if fill == none { 0 * u } else { settings.grid.pad },
-      if size == none { body } else { set text(size: size * 1em); body })
+      { marks; block(width: 100%, if size == none { body } else { set text(size: size * 1em); body }) })
     // The marks of a grid cell, with the marks on (see `slate-mark`): its top left and bottom right
     // corners inside its pad, as `(kind: "gridcell", frag, path, end, pad, page, x, y)` in `u`.
     #let cellmark(frag, path, filled: false) = if MARKS {
@@ -2923,7 +2926,7 @@ function _print_slidegrid(body, mark, io::IO, p)
     for (j, c) in enumerate(p.cells)
         print(io, "gridcell(align: ", c.align, " + ", c.valign == "middle" ? "horizon" : c.valign,
               c.fill === nothing ? "" : ", fill: \"$(_typ_str(c.fill))\"", c.size === nothing ? "" : ", size: $(num(c.size))",
-              ")[", mark(j))
+              ")[", rstrip(mark(j)), "][\n")
         body(j)
         print(io, "],\n")
     end

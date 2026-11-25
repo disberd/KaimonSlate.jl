@@ -827,6 +827,26 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test d["cells"][3]["align"] == "left" && d["cells"][3]["valign"] == "top"
     end
 
+    # The blocks of a `middle` or `bottom` grid cell keep the gaps of a `top` one: the box of the first
+    # block is at its text, not at the top of the cell. An exporter takes the space between two
+    # blocks of a cell from their boxes.
+    @testset "layout source: the blocks of a middle or bottom grid cell" begin
+        tall = join(("Line $i." for i in 1:8), "\n\n")
+        side(va) = only(NS.slide_layout(_mknb("#%% md id=g\n## G\n\n:::: {.grid columns=2}\n::: cell\n$tall\n:::\n" *
+                                              "::: {.cell valign=$va}\n**Head**\n\n- one\n- two\n:::\n::::\n")))
+        gap(b) = b[2].box.y - (b[1].box.y + b[1].box.h)
+        boxes(sl) = [x for x in sl.blocks if x.path == [(1, 2)]]
+        top = boxes(side("top"))
+        for va in ("middle", "bottom")
+            sl = side(va)
+            b, c = boxes(sl), sl.cells[2].box
+            @test gap(b) ≈ gap(top) atol = 0.5
+            above, below = b[1].box.y - c.y, c.y + c.h - (b[2].box.y + b[2].box.h)
+            @test isapprox(below, va == "middle" ? above : 0.0; atol = 0.5)   # centred, or at the bottom
+            @test above > 100
+        end
+    end
+
     # A value that is not valid gives an export warning and leaves the slides PDF as it is: the grid
     # gets one track, the value is dropped.
     @testset "slides project: a bad grid value warns and the PDF compiles" begin
