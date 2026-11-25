@@ -1455,17 +1455,21 @@ end
 end
 
 # An SVG with only a `viewBox` has no natural size: the live deck draws it as wide as its column, so the
-# PDF does too, not at the viewBox width. An SVG with an absolute `width` keeps that width.
-@testset "slides PDF: an SVG with only a viewBox fills its column" begin
+# PDF does too, not at the viewBox width. An SVG with one absolute side keeps it and takes the other
+# side from the viewBox aspect, as a browser does; Typst gives that side the viewBox size.
+@testset "slides PDF: an SVG has the size that a browser gives it" begin
     root = mktempdir()
-    write(joinpath(root, "vb.svg"), """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 132"><rect width="1500" height="132" stroke-width="2" fill="red"/></svg>""")
-    write(joinpath(root, "w.svg"), """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 132" width="300"><rect width="600" height="132" fill="red"/></svg>""")
-    nb = _hooknb("#%% md id=v\n## V\n\n![](vb.svg)\n\n#%% md id=w\n## W\n\n![](w.svg)\n")
+    svg(attrs) = """<svg xmlns="http://www.w3.org/2000/svg" $attrs><rect width="600" height="132" stroke-width="2" fill="red"/></svg>"""
+    write(joinpath(root, "vb.svg"), svg("viewBox='0 0 1500 132'"))
+    write(joinpath(root, "w.svg"), svg("viewBox='0 0 600 132' width='300'"))
+    write(joinpath(root, "h.svg"), svg("viewBox='0,0,600,132' height='66'"))
+    nb = _hooknb("#%% md id=v\n## V\n\n![](vb.svg)\n\n#%% md id=w\n## W\n\n![](w.svg)\n\n#%% md id=h\n## H\n\n![](h.svg)\n")
     nb.report.meta["assetbase"] = root
-    vb, w = [only(b.box for b in s.blocks if b.kind == "figure") for s in NS.slide_layout(nb)]
+    vb, w, h = [only(b.box for b in s.blocks if b.kind == "figure") for s in NS.slide_layout(nb)]
     # The column of a markdown cell of the base deck at 16:9 is 1648 u wide, from x = 136.
     @test vb.x ≈ 136 && vb.w ≈ 1648 && vb.h ≈ 1648 * 132 / 1500
-    @test w.w ≈ 300
+    @test w.w ≈ 300 && w.h ≈ 66
+    @test h.w ≈ 300 && h.h ≈ 66
 end
 
 # The base slides PDF marks list items as the live deck does: `•`, then `◦`, then `▪`.
