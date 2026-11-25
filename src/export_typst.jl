@@ -248,9 +248,10 @@ function _stored_figs_warning(cells::Vector{String})
 end
 
 # The width of each `{{ }}` value of the markdown `src` (numbered from `ib + 1`) in a column `w` px wide,
-# into `out`. A `:::: columns` group shares the width among its columns (`_column_widths`). Returns the
-# number of the last value.
-function _interp_widths!(out, cid::AbstractString, src::AbstractString, ib::Integer, w::Real, gap::Real)
+# into `out`. A group shares the width among its containers (`_group_widths`). `gaps` holds the deck
+# settings `columns` (the gap of a `:::: columns` group), `grid` (the gap of a grid) and `pad` (the pad
+# of a grid cell with a fill), in px. Returns the number of the last value.
+function _interp_widths!(out, cid::AbstractString, src::AbstractString, ib::Integer, w::Real, gaps)
     for p in _split_groups(src)
         if p isa AbstractString
             n = _md_interp_count(p)
@@ -259,12 +260,28 @@ function _interp_widths!(out, cid::AbstractString, src::AbstractString, ib::Inte
             end
             ib += n
         else
+            ws = _group_widths(p, w, gaps)
             for (j, col) in enumerate(p.cols)
-                ib = _interp_widths!(out, cid, col, ib, _column_widths(p.widths, w, gap)[j], gap)
+                ib = _interp_widths!(out, cid, col, ib, ws[j], gaps)
             end
         end
     end
     return ib
+end
+
+# The width of each container of the group `p` in a column `w` wide, as `slidecols` and `slidegrid`
+# draw them. A grid cell `j` is in track `(j - 1) mod n + 1`. The `fr` tracks share what the `u` tracks
+# and the gaps leave, and a grid cell with a fill loses its pad on each side.
+function _group_widths(p, w::Real, gaps)
+    p.kind === :columns && return _column_widths(p.widths, w, gaps.columns)
+    tracks = p.grid.tracks
+    n = length(tracks)
+    gap = something(p.grid.gap, gaps.grid)
+    fixed = sum((v for (k, v) in tracks if k === :u); init = 0.0)
+    frs = sum((v for (k, v) in tracks if k === :fr); init = 0.0)
+    free = max(w - fixed - (n - 1) * gap, 0.0)
+    tw = [k === :u ? v : free * v / frs for (k, v) in tracks]
+    return [max(tw[mod1(j, n)] - (c.fill === nothing ? 0.0 : 2 * gaps.pad), 0.0) for (j, c) in enumerate(p.cells)]
 end
 
 # The widths of the columns of a `:::: columns` group `w` wide, with `gap` between them, as `slidecols`
@@ -287,7 +304,8 @@ function _slide_figure_geometry(nb::LiveNotebook, ds, ratio::AbstractString, lev
     W, H = deck_canvas(ratio)
     t = notebook_deck_template(nb)
     body = something(t === nothing ? nothing : t.body_width, W - 240.0)
-    rowgap, gap = ds.values["columns"]["row-gap"].value, ds.values["columns"]["gap"].value
+    gaps = (columns = ds.values["columns"]["gap"].value, grid = ds.values["grid"]["gap"].value, pad = ds.values["grid"]["pad"].value)
+    rowgap = ds.values["columns"]["row-gap"].value
     width = Dict{Tuple{String,Int},Float64}()
     lock(nb.lock) do
         fm = report_frontmatter(nb.report)
@@ -298,7 +316,7 @@ function _slide_figure_geometry(nb::LiveNotebook, ds, ratio::AbstractString, lev
             cw = (body - (length(fs) - 1) * rowgap) / length(fs)
             for f in fs
                 c = bycell[f.cell]
-                is_prose(c.kind) ? _interp_widths!(width, c.id, something(f.src, c.source), f.interpbase, cw - 32, gap) :
+                is_prose(c.kind) ? _interp_widths!(width, c.id, something(f.src, c.source), f.interpbase, cw - 32, gaps) :
                                    (width[(c.id, 0)] = cw)
             end
         end
@@ -1018,6 +1036,25 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       let g = grid(columns: widths.map(w => if w == none { 1fr } else if shrink { w / 1% * 1fr } else { w }),
         column-gutter: gap, align: align, ..cols.pos())
       if row { context if RHYTHM.get() { block(above: 0em, below: 0em, g) } else { g } } else { g }
+    }
+    // A `:::: grid` group (`_print_slidegrid`): its tracks and its gap (the deck setting `grid.gap` by
+    // default) between the columns and between the rows, as the CSS grid of the live deck. `gridfill`
+    // reads the colour word of a grid cell: a palette name, else a colour role, else no paint. A grid
+    // cell with a fill has the pad `grid.pad`.
+    #let slidegrid(columns: (1fr,), gap: settings.grid.gap, ..cells) = grid(columns: columns,
+      column-gutter: gap, row-gutter: gap, ..cells.pos())
+    #let gridfill(n) = settings.palette.at(n, default: settings.roles.at(n, default: none))
+    #let gridcell(fill: none, align: left + top, size: none, body) = grid.cell(align: align,
+      fill: if fill == none { none } else { gridfill(fill) }, inset: if fill == none { 0 * u } else { settings.grid.pad },
+      if size == none { body } else { set text(size: size * 1em); body })
+    // The marks of a grid cell, with the marks on (see `slate-mark`): its top left and bottom right
+    // corners inside its pad, as `(kind: "gridcell", frag, path, end, pad, page, x, y)` in `u`.
+    #let cellmark(frag, path, filled: false) = if MARKS {
+      let corner(end) = context { let p = here().position()
+        [#metadata((kind: "gridcell", frag: frag, path: path, end: end, pad: if filled { settings.grid.pad / u } else { 0 },
+          page: p.page, x: p.x / u, y: p.y / u)) <slate>] }
+      place(top + left, corner(false))
+      place(bottom + right, corner(true))
     }
     // One slide = one page, with the body at the top. The title goes at the top of the body, inside
     // `fit`, with the padding of the live title cell (12 u above, 16 u at the sides); a notes page gets
@@ -2763,12 +2800,56 @@ function _column_width_typst(d)
     return string(m[1], unit == "px" ? "pt" : unit == "rem" ? "em" : unit)
 end
 
-# The groups of a markdown source (`ReportRender._md_groups`), each `:::: columns` group with the
+# The groups of a markdown source (`ReportRender._md_groups`). A `:::: columns` group also has the
 # Typst width of each column in `widths`. Other fenced divs (`::: step`) stay in the text for
 # `_strip_deck_markup`.
-_split_groups(src::AbstractString) =
-    Any[p isa AbstractString ? p : merge(p, (; widths = String[_column_width_typst(m) for m in p.metas]))
-        for p in ReportRender._md_groups(src)]
+_split_groups(src::AbstractString; warns = String[]) =
+    Any[p isa AbstractString ? p :
+        merge(p, (; widths = p.kind === :columns ? String[_column_width_typst(m) for m in p.metas] : String[]))
+        for p in ReportRender._md_groups(src; warns)]
+
+# One `slidegrid` call for the grid group `p`: `body(j)` prints grid cell `j`, and `mark(j)` gives the
+# Typst text of its marks.
+function _print_slidegrid(body, mark, io::IO, p)
+    num = ReportRender._fmtnum
+    tracks = [k === :fr ? num(v) * "fr" : num(v) * " * u" for (k, v) in p.grid.tracks]
+    print(io, "#slidegrid(columns: (", join(tracks, ", "), ",),", p.grid.gap === nothing ? "" : " gap: $(num(p.grid.gap)) * u,", "\n")
+    for (j, c) in enumerate(p.cells)
+        print(io, "gridcell(align: ", c.align, " + ", c.valign == "middle" ? "horizon" : c.valign,
+              c.fill === nothing ? "" : ", fill: \"$(_typ_str(c.fill))\"", c.size === nothing ? "" : ", size: $(num(c.size))",
+              ")[", mark(j))
+        body(j)
+        print(io, "],\n")
+    end
+    print(io, ")\n\n")
+end
+
+# The export warnings of the groups of cell `c` (`gw`: the warnings of `_split_groups`, `pieces` its
+# result): each warning of a group, and a fill word that the deck settings `ds` do not have, or that
+# paints a fixed colour under text that follows the Slate palette.
+function _group_warnings!(warnings, c, ds, gw, pieces)
+    warnings === nothing && return
+    ws = copy(gw)
+    pal, roles = ds.values["palette"], ds.values["roles"]
+    follows(v) = startswith(get(roles, v, v), "slate.")
+    for p in pieces
+        p isa AbstractString && continue
+        append!(ws, p.warns)
+        for cs in p.cells
+            (cs === nothing || cs.fill === nothing) && continue
+            f = cs.fill
+            if !haskey(pal, f) && !(f in _DECK_ROLES)
+                push!(ws, "`fill=\"$f\"` is not a palette name or a colour role of the deck settings, so the grid cell has no paint")
+            elseif !(!haskey(pal, f) && follows(roles[f])) && follows(roles["fg"])
+                push!(ws, "`fill=\"$f\"` is a fixed colour, but `roles.fg` follows the Slate palette, so the text can be hard to read on some palettes")
+            end
+        end
+    end
+    for w in unique(ws)
+        msg = "Cell $(c.id): $w."
+        msg in warnings || push!(warnings, msg)
+    end
+end
 
 # One `slidecols` call: `body(j)` prints the j-th column of the row. `gap` and `align` are Typst
 # expressions, or `nothing` for the defaults of `slidecols`; `row` marks a row of cells.
@@ -2789,7 +2870,7 @@ end
 # `SlideFrag`'s `Union{String,Nothing}` field, and a `::SlideFrag` annotation would reject every caller
 # that builds one inline rather than pushing it through a `Vector{SlideFrag}`.
 # A markdown cell prints inside one `mdcell`, which gives it the padding of a live markdown cell;
-# `incell` is true for the parts of a cell that a group (`:::: columns`) splits.
+# `incell` is true for the parts of a cell that a group (`:::: columns`, `:::: grid`) splits.
 # Returns `true` when the markdown that it printed ends with a key message, an admonition or a table.
 # On the live deck such a block has no space below it at the end of its cell, so the cell is `tight`.
 # Each block of the fragment goes through `blk` (`_block_printer`): a markdown fragment is split into
@@ -2807,7 +2888,9 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
     end
     if is_prose(c.kind)
         src = srcoverride === nothing ? c.source : srcoverride
-        pieces = _split_groups(src)
+        gw = String[]
+        pieces = _split_groups(src; warns = gw)
+        _group_warnings!(warnings, c, notebook_deck_settings(nb), gw, pieces)
         if !(length(pieces) == 1 && pieces[1] isa AbstractString)    # a group splits the cell
             kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, warnings, compfigs, incell, blk)
             ib = frag.interpbase     # interpolations are numbered across the cell, so each piece starts after the last
@@ -2826,7 +2909,8 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
                                           path = [path; (gi, j)], kw...)
                         ib += _md_interp_count(p.cols[j])
                     end
-                    _print_slidecols(emit, io, p.widths)
+                    p.kind === :columns ? _print_slidecols(emit, io, p.widths) :
+                        _print_slidegrid(emit, j -> blk("gridcell", ""; path = [path; (gi, j)], gridcell = p.cells[j]), io, p)
                 end
             end
             return tight
@@ -2865,6 +2949,7 @@ end
 # the model (the references, the notes). `blocks` holds each block in the order of the document:
 # `(slide, frag, index, kind, cell, row, column, path, src, file)`; `file` is the picture of a figure
 # output in the project directory, or the video or audio file of a figure of markdown, else `nothing`.
+# `cells` holds each grid cell in the order of the document: `(slide, frag, path, fill, align, valign)`.
 # `texts` holds the markdown of each region, by `(slide, name)`. For an exporter (`exporter_deck`),
 # `mimes` are its figure MIME types and `forms` the pictures of the figure hooks in those types, by
 # output `(cell, slot)`.
@@ -2872,21 +2957,32 @@ mutable struct _SlidePlan
     deck::Vector{NamedTuple}
     pages::Vector{Int}
     blocks::Vector{NamedTuple}
+    cells::Vector{NamedTuple}
     texts::Dict{Tuple{Int,String},String}
     mimes::Vector{String}
     forms::Dict{Tuple{String,Int},Vector{Tuple{String,Vector{UInt8}}}}
 end
 _SlidePlan(mimes::Vector{String} = String[]) =
-    _SlidePlan(NamedTuple[], Int[], NamedTuple[], Dict{Tuple{Int,String},String}(), mimes,
+    _SlidePlan(NamedTuple[], Int[], NamedTuple[], NamedTuple[], Dict{Tuple{Int,String},String}(), mimes,
                Dict{Tuple{String,Int},Vector{Tuple{String,Vector{UInt8}}}}())
+
+# The key of a path in the marks of the slides project: "1.2/1.1" for `[(1, 2), (1, 1)]`.
+_path_key(path) = join(("$g.$j" for (g, j) in path), "/")
 
 # The `blk` function of `_emit_slide_frag!` for fragment `frag` of slide `slide`; `f` holds the cell,
 # the row and the column of the fragment. It numbers the blocks of the fragment in reading order,
 # writes each one down in `plan`, and gives the Typst text that draws it: `typ` inside
 # `#blk(i, kind, frag: "s<slide>f<frag>", cell: "<id>")[…]`, with the line ends that follow `typ`.
+# The kind "gridcell" writes down the grid cell `gridcell` (a `_cell_spec`) at `path` and gives the
+# text of its marks (`cellmark`).
 function _block_printer(plan::_SlidePlan, slide::Integer, frag::Integer, f)
     n = Ref(0)
-    return function (kind, typ; src = nothing, path = Tuple{Int,Int}[], file = nothing)
+    return function (kind, typ; src = nothing, path = Tuple{Int,Int}[], file = nothing, gridcell = nothing)
+        if kind == "gridcell"
+            push!(plan.cells, (; slide, frag, path, gridcell.fill, gridcell.align, gridcell.valign))
+            return string("#cellmark(\"s", slide, "f", frag, "\", \"", _path_key(path), "\", filled: ",
+                          gridcell.fill !== nothing, ")\n")
+        end
         n[] += 1
         push!(plan.blocks, (; slide, frag, index = n[], kind, cell = f.cell, row = f.row, column = f.column, path, src, file))
         body = rstrip(typ)
@@ -2898,8 +2994,8 @@ end
 """
     slide_layout(nb; level = <the notebook's slide level>, ratio = <the notebook's slide ratio>, kwargs...) -> Vector{NamedTuple}
 
-The slide model of `slide_deck` with the layout of the slides PDF: each entry has two more fields,
-`regions` and `blocks`. The boxes come from one `typst query` on the slides project of the notebook,
+The slide model of `slide_deck` with the layout of the slides PDF: each entry has three more fields,
+`regions`, `blocks` and `cells`. The boxes come from one `typst query` on the slides project of the notebook,
 compiled with the block and region marks on (`slate-mark` of the slides preamble). `kwargs` are the
 other options of the slides PDF (`theme`, `charttheme`, `outputs`, …). Internal: it is not exported.
 
@@ -2915,11 +3011,11 @@ rhythm, the CSS line height times the text size.
   - `kind`: one of `ReportRender.BLOCK_KINDS`.
   - `cell`, `row`, `column`: the cell, the row and the `column=` value of its fragment, as in `frags`.
   - `frag`: the index of its fragment in `frags`; 0 for a block of the `title` cell.
-  - `index`: its number in the fragment, in reading order. A container (a `::: column`) holds
-    blocks: the blocks of container 1 come before the blocks of container 2.
-  - `path`: its place among the groups (`:::: columns`), as `(group, container)` pairs, outermost
-    first: the number of the group in its container and the number of the container in the group.
-    Empty outside a group.
+  - `index`: its number in the fragment, in reading order. A container (a `::: column` or a grid
+    cell) holds blocks: the blocks of container 1 come before the blocks of container 2.
+  - `path`: its place among the groups (`:::: columns`, `:::: grid`), as `(group, container)` pairs,
+    outermost first: the number of the group in its container and the number of the container in the
+    group. Empty outside a group.
   - `src`: its markdown, with `{{ }}` resolved and the block kinds marked; `nothing` for an output
     of a code cell, with two exceptions. A markdown output splits into blocks as a markdown cell
     does. The `text/plain` value is a fenced code block of its text.
@@ -2928,6 +3024,11 @@ rhythm, the CSS line height times the text size.
     table is the table, the box of each other block is as wide as its column. The text size and the
     line height of a table are those of its cells, and those of a code block are those of its code text.
   - `cols`, `rows`: the column widths and the row heights of a table, in `u`; else `nothing`.
+- `cells`: each grid cell, in the order of the document, as `(frag, path, page, box, fill, align, valign)`.
+  `path` is the path of the grid cell: a block is in it when the path of the block starts with it.
+  `box` is the whole grid cell, its pad included; `nothing` when the PDF does not draw it. `fill` is
+  the colour word of the grid cell or `nothing`, `align` "left", "center" or "right" and `valign`
+  "top", "middle" or "bottom".
 """
 function slide_layout(nb::LiveNotebook; level::Integer = get(nb.report.meta, "slidelevel", 2),
                       ratio::AbstractString = get(nb.report.meta, "slideratio", "16:9"), kwargs...)
@@ -2995,7 +3096,24 @@ function _slide_layout(plan::_SlidePlan, records)
         push!(blocks[b.slide], (; b.kind, b.cell, b.frag, b.index, b.row, b.column, b.path, b.src, page, box, size,
                                 lineheight, cols, rows))
     end
-    return [merge(sl, (regions = regions[si], blocks = blocks[si])) for (si, sl) in enumerate(plan.deck)]
+    # The two corners of each grid cell, inside its pad.
+    corners = Dict{Any,Any}()
+    foreach(r -> get!(corners, (r["frag"], r["path"], r["end"]), r), of("gridcell"))
+    gcells = [NamedTuple[] for _ in plan.deck]
+    for c in plan.cells
+        c.slide == 0 && continue
+        k = ("s$(c.slide)f$(c.frag)", _path_key(c.path))
+        a, b = get(corners, (k..., false), nothing), get(corners, (k..., true), nothing)
+        page = box = nothing
+        if a !== nothing && b !== nothing
+            pad = Float64(a["pad"])
+            page = Int(a["page"])
+            box = (x = Float64(a["x"]) - pad, y = Float64(a["y"]) - pad,
+                   w = Float64(b["x"]) - Float64(a["x"]) + 2pad, h = Float64(b["y"]) - Float64(a["y"]) + 2pad)
+        end
+        push!(gcells[c.slide], (; c.frag, c.path, page, box, c.fill, c.align, c.valign))
+    end
+    return [merge(sl, (regions = regions[si], blocks = blocks[si], cells = gcells[si])) for (si, sl) in enumerate(plan.deck)]
 end
 
 # ── Exporters ─────────────────────────────────────────────────────────────────────────────────────
@@ -3076,7 +3194,16 @@ function _deck_block(si, b, plan::_SlidePlan, files, cells, dir, warnings)
     return d
 end
 
-function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir, warnings)
+# The grid cells of a slide for an exporter. The colour of a fill is a hex string: the palette
+# colour, else the colour role, against the Slate palette `slate`; `nothing` for no fill or a word that
+# the settings `s` do not have.
+function _deck_cells(sl, s, slate)
+    hex(f) = f === nothing || !(haskey(s["palette"], f) || f in _DECK_ROLES) ? nothing : _deck_colour(s, f, slate)
+    return Any[Dict{String,Any}("path" => _deck_path(c.path), "box" => _deck_box(c.box), "fill" => hex(c.fill),
+                                "align" => c.align, "valign" => c.valign) for c in sl.cells]
+end
+
+function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir, warnings, s, slate)
     t = sl.title
     return Dict{String,Any}(
         "layout" => sl.layout, "transition" => sl.transition, "auto" => sl.auto,
@@ -3086,7 +3213,8 @@ function _deck_slide(si, sl, plan::_SlidePlan, files, cells, dir, warnings)
         "regions" => Any[Dict{String,Any}("name" => r.name, "text" => get(plan.texts, (si, r.name), nothing),
                                           "box" => _deck_box(r.box), "size" => r.size, "lineheight" => r.lineheight)
                  for r in sl.regions],
-        "blocks" => Any[_deck_block(si, b, plan, files, cells, dir, warnings) for b in sl.blocks])
+        "blocks" => Any[_deck_block(si, b, plan, files, cells, dir, warnings) for b in sl.blocks],
+        "cells" => _deck_cells(sl, s, slate))
 end
 
 """
@@ -3113,9 +3241,12 @@ function exporter_deck(nb::LiveNotebook; figure_mimes = ["image/png"], theme::Ab
         cells, title = lock(() -> (Dict(c.id => c for c in nb.report.cells),
                                    String(report_frontmatter(nb.report; untitled = "").title)), nb.lock)
         W, H = deck_canvas(ratio)
+        s = notebook_deck_settings(nb).values
+        palette = _chart_theme(charttheme, theme)
+        slate = ReportEngine._resolve_palette(palette)
         return Dict{String,Any}("title" => title, "size" => (Float64(W), Float64(H)), "ratio" => ratio,
-            "settings" => deck_settings_dict(notebook_deck_settings(nb).values; palette = _chart_theme(charttheme, theme)),
-            "slides" => Any[_deck_slide(si, sl, plan, files, cells, dir, warnings) for (si, sl) in enumerate(_slide_layout(plan, recs))])
+            "settings" => deck_settings_dict(s; palette),
+            "slides" => Any[_deck_slide(si, sl, plan, files, cells, dir, warnings, s, slate) for (si, sl) in enumerate(_slide_layout(plan, recs))])
     finally
         rm(dir; recursive = true, force = true)
     end

@@ -35,9 +35,9 @@ Two things to know about the published GitHub releases for this package:
   it, and it is part of the hash.
 - **`register_exporter!(f, name; label, ext, mime, figure_mimes = ["image/png"])`**: an export format of
   a slide deck. Slate builds the deck value, a `Dict{String,Any}` of plain Base types that the docstring
-  documents key by key (deck title, slide size and ratio, deck settings, slides with their regions and blocks,
-  the path of each block among the groups, the boxes, text sizes and line heights of the slides PDF, figure
-  forms in the order of `figure_mimes`), and calls
+  documents key by key (deck title, slide size and ratio, deck settings, slides with their regions, blocks and
+  grid cells, the path of each block among the groups, the boxes, text sizes and line heights of the slides
+  PDF, figure forms in the order of `figure_mimes`), and calls
   `f(deck)` on the worker; `f` gives the bytes of the file, or the tuple `(bytes, warnings)` with its
   export warnings as a `Vector{String}`. `extension_manifest()` gains an `exporters`
   field with the name, label, extension and MIME types of each exporter. A video or audio type in

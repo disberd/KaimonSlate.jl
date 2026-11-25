@@ -116,8 +116,20 @@ were written when they went out. They are marked.
   alt text. A file larger than 256 MiB gives no form and an export warning; a missing file gives the
   warning of a missing image. The box of the block is the box that the live deck gives the clip (see
   Visible changes).
-- Each block of the exporter deck value has a `"path"`: one `[group, container]` pair for each
-  `:::: columns` group around it, outermost first.
+- A `:::: grid` group puts boxes of text in rows that use the same column widths, on the live deck as
+  a CSS grid and in the slides PDF as a Typst `grid`, from the same markdown. The grid takes
+  `columns` (a count from 1 to 12, or widths in `fr` and `u`) and `gap`. Each `::: cell` takes `fill`
+  (a palette name or a colour role), `align`, `valign` and `size` (a text size factor from 0.5 to 8).
+  A grid cell attribute on the grid line is the default of each grid cell. Grids can nest. A filled
+  grid cell has the pad of the new deck settings group `[grid]` (`gap`, which is `columns.gap` when no
+  layer sets it, and `pad`, 16 u). A bad value, an unknown attribute, content outside a grid cell and
+  a grid cell outside a grid give an outline with a tooltip on the notebook page and a warning in the
+  export dialog. The width of a `{{ }}` figure in a grid cell follows its column. On the notebook page
+  and in the HTML export a grid has its columns and text attributes and no fill; the document PDF
+  prints its content one block after the other.
+- The exporter deck value has a `"cells"` list on each slide (the path, box, fill as hex, `align` and
+  `valign` of each grid cell), and each block has a `"path"`: one `[group, container]` pair for each
+  `:::: columns` or `:::: grid` around it, outermost first.
 
 ### Changed
 
@@ -139,8 +151,8 @@ were written when they went out. They are marked.
   `slidecols(widths, ..cols)`, that is defined in the deck preamble: `widths` has one ratio, length
   or `none` for each column, and the other arguments are the column bodies. A Typst preamble that is
   added after the default one can redefine `slidecols`. Other fenced divs, such as `::: step`, still
-  print only their content. The live deck and the PDF find the `:::: columns` groups in one
-  CommonMark parse, so they agree on a fence that is not a div or does not close. Slate puts
+  print only their content. The live deck and the PDF find the groups (`:::: columns`, `:::: grid`)
+  in one CommonMark parse, so they agree on a fence that is not a div or does not close. Slate puts
   quotes around an unquoted value of a `::: {…}` line before the parse, so `width=33.3` is 33.3 % and
   `width=40%` is a column on both targets.
 - The live deck puts the heading a slide starts with in its own `.slide-title` element, above the

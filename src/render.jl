@@ -545,15 +545,15 @@ function _md_html(src::AbstractString, interps = CellOutput[]; prose = identity,
     return _apply_md_attrs(html)
 end
 
-# ── Groups: `:::: columns` ────────────────────────────────────────────────────────────────────────────
-# A group puts content side by side inside one markdown cell: `:::: columns` holds `::: column` divs.
-# The live render reads the attributes from the CommonMark tree (`_style_groups!`); the Typst export
-# splits the source at the groups of the same tree (`_md_groups`). So both targets see the same groups
-# and values.
+# ── Groups: `:::: columns` and `:::: grid` ────────────────────────────────────────────────────────────
+# A group puts content side by side inside one markdown cell. `:::: columns` holds `::: column` divs;
+# `:::: grid` holds `::: cell` divs (grid cells) on one list of tracks, in rows that wrap. The live
+# render reads the attributes from the CommonMark tree (`_style_groups!`); the Typst export splits the
+# source at the groups of the same tree (`_md_groups`). So both targets see the same groups and values.
 
-# CommonMark ends an unquoted attribute value at `.` or `%`: `width=33.3` is `width="33"` plus a class
-# `3`, and `width=40%` is no div at all. Put quotes around each unquoted value of a `::: {…}` line
-# first. The line count does not change.
+# CommonMark ends an unquoted attribute value at `.` or `%`: `size=3.6` is `size="3"` plus a class `6`,
+# and `width=40%` is no div at all. Put quotes around each unquoted value of a `::: {…}` line first.
+# The line count does not change.
 function _quote_fence_values(src::AbstractString)
     occursin(":::", src) || return String(src)
     lines = split(String(src), '\n'; keepempty = true)
@@ -570,16 +570,125 @@ end
 
 _div_classes(n) = (c = CommonMark.getmeta(n, "class", String[]); c isa AbstractString ? split(c) : c)
 _is_div(n, cls) = n.t isa CommonMark.FencedDiv && cls in _div_classes(n)
-_group_kind(n) = _is_div(n, "columns") ? :columns : nothing
+_group_kind(n) = _is_div(n, "grid") ? :grid : _is_div(n, "columns") ? :columns : nothing
+
+# The colour roles of the deck settings (`deck_settings.jl` `_DECK_ROLES`): a `fill` word is a palette
+# name, else one of these.
+const _FILL_ROLES = ("fg", "strong", "dim", "accent", "accent2", "surface", "ink")
+const _FILL_RE = r"^[A-Za-z][A-Za-z0-9_-]{0,47}$"
+
+# A length attribute: a bare number or a number with `unit`, in `lo`..`hi`. `nothing` when absent;
+# a warning in `warns` and `nothing` when not valid.
+function _attr_num(d, k, unit, lo, hi, warns)
+    v = get(d, k, nothing)
+    v === nothing && return nothing
+    m = match(Regex("^([0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(?:$unit)?\$"), strip(String(v)))
+    x = m === nothing ? nothing : parse(Float64, m[1])
+    x !== nothing && lo <= x <= hi && return x
+    push!(warns, "`$k=\"$v\"` must be a number from $(_fmtnum(lo)) to $(_fmtnum(hi))$(unit == "" ? "" : " (in $unit)")")
+    return nothing
+end
+_fmtnum(x) = isinteger(x) ? string(Int(x)) : string(x)
+
+function _attr_pick(d, k, ok, warns)
+    v = get(d, k, nothing)
+    v === nothing && return nothing
+    v in ok && return String(v)
+    push!(warns, "`$k=\"$v\"` must be one of " * join(ok, ", "))
+    return nothing
+end
+
+const _GRID_ATTRS = ("columns", "gap")
+const _CELL_ATTRS = ("fill", "align", "valign", "size")
+
+function _unknown_attrs!(d, ok, what, warns)
+    for k in sort!(collect(keys(d)))
+        k in ("class", "id") || k in ok || push!(warns, "`$k` is not an attribute of $what")
+    end
+end
+
+# The checked values of a grid fence: `tracks` as `(:fr | :u, value)`, `gap` in `u` or `nothing` (the
+# deck setting `grid.gap`), and the cell attributes on the fence, which are the defaults of its cells.
+# `columns` is a count from 1 to 12, or a list of `Nfr` and `Nu` tracks. A bad list gives one track.
+function _grid_spec(d, warns = String[])
+    _unknown_attrs!(d, (_GRID_ATTRS..., _CELL_ATTRS...), "a grid", warns)
+    cols = strip(String(get(d, "columns", "1")))
+    tracks = Tuple{Symbol,Float64}[]
+    if occursin(r"^[0-9]+$", cols)
+        n = parse(Int, cols)
+        1 <= n <= 12 ? append!(tracks, fill((:fr, 1.0), n)) : push!(warns, "`columns=\"$cols\"` must be a count from 1 to 12")
+    else
+        for t in split(cols)
+            m = match(r"^([0-9]+(?:\.[0-9]+)?|\.[0-9]+)(fr|u)$", t)
+            x = m === nothing ? 0.0 : parse(Float64, m[1])
+            if m === nothing || x > 10000 || (m[2] == "fr" && x == 0)
+                push!(warns, "`columns=\"$cols\"` must be a count, or tracks such as \"1fr 2fr\" or \"400u 1fr\"")
+                empty!(tracks)
+                break
+            end
+            push!(tracks, (Symbol(m[2]), x))
+        end
+    end
+    isempty(tracks) && push!(tracks, (:fr, 1.0))
+    gap = _attr_num(d, "gap", "u", 0, 10000, warns)
+    cell = Dict{String,Any}(k => d[k] for k in _CELL_ATTRS if haskey(d, k))
+    return (; tracks, gap, cell)
+end
+
+# The checked values of a grid cell: the attributes of its fence over those of the grid fence.
+function _cell_spec(d, defaults = Dict{String,Any}(), warns = String[])
+    _unknown_attrs!(d, _CELL_ATTRS, "a grid cell", warns)
+    a = merge(defaults, Dict{String,Any}(k => d[k] for k in _CELL_ATTRS if haskey(d, k)))
+    f = get(a, "fill", nothing)
+    f !== nothing && match(_FILL_RE, String(f)) === nothing && (push!(warns, "`fill=\"$f\"` must be a palette name or a colour role"); f = nothing)
+    return (; fill = f === nothing ? nothing : String(f),
+            align = something(_attr_pick(a, "align", ("left", "center", "right"), warns), "left"),
+            valign = something(_attr_pick(a, "valign", ("top", "middle", "bottom"), warns), "top"),
+            size = _attr_num(a, "size", "em", 0.5, 8, warns))
+end
+
+# The CSS colour of a `fill` word: the palette colour, and for a role name the role when the palette
+# has no such name. Outside a deck the properties do not exist, so a grid cell has no paint there.
+_fill_css(f) = f in _FILL_ROLES ? "var(--deck-palette-$f, var(--deck-$f))" : "var(--deck-palette-$f)"
+_css_u(x) = string("calc(", _fmtnum(x), " * var(--u, 1px))")
 
 # The child nodes of `n`.
 _md_children(n) = (out = CommonMark.Node[]; c = n.first_child; while !CommonMark.isnull(c); push!(out, c); c = c.nxt; end; out)
 
-# Give each group of the tree its live form: a column with `width` gets that width as its flex basis.
+function _set_warn!(n, warns)
+    isempty(warns) && return
+    msg = join(warns, "; ")
+    n.meta["data-warn"] = msg
+    n.meta["title"] = msg
+end
+
+# Give each group of the tree its live form. A grid becomes `deck-grid` with its tracks and gap as
+# inline style, each grid cell `deck-grid-cell` with its paint and alignment; the notebook rule `.cell`
+# must not reach a grid cell. A column with `width` gets that width as its flex basis. Content of a
+# grid that is in no grid cell (notebook.css hides it) and a grid cell outside a grid give a warning.
+# The pad, the gap and the paint of a grid cell apply on the deck only (notebook.css). A group with a
+# warning has it in `data-warn`, which the notebook page shows.
 function _style_groups!(n)
     for c in _md_children(n)
         c.t isa CommonMark.FencedDiv || continue
-        if _is_div(c, "column") && haskey(c.meta, "width")
+        cls = String.(_div_classes(c))
+        warns = String[]
+        if "grid" in cls
+            g = _grid_spec(c.meta, warns)
+            style = ["grid-template-columns:" * join((k === :fr ? _fmtnum(v) * "fr" : _css_u(v) for (k, v) in g.tracks), " ")]
+            g.gap === nothing || push!(style, "gap:" * _css_u(g.gap))
+            for k in _md_children(c)
+                if _is_div(k, "cell")
+                    _style_cell!(k, g.cell)
+                elseif !("content outside a grid cell is not shown" in warns)
+                    push!(warns, "content outside a grid cell is not shown")
+                end
+            end
+            _set_div!(c, replace(cls, "grid" => "deck-grid"), style, warns)
+        elseif "cell" in cls
+            push!(warns, "a grid cell outside a grid has no effect")
+            _set_div!(c, filter(!=("cell"), cls), String[], warns)
+        elseif "column" in cls && haskey(c.meta, "width")
             w = strip(String(c.meta["width"]))
             if occursin(r"^[0-9.]+(%|px|em|rem)?$", w)
                 w = occursin(r"^[0-9.]+$", w) ? w * "%" : w
@@ -590,14 +699,38 @@ function _style_groups!(n)
     end
 end
 
+function _style_cell!(k, defaults)
+    warns = String[]
+    cs = _cell_spec(k.meta, defaults, warns)
+    style = ["text-align:" * cs.align]
+    cs.fill === nothing || push!(style, "background:" * _fill_css(cs.fill))
+    cs.valign == "top" || push!(style, "align-content:" * (cs.valign == "middle" ? "center" : "end"))
+    cs.size === nothing || push!(style, "font-size:$(_fmtnum(cs.size))em")
+    cls = replace(String.(_div_classes(k)), "cell" => "deck-grid-cell")
+    cs.fill === nothing || push!(cls, "filled")
+    _set_div!(k, cls, style, warns)
+end
+
+# Keep the id and the classes of a group div, put `style` on it, and drop its other attributes.
+function _set_div!(n, cls, style, warns)
+    meta = Dict{String,Any}("class" => cls)
+    haskey(n.meta, "id") && (meta["id"] = n.meta["id"])
+    isempty(style) || (meta["style"] = join(style, ";"))
+    n.meta = meta
+    _set_warn!(n, warns)
+end
+
 # The groups of the markdown `src` for the Typst export, found in the same CommonMark tree as the live
 # render finds them. The result holds the text between groups as strings and each group as
-# `(kind, metas, cols)`: `kind` is `:columns`, then for each container (a column) the attributes of its
-# fence and its markdown source. A group inside a container stays in the source of that container,
-# where the next pass finds it; a group inside another div (`::: step`) is found, and the fences of
-# that div stay in the text. Other content between the containers is not in the result.
-function _md_groups(src::AbstractString)
-    occursin("columns", src) || return Any[String(src)]
+# `(kind, grid, metas, cells, cols, warns)`: `kind` is `:columns` or `:grid`, `grid` the `_grid_spec`
+# of a grid, then for each container (a column or a grid cell) the attributes of its fence, the
+# `_cell_spec` of a grid cell, and its markdown source. `warns` holds the warnings of the group. A
+# group inside a container stays in the source of that container, where the next pass finds it; a
+# group inside another div (`::: step`) is found, and the fences of that div stay in the text. Other
+# content between the containers is not in the result. A grid cell outside a grid gives a warning in
+# `warns`.
+function _md_groups(src::AbstractString; warns::Vector{String} = String[])
+    occursin(r"columns|grid|cell", src) || return Any[String(src)]
     src = _quote_fence_values(src)
     lines = split(src, '\n'; keepempty = true)
     pieces = Any[]
@@ -607,6 +740,7 @@ function _md_groups(src::AbstractString)
             c.t isa CommonMark.FencedDiv || continue
             kind = _group_kind(c)
             if kind === nothing
+                _is_div(c, "cell") && push!(warns, "a grid cell outside a grid has no effect")
                 visit(c)
                 continue
             end
@@ -623,17 +757,23 @@ function _md_groups(src::AbstractString)
 end
 
 function _group_piece(c, kind, lines)
-    metas, cols = Dict{String,Any}[], String[]
+    warns = String[]
+    grid = kind === :grid ? _grid_spec(c.meta, warns) : nothing
+    metas, cells, cols = Dict{String,Any}[], Any[], String[]
     for k in _md_children(c)
-        _is_div(k, "column") || continue
-        a, b = k.sourcepos[1][1], k.sourcepos[2][1]
-        # The last line is the closing fence when the div has one: a fence line after its content.
-        inner = CommonMark.isnull(k.last_child) ? a : k.last_child.sourcepos[2][1]
-        b > inner && occursin(r"^\s*:{3,}\s*$", lines[b]) && (b -= 1)
-        push!(metas, something(k.meta, Dict{String,Any}()))
-        push!(cols, join(lines[a+1:b], "\n"))
+        if _is_div(k, kind === :grid ? "cell" : "column")
+            a, b = k.sourcepos[1][1], k.sourcepos[2][1]
+            # The last line is the closing fence when the div has one: a fence line after its content.
+            inner = CommonMark.isnull(k.last_child) ? a : k.last_child.sourcepos[2][1]
+            b > inner && occursin(r"^\s*:{3,}\s*$", lines[b]) && (b -= 1)
+            push!(metas, something(k.meta, Dict{String,Any}()))
+            push!(cells, kind === :grid ? _cell_spec(k.meta, grid.cell, warns) : nothing)
+            push!(cols, join(lines[a+1:b], "\n"))
+        elseif kind === :grid && !("content outside a grid cell is not shown" in warns)
+            push!(warns, "content outside a grid cell is not shown")
+        end
     end
-    return (; kind, metas, cols)
+    return (; kind, grid, metas, cells, cols, warns)
 end
 
 # `![flags](clip.mp4)` → a `<video>` (or `<audio>` for a sound file): image syntax is what an author

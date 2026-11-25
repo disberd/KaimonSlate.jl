@@ -126,6 +126,45 @@ Cells tagged `column=2` still sit beside the cell before them, on a slide as in 
 
 ![A slide with an equation and a list in the left column and a chart from a `column=2` cell on the right](./assets/present-columns.png)
 
+### Grids
+
+A grid puts boxes of text in rows that use the same column widths. Each grid cell can have a fill
+colour, an alignment and a text size. The live deck draws the grid as a CSS grid, and the slides PDF
+draws it as a Typst `grid`, from the same markdown. This example has a row of two boxes on a wide and
+a narrow column:
+
+```markdown
+:::: {.grid columns="3fr 1fr" gap=24 fill=tint-blue align=center}
+::: cell
+**Frame N**
+:::
+::: {.cell fill=tint-teal}
+**Frame N+1**
+:::
+::::
+```
+
+The grid takes these attributes:
+
+- `columns`: the number of equal columns, from 1 to 12, or a list of column widths in `fr` (a share
+  of the free width) and `u` (slide units), for example `"400u 1fr"`.
+- `gap`: the space between the columns and between the rows, in `u`. The default is the deck setting
+  `grid.gap`.
+
+A grid cell takes these attributes. Put one on the grid line to give it to each grid cell:
+
+- `fill`: a palette name or a colour role of the deck settings. A filled grid cell has the pad
+  `grid.pad` inside it.
+- `align`: `left`, `center` or `right`.
+- `valign`: `top`, `middle` or `bottom`.
+- `size`: the text size as a factor of the body text, from 0.5 to 8, for example `size=3.6`.
+
+More grid cells than columns go on to the next row. A grid cell can hold any markdown, `{{ }}`
+values and another grid. For rows with different column widths, put one grid for each row in a
+grid with `columns=1`. A bad value, an unknown attribute, or text outside a grid cell gives an
+outline on the notebook page and a warning in the export dialog. On the notebook page and in the
+HTML export, a grid has its columns and its text attributes, but no fill.
+
 ### Builds
 
 A slide can bring its content in a piece at a time. `→` walks the steps, then moves to the next
@@ -359,8 +398,9 @@ typeset landscape deck **server-side via Typst** — one slide per page at the d
   source. Choosing any non-hidden **Code listings** size brings them back.
 - **Vector figures** — CairoMakie embeds as PDF, ECharts as SVG (light+dark captured), so a
   slide stays crisp on a projector.
-- **Columns**: a `:::: columns` group prints side by side, and a column with a `width` keeps it. The
-  other columns share the rest equally. Cells tagged `column=2` print side by side with equal widths.
+- **Columns and grids**: a `:::: columns` group prints side by side, and a column with a `width` keeps
+  it. The other columns share the rest equally. A `:::: grid` prints with its column widths, gaps,
+  fills and alignment. Cells tagged `column=2` print side by side with equal widths.
 - **Speaker notes** — tick **Append speaker-notes pages to the deck** to follow the deck with a
   notes appendix (one page per slide that has `notes` cells).
 

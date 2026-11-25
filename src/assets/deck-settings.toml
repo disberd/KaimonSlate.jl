@@ -137,3 +137,9 @@ figure-cap = 0.7
 [columns]
 gap = "56u"
 row-gap = "48u"
+
+# `gap` is the gap between the tracks and between the rows of a `:::: grid` group; when no layer sets
+# it, it is `columns.gap`. `pad` is the space inside a grid cell that has a fill.
+[grid]
+gap = "56u"
+pad = "16u"

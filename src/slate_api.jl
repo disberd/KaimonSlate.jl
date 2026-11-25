@@ -1265,7 +1265,11 @@ See also `save_asset`, `FileUpload`."""),
         `.fade-down`, `.fade`, `.zoom`, `.blur`; on content already showing `.highlight`, `.strike`,
         `.fade-out`; `.dim` once passed; `step=3` orders it), `::: incremental`
         around a list (one item per click), and a `. . .` line (the rest of the cell is one step).
-        COLUMNS: `:::: columns` / `::: {.column width="40%"}` … `:::` / `::::`. MEDIA:
+        COLUMNS: `:::: columns` / `::: {.column width="40%"}` … `:::` / `::::`. GRID (boxes in rows on
+        one set of column widths, live and in the PDF): `:::: {.grid columns="1fr 2fr" gap=24}` (or
+        `columns=3`; widths in `fr` and `u`) holding `::: {.cell fill=<palette name or colour role>
+        align=center valign=middle size=3.6}` … `:::`; a cell attribute on the grid line is the default
+        of each cell; more cells than columns wrap; grids nest. MEDIA:
         `![autoplay loop](clip.mp4)` is a video that starts when its step comes up (alt-text flags:
         `autoplay`, `loop`, `muted`, `nocontrols`; `![](talk.m4a)` is audio; a relative path is beside the
         notebook). MORPH: a heading,
@@ -1421,7 +1425,8 @@ See also `save_asset`, `FileUpload`."""),
         the same machinery a returned value uses — so it works live and in a static export. A language
         nobody claimed stays an ordinary code block, so this costs an existing notebook nothing.
         Pandoc-style `:::` FENCED DIVS become `<div>`s with the given classes: `:::: columns` holding
-        `::: {.column width="40%"}` … `:::` blocks sets columns side by side; `::: step`,
+        `::: {.column width="40%"}` … `:::` blocks sets columns side by side, and `:::: grid` holding
+        `::: cell` blocks sets boxes in rows (see "slides"); `::: step`,
         `::: incremental` and a line of `. . .` are slide builds (see "slides"). `![alt](clip.mp4)` is a
         video and `![](talk.m4a)` audio; a relative image or clip path resolves beside the notebook. Math
         may use the presentation macros `\\term`, `\\stepat`, `\\braceat`, `\\note`, … (see "math slides")."""),
