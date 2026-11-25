@@ -673,6 +673,9 @@
     if (!spec.yAxis) delete opt.yAxis;
     return opt;
   }
+  // The slide styling of a chart at `--u` 1, where 1 px is 1 u: the chart picture of a slides export
+  // (core.js `_renderInterpChartSvg`).
+  window._deckChartOpts = spec => _presentOpts(spec, 1);
   // Plain-object deep merge (arrays merge by index), for laying slide styling over a chart's option.
   function _merge(a, b) {
     if (Array.isArray(b)) {

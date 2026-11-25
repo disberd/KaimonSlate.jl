@@ -19,13 +19,27 @@ const _LIVE_SVG_CACHE_MAX_BYTES = 2 * 1024 * 1024
 
 # Ask the open browser tab to render `cell`'s chart as vector SVG right now (see core.js
 # `_renderChartSvg`). Only an export asks, not each chart update. `nothing` if no tab is open, the
-# round-trip times out, or the cell has no live chart. `index` is the number of the chart in the cell
-# from 0; a `width` and a `height` in px give the size of the picture, else it has the size of the
-# live chart.
-function _live_render_svg(nb::LiveNotebook, cell::AbstractString; theme::AbstractString = "midnight",
-                          index::Integer = 0, width::Real = 0, height::Real = 0)
-    code = "window._renderChartSvg && window._renderChartSvg(" *
-           join(JSON.json.((String(cell), String(theme), Int(index), Float64(width), Float64(height))), ", ") * ")"
+# round-trip times out, or the cell has no live chart.
+_live_render_svg(nb::LiveNotebook, cell::AbstractString; theme::AbstractString = "midnight") =
+    _live_svg(nb, "window._renderChartSvg && window._renderChartSvg(" * JSON.json(String(cell)) * ", " *
+                  JSON.json(String(theme)) * ")")
+
+# The answer of a tab that loaded its page before Slate had `_renderInterpChartSvg`.
+const _STALE_TAB = "<stale tab>"
+
+# Ask the open tab for the chart `index` (from 0) of the `{{ }}` values of the markdown cell `cell`,
+# as SVG at `width` × `height` px (core.js `_renderInterpChartSvg`), with the slide styling of the
+# live deck when `present`. The SVG, `_STALE_TAB` when the tab runs an older page of Slate, or
+# `nothing` as for `_live_render_svg`.
+function _live_interp_chart_svg(nb::LiveNotebook, cell::AbstractString; theme::AbstractString, index::Integer,
+                                width::Real, height::Real, present::Bool)
+    args = join(JSON.json.((String(cell), String(theme), Int(index), Float64(width), Float64(height), present)), ", ")
+    return _live_svg(nb, "typeof window._renderInterpChartSvg === 'function' ? window._renderInterpChartSvg(" *
+                         args * ") : " * JSON.json(_STALE_TAB))
+end
+
+# The non-empty string that the JS expression `code` gives in the open tab, or `nothing`.
+function _live_svg(nb::LiveNotebook, code::AbstractString)
     res = request_live_eval(nb, code; timeout = 6.0)
     res isa AbstractDict || return nothing
     get(res, "ok", false) === true || return nothing
@@ -1574,21 +1588,33 @@ end
 
 # The picture of each chart of a `{{ }}` value, drawn by the open tab at the width of its column, into
 # `figs` under `_hook_slot(value)`, the place of a picture that is drawn for its column: the markdown
-# takes it as a hook figure (`_compfig_stager`), and an exporter as a staged picture. A value whose
-# figure hook drew a picture keeps it. A chart that no tab drew adds a line to `warnings`. Called before
-# the caller takes `nb.lock`, like the other warm passes.
+# takes it as a hook figure (`_compfig_stager`), and an exporter as a staged picture. `present` gives
+# the chart the slide styling of the live deck (a slides export). A value whose figure hook drew a
+# picture keeps it. A chart that no tab drew, or that a tab with an older page of Slate answered for,
+# adds a line to `warnings`. `draw(cell; theme, index, width, height, present)` asks the tab
+# (`_live_interp_chart_svg`). Called before the caller takes `nb.lock`, like the other warm passes.
 function _warm_interp_charts!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{String}, geo;
-                              theme::AbstractString = "midnight", progress = nothing)
-    lost = String[]
+                              theme::AbstractString = "midnight", present::Bool = false, progress = nothing,
+                              draw = (cid; kw...) -> _live_interp_chart_svg(nb, cid; kw...))
+    lost, stale = String[], String[]
     for (cid, i, k, w, h) in _interp_chart_targets(nb, geo)
         haskey(figs, (cid, _hook_slot(i))) && continue
         progress === nothing || (try; progress(cid); catch; end)
-        svg = _live_render_svg(nb, cid; theme, index = k, width = w, height = h)
-        svg === nothing ? push!(lost, cid) : (figs[(cid, _hook_slot(i))] = (Vector{UInt8}(codeunits(svg)), "svg"))
+        svg = draw(cid; theme, index = k, width = w, height = h, present)
+        if svg === nothing
+            push!(lost, cid)
+        elseif svg == _STALE_TAB
+            push!(stale, cid)
+        else
+            figs[(cid, _hook_slot(i))] = (Vector{UInt8}(codeunits(svg)), "svg")
+        end
     end
     isempty(lost) || push!(warnings, string("No open tab of the notebook drew the chart of a `{{ }}` value, so the ",
                                             "export leaves it out. Open the notebook in a browser, then export again. ",
                                             "Cells: ", join(unique!(lost), ", "), "."))
+    isempty(stale) || push!(warnings, string("The open tab of the notebook has a page of an older Slate, which cannot ",
+                                             "draw the chart of a `{{ }}` value, so the export leaves it out. Reload ",
+                                             "the tab, then export again. Cells: ", join(unique!(stale), ", "), "."))
     return figs
 end
 
@@ -3360,7 +3386,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
     compfigs = _warm_hook_figs!(nb, _CompFigs(), warnings, geo; progress = cid -> _export_progress(nb, cid))
     isempty(plan.mimes) || _hook_forms!(plan, nb, warnings, geo, compfigs)
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
-    _warm_interp_charts!(nb, compfigs, warnings, geo; theme = ct, progress = cid -> _export_progress(nb, cid))
+    _warm_interp_charts!(nb, compfigs, warnings, geo; theme = ct, present = true, progress = cid -> _export_progress(nb, cid))
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_html_rasters!(nb; theme = ct, figs = compfigs)   # one round-trip, under the EXPORT's palette (see above)
     _warm_component_figs!(nb, compfigs, geo; theme = ct, progress = cid -> _export_progress(nb, cid))

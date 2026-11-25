@@ -317,8 +317,11 @@ were written when they went out. They are marked.
   the theme or of the figure palette, and on a slide it could keep 0 px of width. On a slide it now
   fits its column, as the chart of a code cell does; the slide previews and the deck print copy it.
   The PDF export, the PDF deck and an exporter get the chart too: the open tab draws it as SVG at the
-  width of its column, also in a `::: column` or a grid cell. They left it out before. With no open
-  tab, the export gives a warning with the cells.
+  width of its column, also in a `::: column` or a grid cell. They left it out before. In the PDF deck
+  and for an exporter the chart has the slide styling of the live deck (20 u axis labels, labels
+  inside the plot). With no open tab, or with a tab that loaded its page before this release, the
+  export leaves the chart out and gives a warning with the cells: open the notebook, or reload its
+  tab, then export again.
 
 ## [2.2.0] - 2026-11-16
 
