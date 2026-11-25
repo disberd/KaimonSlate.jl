@@ -251,7 +251,7 @@ end
 # into `out`. A `:::: columns` group shares the width among its columns (`_column_widths`). Returns the
 # number of the last value.
 function _interp_widths!(out, cid::AbstractString, src::AbstractString, ib::Integer, w::Real, gap::Real)
-    for p in _split_columns(src)
+    for p in _split_groups(src)
         if p isa AbstractString
             n = _md_interp_count(p)
             for g in ib+1:ib+n
@@ -2752,60 +2752,23 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
     end
 end
 
-# Typst length of a `:::` column's `width` attribute, or "none" when it has none. A bare number is a
-# percentage, as in the live deck; `px` becomes points and `rem` becomes `em`.
-function _column_width_typst(attrs::AbstractString)
-    m = match(r"(?:^|[\s{.])width\s*=\s*\"?([0-9]+(?:\.[0-9]+)?|\.[0-9]+)(%|px|em|rem)?", attrs)
+# Typst length of the `width` attribute of a `::: column` (`d`: the attributes of its fence), or "none"
+# when it has none. A bare number is a percentage, as in the live deck; `px` becomes points and `rem`
+# becomes `em`.
+function _column_width_typst(d)
+    w = get(d, "width", nothing)
+    m = w === nothing ? nothing : match(r"^([0-9]+(?:\.[0-9]+)?|\.[0-9]+)(%|px|em|rem)?$", strip(String(w)))
     m === nothing && return "none"
     unit = something(m[2], "%")
     return string(m[1], unit == "px" ? "pt" : unit == "rem" ? "em" : unit)
 end
 
-# Split a markdown source at its `:::: columns` groups. The result holds the text between groups as
-# strings and each group as `(widths, cols)`: one Typst length or "none" and one markdown source per
-# column. Other fenced divs (`::: step`) stay in the text for `_strip_deck_markup`. A `columns` div
-# inside a column stays in that column's source, where the next pass splits it again.
-function _split_columns(src::AbstractString)
-    occursin("columns", src) || return Any[String(src)]
-    pieces = Any[]
-    text = String[]                                  # lines since the last group
-    stack = Symbol[]                                 # the open divs: :columns, :column or :other
-    widths = String[]; cols = Vector{String}[]       # the open columns group
-    infence = false
-    flush!() = (isempty(text) || push!(pieces, join(text, "\n")); empty!(text))
-    for ln in split(String(src), '\n'; keepempty = true)
-        incol = :column in stack
-        target = incol ? cols[end] : text
-        m = occursin(r"^\s*(```|~~~)", ln) ? (infence = !infence; nothing) : infence ? nothing : match(r"^\s*:{3,}\s*(.*?)\s*$", ln)
-        if m === nothing
-            (isempty(stack) || stack[end] !== :columns) && push!(target, ln)   # a group has no prose between its columns
-        elseif isempty(m[1])                                 # a closing fence
-            k = isempty(stack) ? :none : pop!(stack)
-            if k === :columns
-                push!(pieces, (widths = widths, cols = [join(c, "\n") for c in cols]))
-                widths = String[]; cols = Vector{String}[]
-            elseif k === :other || k === :none
-                push!(target, ln)
-            end
-        else                                                 # an opening fence
-            kind = occursin(r"(?:^|[\s{.])columns(?=[\s}]|$)", m[1]) && !(:columns in stack) ? :columns :
-                   occursin(r"(?:^|[\s{.])column(?=[\s}]|$)", m[1]) && !isempty(stack) && stack[end] === :columns ? :column : :other
-            if kind === :columns
-                flush!()
-            elseif kind === :column
-                push!(widths, _column_width_typst(m[1])); push!(cols, String[])
-            else
-                push!(target, ln)
-            end
-            push!(stack, kind)
-        end
-    end
-    while !isempty(stack)                            # an unclosed group still prints
-        pop!(stack) === :columns && push!(pieces, (widths = widths, cols = [join(c, "\n") for c in cols]))
-    end
-    flush!()
-    return isempty(pieces) ? Any[String(src)] : pieces
-end
+# The groups of a markdown source (`ReportRender._md_groups`), each `:::: columns` group with the
+# Typst width of each column in `widths`. Other fenced divs (`::: step`) stay in the text for
+# `_strip_deck_markup`.
+_split_groups(src::AbstractString) =
+    Any[p isa AbstractString ? p : merge(p, (; widths = String[_column_width_typst(m) for m in p.metas]))
+        for p in ReportRender._md_groups(src)]
 
 # One `slidecols` call: `body(j)` prints the j-th column of the row. `gap` and `align` are Typst
 # expressions, or `nothing` for the defaults of `slidecols`; `row` marks a row of cells.
@@ -2826,39 +2789,44 @@ end
 # `SlideFrag`'s `Union{String,Nothing}` field, and a `::SlideFrag` annotation would reject every caller
 # that builds one inline rather than pushing it through a `Vector{SlideFrag}`.
 # A markdown cell prints inside one `mdcell`, which gives it the padding of a live markdown cell;
-# `incell` is true for the parts of a cell that a `:::: columns` group splits.
+# `incell` is true for the parts of a cell that a group (`:::: columns`) splits.
 # Returns `true` when the markdown that it printed ends with a key message, an admonition or a table.
 # On the live deck such a block has no space below it at the end of its cell, so the cell is `tight`.
 # Each block of the fragment goes through `blk` (`_block_printer`): a markdown fragment is split into
 # its blocks (`ReportRender._md_split`), each in a file of its own, and each output of a code cell is
-# one block. `divcolumn` is the number of the `::: column` that holds the markdown, or 0.
-function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, warnings = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false, blk = _plain_block, divcolumn::Integer = 0)
+# one block. `path` is the place of the markdown among the groups: for each group, outermost first, the
+# number of the group in its container and the number of the container in the group.
+function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, warnings = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false, blk = _plain_block, path::Vector{Tuple{Int,Int}} = Tuple{Int,Int}[])
     c, srcoverride = frag.cell, frag.src     # `frag.src` is a per-frag SOURCE override (String/nothing), NOT the themed-render Bool `override`
     if is_prose(c.kind) && !incell
         cio = IOBuffer()
         tight = _emit_slide_frag!(cio, dir, base, nb, frag; theme, charttheme, override, show_source, include_params, citekeys,
-                                  outputs, sizes, warnings, compfigs, blk, divcolumn, incell = true)
+                                  outputs, sizes, warnings, compfigs, blk, path, incell = true)
         position(cio) == 0 || print(io, tight ? "#mdcell(tight: true)[\n" : "#mdcell[\n", String(take!(cio)), "]\n\n")
         return false
     end
     if is_prose(c.kind)
         src = srcoverride === nothing ? c.source : srcoverride
-        pieces = _split_columns(src)
-        if !(length(pieces) == 1 && pieces[1] isa AbstractString)    # a `:::: columns` group splits the cell
+        pieces = _split_groups(src)
+        if !(length(pieces) == 1 && pieces[1] isa AbstractString)    # a group splits the cell
             kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, warnings, compfigs, incell, blk)
             ib = frag.interpbase     # interpolations are numbered across the cell, so each piece starts after the last
             tight = false
+            gi = 0                   # the number of the group in this container
             for (k, p) in enumerate(pieces)
                 pbase = string(base, "p", k)
                 if p isa AbstractString
-                    tight = _emit_slide_frag!(io, dir, pbase, nb, (cell = c, src = String(p), interpbase = ib); divcolumn, kw...)
+                    tight = _emit_slide_frag!(io, dir, pbase, nb, (cell = c, src = String(p), interpbase = ib); path, kw...)
                     ib += _md_interp_count(p)
                 else
                     tight = false
-                    _print_slidecols(io, p.widths) do j
-                        _emit_slide_frag!(io, dir, string(pbase, "c", j), nb, (cell = c, src = p.cols[j], interpbase = ib); divcolumn = j, kw...)
+                    gi += 1
+                    emit = function (j)
+                        _emit_slide_frag!(io, dir, string(pbase, "c", j), nb, (cell = c, src = p.cols[j], interpbase = ib);
+                                          path = [path; (gi, j)], kw...)
                         ib += _md_interp_count(p.cols[j])
                     end
+                    _print_slidecols(emit, io, p.widths)
                 end
             end
             return tight
@@ -2874,7 +2842,7 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
             text, clip = _take_media_marks(b.text)
             clip = b.kind == "figure" ? clip : nothing
             write(joinpath(dir, file), text)
-            print(io, blk(b.kind, string(clip === nothing ? "#" * _md_render(file) : _clip_typ(clip, text, file), "\n\n"); src = text, divcolumn, file = clip))
+            print(io, blk(b.kind, string(clip === nothing ? "#" * _md_render(file) : _clip_typ(clip, text, file), "\n\n"); src = text, path, file = clip))
         end
         return occursin(r"</slate-(?:key-message|admonition|table)>\s*$", md)
     else
@@ -2895,7 +2863,7 @@ end
 # `deck` is the slide model. `pages[p]` is the index in `deck` of the slide on page `p` of the PDF
 # (0 for the title page of a notebook with no `title` cell); the pages after `pages` hold no slide of
 # the model (the references, the notes). `blocks` holds each block in the order of the document:
-# `(slide, frag, index, kind, cell, row, column, divcolumn, src, file)`; `file` is the picture of a figure
+# `(slide, frag, index, kind, cell, row, column, path, src, file)`; `file` is the picture of a figure
 # output in the project directory, or the video or audio file of a figure of markdown, else `nothing`.
 # `texts` holds the markdown of each region, by `(slide, name)`. For an exporter (`exporter_deck`),
 # `mimes` are its figure MIME types and `forms` the pictures of the figure hooks in those types, by
@@ -2918,9 +2886,9 @@ _SlidePlan(mimes::Vector{String} = String[]) =
 # `#blk(i, kind, frag: "s<slide>f<frag>", cell: "<id>")[…]`, with the line ends that follow `typ`.
 function _block_printer(plan::_SlidePlan, slide::Integer, frag::Integer, f)
     n = Ref(0)
-    return function (kind, typ; src = nothing, divcolumn = 0, file = nothing)
+    return function (kind, typ; src = nothing, path = Tuple{Int,Int}[], file = nothing)
         n[] += 1
-        push!(plan.blocks, (; slide, frag, index = n[], kind, cell = f.cell, row = f.row, column = f.column, divcolumn, src, file))
+        push!(plan.blocks, (; slide, frag, index = n[], kind, cell = f.cell, row = f.row, column = f.column, path, src, file))
         body = rstrip(typ)
         return string("#blk(", n[], ", \"", kind, "\", frag: \"s", slide, "f", frag, "\", cell: \"", _typ_str(f.cell), "\")[", lstrip(body), "]",
                       SubString(typ, ncodeunits(body) + 1))
@@ -2943,12 +2911,15 @@ rhythm, the CSS line height times the text size.
 - `regions`: each region that the PDF draws, as `(name, page, box, size, lineheight)`. `name` is
   "title", "subtitle", "byline" or "abstract".
 - `blocks`: each block of the body, in reading order, as
-  `(kind, cell, frag, index, row, column, divcolumn, src, page, box, size, lineheight, cols, rows)`.
+  `(kind, cell, frag, index, row, column, path, src, page, box, size, lineheight, cols, rows)`.
   - `kind`: one of `ReportRender.BLOCK_KINDS`.
   - `cell`, `row`, `column`: the cell, the row and the `column=` value of its fragment, as in `frags`.
   - `frag`: the index of its fragment in `frags`; 0 for a block of the `title` cell.
-  - `index`: its number in the fragment, in reading order. A `::: column` holds blocks: the blocks of
-    column 1 come before the blocks of column 2. `divcolumn` is the number of that column, or 0.
+  - `index`: its number in the fragment, in reading order. A container (a `::: column`) holds
+    blocks: the blocks of container 1 come before the blocks of container 2.
+  - `path`: its place among the groups (`:::: columns`), as `(group, container)` pairs, outermost
+    first: the number of the group in its container and the number of the container in the group.
+    Empty outside a group.
   - `src`: its markdown, with `{{ }}` resolved and the block kinds marked; `nothing` for an output
     of a code cell, with two exceptions. A markdown output splits into blocks as a markdown cell
     does. The `text/plain` value is a fenced code block of its text.
@@ -3021,7 +2992,7 @@ function _slide_layout(plan::_SlidePlan, records)
                 size, lineheight = Float64(first(tc)["size"]), Float64(first(tc)["lh"])
             end
         end
-        push!(blocks[b.slide], (; b.kind, b.cell, b.frag, b.index, b.row, b.column, b.divcolumn, b.src, page, box, size,
+        push!(blocks[b.slide], (; b.kind, b.cell, b.frag, b.index, b.row, b.column, b.path, b.src, page, box, size,
                                 lineheight, cols, rows))
     end
     return [merge(sl, (regions = regions[si], blocks = blocks[si])) for (si, sl) in enumerate(plan.deck)]
@@ -3093,9 +3064,11 @@ function _media_forms(plan::_SlidePlan, path, cell, warnings)
     return [(mime, read(path))]
 end
 
+_deck_path(path) = Any[Int[g, j] for (g, j) in path]
+
 function _deck_block(si, b, plan::_SlidePlan, files, cells, dir, warnings)
     d = Dict{String,Any}("kind" => b.kind, "cell" => b.cell, "frag" => b.frag, "index" => b.index, "row" => b.row,
-                         "column" => b.column, "divcolumn" => b.divcolumn,
+                         "column" => b.column, "path" => _deck_path(b.path),
                          "markdown" => b.src === nothing ? nothing : _exporter_markdown(b.src),
                          "box" => _deck_box(b.box), "size" => b.size, "lineheight" => b.lineheight)
     b.kind == "table" && (d["cols"] = b.cols; d["rows"] = b.rows)

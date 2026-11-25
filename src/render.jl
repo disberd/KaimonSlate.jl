@@ -511,8 +511,10 @@ function _md_html(src::AbstractString, interps = CellOutput[]; prose = identity,
     # the source already, so this one call covers them. A `{{ }}` value alone in its paragraph is a
     # figure when it draws a picture, a chart or a component (`_is_figure_value`).
     isfig(i) = i <= length(interps) && _is_figure_value(interps[i])
-    s = _md_kinds(String(take!(b)); caption, figure = isfig)
-    html = CommonMark.html(_md_parser()(s))
+    s = _md_kinds(_quote_fence_values(String(take!(b))); caption, figure = isfig)
+    ast = _md_parser()(s)
+    _style_groups!(ast)
+    html = CommonMark.html(ast)
     for (i, m) in enumerate(math)
         tex = m
         for j in 1:length(exprs)                                    # interpolations inside math → raw TeX
@@ -538,21 +540,100 @@ function _md_html(src::AbstractString, interps = CellOutput[]; prose = identity,
         html = replace(html, tok => f)                              # remaining (text) interps → HTML fragment
     end
     html = replace(html, "<p>. . .</p>" => "<div class=\"pause\"></div>")
-    html = _column_widths(html)
     html = _media_from_img(html)
     # Last, so an image produced by a `{{ }}` interpolation can be sized like a literal one.
     return _apply_md_attrs(html)
 end
 
-# `::: {.column width="40%"}` arrives as a bare `width` attribute, which a `<div>` ignores; make it the
-# column's flex basis so the column is that wide wherever it renders.
-function _column_widths(html::AbstractString)
-    occursin("width=\"", html) || return String(html)
-    return replace(html, r"<div class=\"([^\"]*\bcolumn\b[^\"]*)\"([^>]*?)\swidth=\"([0-9.]+(?:%|px|em|rem)?)\"" => function (tag)
-        m = match(r"<div class=\"([^\"]*)\"([^>]*?)\swidth=\"([^\"]*)\"", tag)
-        w = occursin(r"^[0-9.]+$", m[3]) ? m[3] * "%" : m[3]
-        string("<div class=\"", m[1], "\"", m[2], " style=\"flex:0 1 ", w, ";max-width:", w, "\"")
-    end)
+# ── Groups: `:::: columns` ────────────────────────────────────────────────────────────────────────────
+# A group puts content side by side inside one markdown cell: `:::: columns` holds `::: column` divs.
+# The live render reads the attributes from the CommonMark tree (`_style_groups!`); the Typst export
+# splits the source at the groups of the same tree (`_md_groups`). So both targets see the same groups
+# and values.
+
+# CommonMark ends an unquoted attribute value at `.` or `%`: `width=33.3` is `width="33"` plus a class
+# `3`, and `width=40%` is no div at all. Put quotes around each unquoted value of a `::: {…}` line
+# first. The line count does not change.
+function _quote_fence_values(src::AbstractString)
+    occursin(":::", src) || return String(src)
+    lines = split(String(src), '\n'; keepempty = true)
+    infence = false
+    for (i, ln) in enumerate(lines)
+        occursin(r"^\s*(```|~~~)", ln) && (infence = !infence; continue)
+        infence && continue
+        m = match(r"^(\s*:{3,}\s*\{)(.*)(\}\s*)$", ln)
+        m === nothing && continue
+        lines[i] = string(m[1], replace(m[2], r"(^|\s)([A-Za-z_][\w-]*)=([^\s\"'{}]+)" => s"\1\2=\"\3\""), m[3])
+    end
+    return join(lines, "\n")
+end
+
+_div_classes(n) = (c = CommonMark.getmeta(n, "class", String[]); c isa AbstractString ? split(c) : c)
+_is_div(n, cls) = n.t isa CommonMark.FencedDiv && cls in _div_classes(n)
+_group_kind(n) = _is_div(n, "columns") ? :columns : nothing
+
+# The child nodes of `n`.
+_md_children(n) = (out = CommonMark.Node[]; c = n.first_child; while !CommonMark.isnull(c); push!(out, c); c = c.nxt; end; out)
+
+# Give each group of the tree its live form: a column with `width` gets that width as its flex basis.
+function _style_groups!(n)
+    for c in _md_children(n)
+        c.t isa CommonMark.FencedDiv || continue
+        if _is_div(c, "column") && haskey(c.meta, "width")
+            w = strip(String(c.meta["width"]))
+            if occursin(r"^[0-9.]+(%|px|em|rem)?$", w)
+                w = occursin(r"^[0-9.]+$", w) ? w * "%" : w
+                c.meta["style"] = "flex:0 1 $w;max-width:$w"
+            end
+        end
+        _style_groups!(c)
+    end
+end
+
+# The groups of the markdown `src` for the Typst export, found in the same CommonMark tree as the live
+# render finds them. The result holds the text between groups as strings and each group as
+# `(kind, metas, cols)`: `kind` is `:columns`, then for each container (a column) the attributes of its
+# fence and its markdown source. A group inside a container stays in the source of that container,
+# where the next pass finds it; a group inside another div (`::: step`) is found, and the fences of
+# that div stay in the text. Other content between the containers is not in the result.
+function _md_groups(src::AbstractString)
+    occursin("columns", src) || return Any[String(src)]
+    src = _quote_fence_values(src)
+    lines = split(src, '\n'; keepempty = true)
+    pieces = Any[]
+    done = 0                                         # the last line in `pieces`
+    function visit(n)
+        for c in _md_children(n)
+            c.t isa CommonMark.FencedDiv || continue
+            kind = _group_kind(c)
+            if kind === nothing
+                visit(c)
+                continue
+            end
+            a, b = c.sourcepos[1][1], c.sourcepos[2][1]
+            a > done + 1 && push!(pieces, join(lines[done+1:a-1], "\n"))
+            push!(pieces, _group_piece(c, kind, lines))
+            done = b
+        end
+    end
+    visit(_md_parser()(_mask_math(src)))
+    isempty(pieces) && return Any[src]
+    done < length(lines) && push!(pieces, join(lines[done+1:end], "\n"))
+    return pieces
+end
+
+function _group_piece(c, kind, lines)
+    metas, cols = Dict{String,Any}[], String[]
+    for k in _md_children(c)
+        _is_div(k, "column") || continue
+        a, b = k.sourcepos[1][1], k.sourcepos[2][1]
+        # The last line is the closing fence when the div has one: a fence line after its content.
+        inner = CommonMark.isnull(k.last_child) ? a : k.last_child.sourcepos[2][1]
+        b > inner && occursin(r"^\s*:{3,}\s*$", lines[b]) && (b -= 1)
+        push!(metas, something(k.meta, Dict{String,Any}()))
+        push!(cols, join(lines[a+1:b], "\n"))
+    end
+    return (; kind, metas, cols)
 end
 
 # `![flags](clip.mp4)` → a `<video>` (or `<audio>` for a sound file): image syntax is what an author

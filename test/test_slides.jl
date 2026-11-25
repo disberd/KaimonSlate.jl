@@ -259,7 +259,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
             @test occursin("#slidecols((40%, none,),", doc)
             @test occursin("#slidecols((none, none,),", doc)
             @test count("#slidecols((none, none,),", doc) == 2     # the `column=2` row and the equal group
-            @test NS._column_width_typst("min-width=50%") == "none" && NS._column_width_typst(".column width=30") == "30%"
+            @test NS._column_width_typst(Dict("min-width" => "50%")) == "none" && NS._column_width_typst(Dict("width" => "30")) == "30%"
             md = join((read(joinpath(dir, f), String) for f in readdir(dir) if endswith(f, ".md")), "\n")
             @test occursin("kept text", md) && !occursin(":::", md)
             # The columns start where the widths say: on a 16:9 page 1 u is 720 pt / 1920, the margins
@@ -774,7 +774,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         b = only(NS.slide_layout(_mknb(src))).blocks
         @test [x.index for x in b] == 1:8
         @test [x.kind for x in b] == ["prose", "prose", "key-message", "prose", "prose", "prose", "table", "code"]
-        @test [x.divcolumn for x in b] == [0, 0, 0, 1, 1, 2, 0, 0]
+        @test [x.path for x in b] == [[], [], [], [(1, 1)], [(1, 1)], [(1, 2)], [], []]
         @test all(x -> x.cell == "a" && x.frag == 1 && x.row == 1 && x.page == 1, b)
         @test occursin("A key message", b[3].src)
         inpage(q) = q.x >= 0 && q.y >= 0 && q.x + q.w <= 1920 && q.y + q.h <= 1080
@@ -1037,6 +1037,23 @@ end
     h = KaimonSlate.ReportRender.markdown_html(":::: columns\n::: {.column width=\"40%\"}\nL\n:::\n::: {.column width=60}\nR\n:::\n::::")
     @test occursin("style=\"flex:0 1 40%;max-width:40%\"", h)
     @test occursin("style=\"flex:0 1 60%;max-width:60%\"", h)
+end
+
+# The live render and the Typst export read the groups from one parse, so they agree on a fence that
+# CommonMark does not take as a div, on a fence that does not close, and on a decimal or a percentage
+# without quotes. A `<div>` of raw HTML is no group.
+@testset "groups: one parse for both targets" begin
+    R = KaimonSlate.ReportRender
+    cols = ":::: columns\n::: {.column width=33.3}\nL\n:::\n::: {.column width=20%}\nR\n:::\n::::"
+    @test only(NS._split_groups(cols)).widths == ["33.3%", "20%"]
+    @test occursin("flex:0 1 33.3%", R.markdown_html(cols)) && occursin("flex:0 1 20%", R.markdown_html(cols))
+    nobraces = ":::: columns x=1\n::: column\nA\n:::\n::::"
+    @test all(p -> p isa AbstractString, NS._split_groups(nobraces)) && !occursin("class=\"columns\"", R.markdown_html(nobraces))
+    # A `::::::` group that a `::::` line does not close holds the rest of the cell, on both targets.
+    open6 = ":::::: columns\n::: column\nA\n:::\n::::\n\nafter"
+    p = NS._split_groups(open6)
+    @test length(p) == 1 && !occursin("after", only(only(p).cols))
+    @test occursin("<div class=\"column\" width=\"40\">", R.markdown_html("<div class=\"column\" width=\"40\">x</div>"))
 end
 
 @testset "presentation math macros print as plain math" begin

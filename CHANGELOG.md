@@ -116,6 +116,8 @@ were written when they went out. They are marked.
   alt text. A file larger than 256 MiB gives no form and an export warning; a missing file gives the
   warning of a missing image. The box of the block is the box that the live deck gives the clip (see
   Visible changes).
+- Each block of the exporter deck value has a `"path"`: one `[group, container]` pair for each
+  `:::: columns` group around it, outermost first.
 
 ### Changed
 
@@ -137,7 +139,10 @@ were written when they went out. They are marked.
   `slidecols(widths, ..cols)`, that is defined in the deck preamble: `widths` has one ratio, length
   or `none` for each column, and the other arguments are the column bodies. A Typst preamble that is
   added after the default one can redefine `slidecols`. Other fenced divs, such as `::: step`, still
-  print only their content.
+  print only their content. The live deck and the PDF find the `:::: columns` groups in one
+  CommonMark parse, so they agree on a fence that is not a div or does not close. Slate puts
+  quotes around an unquoted value of a `::: {…}` line before the parse, so `width=33.3` is 33.3 % and
+  `width=40%` is a column on both targets.
 - The live deck puts the heading a slide starts with in its own `.slide-title` element, above the
   slide body. A slide that starts with a heading of any depth has a title. The heading is not
   repeated in the body. The slide of a `title` cell has `data-role="title"`, so a stylesheet can
