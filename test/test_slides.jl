@@ -1126,7 +1126,9 @@ end
 end
 
 # The chart of a `{{ }}` value has no bytes on the server: the open tab draws it for the export, at the
-# width of the track of its grid cell. With no open tab the export says that it leaves the chart out.
+# width of the track of its grid cell. With no open tab, or with a tab that loaded an older page of
+# Slate, the export leaves the chart out and says why. An older page draws the chart at the ECharts
+# default size of 640 × 400 px, so its picture must not take the place of the track-wide one.
 @testset "grid: a chart of a `{{ }}` value in a grid cell" begin
     nb = _mknb("#%% md id=g\n## G\n\n:::: {.grid columns=\"2fr 1fr\" gap=32}\n::: cell\n{{ c }}\n:::\n" *
                "::: cell\nText.\n:::\n::::\n")
@@ -1138,7 +1140,15 @@ end
     @test w ≈ (1648 - 32) * 2 / 3 && h ≈ w / 2       # the 2fr track of the 1648 u body less the gap
     warns = String[]
     NS.exporter_deck(nb; warnings = warns)
-    @test any(x -> occursin("drew the chart of a `{{ }}` value", x) && endswith(x, "Cells: g."), warns)
+    @test any(x -> occursin("No open tab", x) && endswith(x, "Cells: g."), warns)
+    # A tab asked for the chart gets the track size and the slide styling; its picture is the value's.
+    asked = []
+    figs = NS._warm_interp_charts!(nb, NS._CompFigs(), String[], geo; present = true,
+                                   draw = (c; kw...) -> (push!(asked, (c, NamedTuple(kw))); "<svg/>"))
+    @test only(asked)[2].width ≈ w && only(asked)[2].present && figs[("g", NS._hook_slot(1))] == (codeunits("<svg/>"), "svg")
+    warns = String[]
+    figs = NS._warm_interp_charts!(nb, NS._CompFigs(), warns, geo; draw = (c; kw...) -> NS._STALE_TAB)
+    @test isempty(figs) && occursin("Reload the tab", only(warns))
 end
 
 @testset "presentation math macros print as plain math" begin

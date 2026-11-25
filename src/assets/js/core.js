@@ -142,19 +142,33 @@ function _snapCell(cellId, insts, spec) {
 // this returns. `themeName` is the Slate palette to render in (e.g. "midnight"/"daylight"/"nord")
 // — read straight from its stylesheet rule, so the export theme is honored REGARDLESS of the theme
 // the live UI is currently showing. Returns an SVG string, or '' if the cell has no live chart.
-// `index` picks a chart of the cell: a markdown cell has one for each chart of its `{{ }}` values.
-// A `width` and a `height` in px (the column of the chart in the export) take the place of the size
-// of the drawn chart; a height that the chart sets (`height=`) stays.
-window._renderChartSvg = function (cellId, themeName, index = 0, width = 0, height = 0) {
+window._renderChartSvg = function (cellId, themeName) {
+  const cells = ((window.__slateState || window.nbState || {}).cells) || [];
+  const cell = cells.find(c => c.id === cellId);
+  const spec = cell && cell.echarts && cell.echarts[0];
+  if (!spec) return '';
+  const inst = (window.charts && window.charts[cellId] && window.charts[cellId][0]) || null;
+  const w = (inst && inst.getWidth()) || (spec.__size && spec.__size.width) || 640;
+  const h = (inst && inst.getHeight()) || (spec.__size && spec.__size.height) || 400;
+  return _chartSvg(spec, themeName, w, h, null);
+};
+// The chart `index` (from 0) of the `{{ }}` values of the markdown cell `cellId`, as SVG at `width` ×
+// `height` px: the column of the chart in the export. A height that the chart sets (`height=`) stays.
+// With `present`, the chart has the slide styling of the live deck at `--u` 1 (slides.js
+// `_deckChartOpts`). The export checks that this function exists, so a tab that loaded an older page
+// is told apart from a tab with no chart.
+window._renderInterpChartSvg = function (cellId, themeName, index, width, height, present) {
   const cells = ((window.__slateState || window.nbState || {}).cells) || [];
   const cell = cells.find(c => c.id === cellId);
   const spec = cell && cell.echarts && cell.echarts[index];
   if (!spec) return '';
-  const inst = (window.charts && window.charts[cellId] && window.charts[cellId][index]) || null;
   const sz = spec.__size || {};
-  const w = width || (inst && inst.getWidth()) || sz.width || 640;
-  const h = width ? ((typeof sz.height === 'number' && sz.height) || height || 400)
-                  : ((inst && inst.getHeight()) || sz.height || 400);
+  const extra = present && window._deckChartOpts ? window._deckChartOpts(spec) : null;
+  return _chartSvg(spec, themeName, width, (typeof sz.height === 'number' && sz.height) || height, extra);
+};
+// Draw `spec` offscreen as SVG at `w` × `h` px in the palette `themeName`, with the option `extra`
+// merged over it. '' on an error.
+function _chartSvg(spec, themeName, w, h, extra) {
   const pub = _pubSpec(spec);
   const vars = _themeVarsFor(themeName);
   const bg = vars['--bg'] || '#ffffff';                          // the target palette's page colour
@@ -166,10 +180,11 @@ window._renderChartSvg = function (cellId, themeName, index = 0, width = 0, heig
     echarts.registerTheme('__export', _slateEchartsThemeFrom((n, d) => vars[n] || d));
     off = echarts.init(div, '__export', { renderer: 'svg', width: w, height: h });
     off.setOption(Object.assign({ backgroundColor: bg }, pub));
+    if (extra) off.setOption(extra);
     return off.renderToSVGString();
   } catch (_) { return ''; }
   finally { if (off) { try { off.dispose(); } catch (_) {} } if (div) div.remove(); }
-};
+}
 
 // Geo maps: a spec may carry `registerMap` — {name, url} (or a list) declaring GeoJSON the chart
 // needs (Slate serves a vendored world at /assets/maps/world.json). Each map is fetched + passed to
