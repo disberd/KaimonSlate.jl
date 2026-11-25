@@ -1194,6 +1194,13 @@ end
     @test occursin("Reload the tab", only(warns))
 end
 
+# A markdown picture with a size of its own is as many slide units wide on the live deck as in the
+# slides PDF, at each window size (node, when available).
+@testset "a markdown picture with a size of its own takes slide units on the live deck" begin
+    node = Sys.which("node")
+    node === nothing || @test success(`$node $(joinpath(@__DIR__, "js", "deck_natural_img.mjs"))`)
+end
+
 @testset "presentation math macros print as plain math" begin
     f = NS._plain_math_macros
     @test f(raw"$\term{x}{\ddot x} + \stepat{2}{\term{g}{\gamma}\dot x} = \hl{0}$") == raw"${\ddot x} + {{\gamma}\dot x} = {0}$"

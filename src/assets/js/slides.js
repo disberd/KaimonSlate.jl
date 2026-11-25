@@ -289,6 +289,7 @@
       r.el.querySelectorAll('[style*="view-transition-name"]').forEach(n => n.style.removeProperty('view-transition-name'));
       r.el.querySelectorAll('.deck-ctl-hidden').forEach(n => n.classList.remove('deck-ctl-hidden'));
       r.el.querySelectorAll('[style*="--fitw"]').forEach(n => n.style.removeProperty('--fitw'));
+      r.el.querySelectorAll('[style*="--natw"]').forEach(n => n.style.removeProperty('--natw'));
       r.el.querySelectorAll('[style*="--fitk"]').forEach(n => { n.style.removeProperty('--fitk'); n.style.removeProperty('--fith'); });
       r.el.querySelectorAll('[data-deck-title]').forEach(m => { m.title = m.dataset.deckTitle; delete m.dataset.deckTitle; });
       _restoreCellCharts(r.el);
@@ -772,6 +773,24 @@
     for (let i = 0; i < 6; i++) { const m = (lo + hi) / 2; if (fits(m, tie(m))) lo = m; else hi = m; }
     return { s: lo, f: bestF(lo, tie(lo)), atFloor: false };
   }
+  // A markdown picture with a size of its own (a PNG, an SVG with an absolute `width` or `height`) is
+  // as many slide units wide as it has CSS px, as in the slides PDF (export_typst.jl `natural-w`), so it
+  // takes the same share of the slide at each window size. `--natw` holds that width and notebook.css
+  // draws the picture at `--natw` × `--u`. Only the layout tells the two kinds of SVG apart: with no
+  // size rule, a picture with a size of its own is `naturalWidth` wide, and an SVG with only a
+  // `viewBox` fills its column (its `naturalWidth` comes from a default height of 150 px). A picture with a
+  // `{width=…}` or `{height=…}` of the author keeps it. The `--fitw` of the last fit caps the width with
+  // `!important`, so it goes before the probe; the fit pass sets it again.
+  function _markNatural(img) {
+    img.style.removeProperty('--natw');
+    img.style.removeProperty('--fitw');
+    if (img.tagName !== 'IMG' || !img.naturalWidth || img.style.width || img.style.height) return;
+    const s = img.style, keep = s.cssText;
+    s.width = 'auto'; s.height = 'auto'; s.maxWidth = 'none'; s.maxHeight = 'none';
+    const w = img.offsetWidth;
+    s.cssText = keep;
+    if (Math.abs(w - img.naturalWidth) < 0.5) s.setProperty('--natw', img.naturalWidth);
+  }
   // Fit a slide body: set the text scale (`--shrink`) and the figure scale of its pictures (slide
   // figures, image outputs, markdown images, the chart snapshots of a preview), of its HTML figures
   // and of its `charts`. At figure scale `f` a figure is `f` of the size that fills its column, capped
@@ -790,6 +809,7 @@
       .filter(e => !e.closest('.slidefig > *') && getComputedStyle(e).position !== 'absolute');
     const htmls = [...body.querySelectorAll('.output .disp.html:has(svg, canvas):not(:has(table))')]
       .filter(e => !e.closest('.slidefig') && getComputedStyle(e).position !== 'absolute');
+    figs.forEach(e => e.closest('.md') && _markNatural(e));
     const over = (s, f) => {
       slide.style.setProperty('--shrink', s);
       figs.forEach(e => e.style.removeProperty('--fitw'));

@@ -3251,6 +3251,9 @@ html.deck-print-mode, html.deck-print-mode body { background: var(--deck-print-u
   max-height: var(--figcap); height: auto; border-radius: var(--deck-figures-radius); }
 .deck-slide :is(.output, .md, .snap) :is(img, video) { max-width: 100%; }
 .deck-slide :is(.output, .md, .snap) :is(img, video)[style*="--fitw"] { max-width: min(100%, var(--fitw)) !important; }
+/* `--natw` is the width in CSS px of a markdown picture with a size of its own (slides.js
+   `_markNatural`): it is that many slide units wide, as in the slides PDF. */
+.deck-slide .md img[style*="--natw"] { width: calc(var(--natw) * var(--u)); }
 /* `--fitk` is the scale the fit pass gives an HTML figure (a Plotly plot, a widget), `--fith` its
    height at scale 1. The box takes the scaled height and the content overflows it before the
    transform, so the layout holds the scaled figure. A negative margin would collapse through the
