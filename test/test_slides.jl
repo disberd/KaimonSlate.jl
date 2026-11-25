@@ -657,6 +657,19 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test length(NS.export_pdf(nb; layout = "slides")) > 1000   # a throw here IS the regression
     end
 
+    @testset "a [@fig:label] on a slide is the figure number, not a citation" begin
+        # A figure reference on a slide went to Typst as a citation, so a deck with no bibliography
+        # stopped with "the document does not contain a bibliography".
+        nb = _mknb("#%% md id=a\n## A figure\n\n[@fig:growth] shows the objects.\n\n" *
+                   "#%% code id=chart\n1 + 1\n\n#%% md id=cap caption label=growth\nTracked objects.\n\n" *
+                   "#%% md id=b\n## Later\n\nAs [@fig:growth] showed.\n")
+        f = tempname() * ".pdf"; write(f, NS.export_pdf(nb; layout = "slides"))
+        t = try read(`pdftotext -layout $f -`, String) finally rm(f) end
+        @test occursin("Figure 1 shows the objects.", t) && occursin("As Figure 1 showed.", t)
+        md = [b["markdown"] for sl in NS.exporter_deck(nb)["slides"] for b in sl["blocks"] if b["markdown"] !== nothing]
+        @test "Figure 1 shows the objects." in md && "As Figure 1 showed." in md
+    end
+
     @testset "the PDF deck fits each slide and records the fit" begin
         # The fixture deck at 16:9 and at 4:3, with four slides added: a figure that shares a tall
         # slide with text, a portrait figure alone whose drawn height is measured, a slide of text

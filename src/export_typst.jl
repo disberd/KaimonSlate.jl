@@ -2985,12 +2985,13 @@ end
 # Each block of the fragment goes through `blk` (`_block_printer`): a markdown fragment is split into
 # its blocks (`ReportRender._md_split`), each in a file of its own, and each output of a code cell is
 # one block. `path` is the place of the markdown among the groups: for each group, outermost first, the
-# number of the group in its container and the number of the container in the group.
-function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), outputs::AbstractString = "all", sizes = nothing, warnings = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false, blk = _plain_block, path::Vector{Tuple{Int,Int}} = Tuple{Int,Int}[])
+# number of the group in its container and the number of the container in the group. `figidx` is the
+# `figure_index` of the notebook: the number of a caption and the target of a `[@fig:label]`.
+function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, charttheme = "", override = false, show_source, include_params, citekeys = Set{String}(), figidx = figure_index(nb.report), outputs::AbstractString = "all", sizes = nothing, warnings = nothing, compfigs::_CompFigs = _NO_COMPFIGS, incell::Bool = false, blk = _plain_block, path::Vector{Tuple{Int,Int}} = Tuple{Int,Int}[])
     c, srcoverride = frag.cell, frag.src     # `frag.src` is a per-frag SOURCE override (String/nothing), NOT the themed-render Bool `override`
     if is_prose(c.kind) && !incell
         cio = IOBuffer()
-        tight = _emit_slide_frag!(cio, dir, base, nb, frag; theme, charttheme, override, show_source, include_params, citekeys,
+        tight = _emit_slide_frag!(cio, dir, base, nb, frag; theme, charttheme, override, show_source, include_params, citekeys, figidx,
                                   outputs, sizes, warnings, compfigs, blk, path, incell = true)
         position(cio) == 0 || print(io, tight ? "#mdcell(tight: true)[\n" : "#mdcell[\n", String(take!(cio)), "]\n\n")
         return false
@@ -3001,7 +3002,7 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
         pieces = _split_groups(src; warns = gw)
         _group_warnings!(warnings, c, notebook_deck_settings(nb), gw, pieces)
         if !(length(pieces) == 1 && pieces[1] isa AbstractString)    # a group splits the cell
-            kw = (; theme, charttheme, override, show_source, include_params, citekeys, outputs, sizes, warnings, compfigs, incell, blk)
+            kw = (; theme, charttheme, override, show_source, include_params, citekeys, figidx, outputs, sizes, warnings, compfigs, incell, blk)
             ib = frag.interpbase     # interpolations are numbered across the cell, so each piece starts after the last
             tight = false
             gi = 0                   # the number of the group in this container
@@ -3024,10 +3025,10 @@ function _emit_slide_frag!(io::IO, dir, base, nb, frag::NamedTuple; theme, chart
             end
             return tight
         end
-        md = _md_for_typst(c, src; citekeys = citekeys,
+        md = _md_for_typst(c, src; citekeys = citekeys, figrefs = figidx.labels,
                            compfig = _compfig_stager(c, dir, base, compfigs, sizes),
                            interpbase = frag.interpbase,
-                           fignum = :caption in c.flags ? get(figure_index(nb.report).numbers, c.id, nothing) : nothing)
+                           fignum = :caption in c.flags ? get(figidx.numbers, c.id, nothing) : nothing)
         md = _stage_typst_md_media(md, dir, base, _proj_root(nb); sizes, warnings, cell = c.id, media = true)   # author-embedded images → staged files
         isempty(strip(first(_take_media_marks(md)))) && return false
         for (k, b) in enumerate(ReportRender._md_split(md))
@@ -3445,12 +3446,13 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
         # are dropped from the body slides.
         fm = report_frontmatter(nb.report)
         citekeys = Set(e.key for e in bibliography_index(nb.report, dirname(abspath(nb.path))))
+        figidx = figure_index(nb.report)
         arg(s) = isempty(strip(s)) ? "none" : "\"" * _typ_str(s) * "\""
         bycell = Dict(c.id => c for c in cells)
         deck = slide_deck(nb; level = level, drop = c -> c.id in fm.skip || :bibliography in c.flags)
         plan.deck = deck
         fragkw = (; theme = "deck", charttheme = ct, override = override, show_source = show_source,
-                  include_params = include_params, citekeys = citekeys, outputs = outputs, sizes = mediasz, warnings,
+                  include_params = include_params, citekeys = citekeys, figidx = figidx, outputs = outputs, sizes = mediasz, warnings,
                   compfigs = compfigs)
         if fm.has
             # The title page belongs to the slide of the model that holds the `title` cell. The lines of
@@ -3478,7 +3480,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
             t = sl.title
             # The H1 that the title slide shows is not drawn again on a body slide.
             (t === nothing || (t.cell == fm.titlecell && t.depth == 1)) && continue
-            md = _md_for_typst(bycell[t.cell], t.text; citekeys = citekeys, interpbase = t.interpbase)
+            md = _md_for_typst(bycell[t.cell], t.text; citekeys = citekeys, figrefs = figidx.labels, interpbase = t.interpbase)
             write(joinpath(dir, "s$(si)title.md"),
                   _stage_typst_md_media(md, dir, "s$(si)title", _proj_root(nb); sizes = mediasz, warnings, cell = t.cell))
             titles[si] = "title: heading(level: $(t.depth), $(_md_render("s$(si)title.md")))"
@@ -3528,7 +3530,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
         if notes
             for (si, sl) in enumerate(deck)
                 isempty(sl.notes) && continue
-                ntext = join((_md_for_typst(bycell[id]; citekeys = citekeys) for id in sl.notes), "\n\n")
+                ntext = join((_md_for_typst(bycell[id]; citekeys = citekeys, figrefs = figidx.labels) for id in sl.notes), "\n\n")
                 ntext = _stage_typst_md_media(ntext, dir, "notes$(si)", _proj_root(nb); sizes = mediasz, warnings,
                                               cell = join(sl.notes, ", "))   # embedded images → staged files
                 isempty(strip(ntext)) && continue
