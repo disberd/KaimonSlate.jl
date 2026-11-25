@@ -322,6 +322,9 @@ were written when they went out. They are marked.
   inside the plot). With no open tab, or with a tab that loaded its page before this release, the
   export leaves the chart out and gives a warning with the cells: open the notebook, or reload its
   tab, then export again.
+- A figure reference `[@fig:label]` on a slide shows as `Figure N` in the PDF deck and in the deck
+  value of an exporter, as in the PDF export. The PDF deck made it a citation, so a deck with no
+  bibliography stopped with "the document does not contain a bibliography".
 
 ## [2.2.0] - 2026-11-16
 
