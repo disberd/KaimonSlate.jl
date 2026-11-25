@@ -612,8 +612,10 @@ const _FIT_TYPST = "(text-floor: settings.fit.text-floor, fig-floor: 0.25, fig-c
 # `layout` is the slide's layout tag and `title` its heading (a `heading` element), both `none` when
 # unset; `n` is the slide number on a notes page. A template that is added after this preamble can
 # redefine `slide` or `slidecols` to draw each layout its own way. It must draw the body through `fit`,
-# because `fit` sizes the figures and records the fit. `base-slide` and `base-fit` are the base `slide`
-# and `fit`, so that a template that redefines them can still call them.
+# because `fit` sizes the figures and records the fit, and the body of a `center` slide through
+# `center-body` inside `fit`, which gives it the width of its content as on the live deck. `base-slide`
+# and `base-fit` are the base `slide` and `fit`, so that a template that redefines them can still call
+# them.
 # The page copies the geometry of the live base deck (notebook.css `.deck-slide`, `.slide-title`,
 # `.slide-num`): the body padding, the body at the top of the slide, the slide number, the title. The
 # base `slide` draws the body in `base-rhythm`, the vertical rhythm of the live deck from the deck
@@ -1085,13 +1087,34 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
       place(top + left, corner(false))
       place(bottom + right, corner(true))
     }
+    // The body of a `center` slide, as wide as its widest content and centred, as the live deck
+    // shrinks the body of a centre slide to its content (notebook.css `align-items: center`). So a
+    // filled block (a key message, an admonition, code) is as wide as the widest line, not as the
+    // page. The width is the measure of the body with no width limit: a paragraph on one line, a
+    // block of `width: 100%` as wide as its content (a block of `width: 100%` measures 0 wide with no
+    // limit, so the measure draws it with no width). A citation and a mark measure as in `fit`. A deck
+    // template that draws its own `center` slide calls it inside `fit`: `fit(center-body(body))`.
+    #let center-body(body) = layout(sz => {
+      let w = measure({
+        show regex("§c§[^§]*§[^§]+§[^§]*§"): it => [[0]]
+        show <slate-mark>: it => it.value.body
+        show block: it => if it.width == 100% {
+          let f = it.fields()
+          let b = f.remove("body", default: none)
+          let _ = f.remove("width")
+          block(..f, b)
+        } else { it }
+        body
+      }).width
+      std.align(center, block(width: calc.min(sz.width, w), body))
+    })
     // One slide = one page, with the body at the top. The title goes at the top of the body, inside
     // `fit`, with the padding of the live title cell (12 u above, 16 u at the sides); a notes page gets
     // a "Notes · slide N" label in its place. The slide number is at the bottom right, as on the live
     // deck, but not on a title, section, cover or notes page; a notes page does not count. The layouts
     // follow the live deck: `center`, `title` and `section` centre the body on the page, `center` centres
-    // the text as well, and `section` has a wider left margin, a larger title and a dimmed level-3
-    // heading.
+    // the text as well and gives the body the width of its content (`center-body`), and `section` has a
+    // wider left margin, a larger title and a dimmed level-3 heading.
     #let slidenum = counter("slate-slide")
     #let slide(body, layout: none, title: none, n: none) = {
       if layout != "notes" { slidenum.step() }
@@ -1108,7 +1131,7 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
             v(12 * u)
             pad(x: 16 * u, { if layout == "section" { text(size: 1.6em, region("title", title)) } else { region("title", title) }; block(height: 0em) })
           }
-          body
+          if layout == "center" { center-body(body) } else { body }
         }))
       ]
     }
