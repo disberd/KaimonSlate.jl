@@ -18,11 +18,14 @@ const _MITEX_VER = "0.2.5"
 const _LIVE_SVG_CACHE_MAX_BYTES = 2 * 1024 * 1024
 
 # Ask the open browser tab to render `cell`'s chart as vector SVG right now (see core.js
-# `_renderChartSvg`) — used only at export time, not on every chart update. `nothing` if no
-# tab is open, the round-trip times out, or the cell has no live chart.
-function _live_render_svg(nb::LiveNotebook, cell::AbstractString; theme::AbstractString = "midnight")
+# `_renderChartSvg`). Only an export asks, not each chart update. `nothing` if no tab is open, the
+# round-trip times out, or the cell has no live chart. `index` is the number of the chart in the cell
+# from 0; a `width` and a `height` in px give the size of the picture, else it has the size of the
+# live chart.
+function _live_render_svg(nb::LiveNotebook, cell::AbstractString; theme::AbstractString = "midnight",
+                          index::Integer = 0, width::Real = 0, height::Real = 0)
     code = "window._renderChartSvg && window._renderChartSvg(" *
-           JSON.json(String(cell)) * ", " * JSON.json(String(theme)) * ")"
+           join(JSON.json.((String(cell), String(theme), Int(index), Float64(width), Float64(height))), ", ") * ")"
     res = request_live_eval(nb, code; timeout = 6.0)
     res isa AbstractDict || return nothing
     get(res, "ok", false) === true || return nothing
@@ -1583,6 +1586,47 @@ function _warm_chart_svgs!(nb::LiveNotebook; theme::AbstractString = "midnight",
     return nothing
 end
 
+# The charts of the `{{ }}` values of the markdown cells, as `(cell, value, chart, width, height)`.
+# `chart` is the number of the chart from 0 among the charts of the values of the cell, as the page
+# state holds them (`_md_interp_echarts`). `width` is the width of the column of the value (`geo`,
+# see `_figure_ctx`) and `height` half of it, at most the figure cap. A value with more than one chart
+# gives its first.
+_interp_chart_targets(nb::LiveNotebook, geo) = lock(nb.lock) do
+    out = Tuple{String,Int,Int,Float64,Float64}[]
+    for c in nb.report.cells
+        is_prose(c.kind) && renders(c.kind) || continue
+        k = 0
+        for (i, o) in enumerate(c.interp)
+            if !isempty(o.echarts)
+                w = get(geo.width, (c.id, i), geo.body)
+                push!(out, (c.id, i, k, w, geo.max_height === nothing ? w / 2 : min(w / 2, geo.max_height)))
+            end
+            k += length(o.echarts)
+        end
+    end
+    out
+end
+
+# The picture of each chart of a `{{ }}` value, drawn by the open tab at the width of its column, into
+# `figs` under `_hook_slot(value)`, the place of a picture that is drawn for its column: the markdown
+# takes it as a hook figure (`_compfig_stager`), and an exporter as a staged picture. A value whose
+# figure hook drew a picture keeps it. A chart that no tab drew adds a line to `warnings`. Called before
+# the caller takes `nb.lock`, like the other warm passes.
+function _warm_interp_charts!(nb::LiveNotebook, figs::_CompFigs, warnings::Vector{String}, geo;
+                              theme::AbstractString = "midnight", progress = nothing)
+    lost = String[]
+    for (cid, i, k, w, h) in _interp_chart_targets(nb, geo)
+        haskey(figs, (cid, _hook_slot(i))) && continue
+        progress === nothing || (try; progress(cid); catch; end)
+        svg = _live_render_svg(nb, cid; theme, index = k, width = w, height = h)
+        svg === nothing ? push!(lost, cid) : (figs[(cid, _hook_slot(i))] = (Vector{UInt8}(codeunits(svg)), "svg"))
+    end
+    isempty(lost) || push!(warnings, string("No open tab of the notebook drew the chart of a `{{ }}` value, so the ",
+                                            "export leaves it out. Open the notebook in a browser, then export again. ",
+                                            "Cells: ", join(unique!(lost), ", "), "."))
+    return figs
+end
+
 # Resolve the ECharts export theme (a Slate palette NAME the browser renders in) from the export
 # request: an explicit `charttheme` (the "As-is" case sends the notebook's live palette; Light/Dark
 # send "daylight"/"midnight") wins; otherwise fall back to the page theme's canonical palette so a
@@ -2729,6 +2773,7 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
     geo = _doc_figure_geometry(nb; style, cols, body, palette = ct)
     compfigs = _warm_hook_figs!(nb, _CompFigs(), warnings, geo; progress = cid -> _export_progress(nb, cid))
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
+    _warm_interp_charts!(nb, compfigs, warnings, geo; theme = ct, progress = cid -> _export_progress(nb, cid))
     # Themed override: re-render native (Makie) figures under the picked palette too (see the export
     # dialog's warning). No-op when not overriding — the baked figure bytes already match the live theme.
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
@@ -3350,6 +3395,7 @@ function _build_slides_project(nb::LiveNotebook; theme::AbstractString = "dark",
     compfigs = _warm_hook_figs!(nb, _CompFigs(), warnings, geo; progress = cid -> _export_progress(nb, cid))
     isempty(plan.mimes) || _hook_forms!(plan, nb, warnings, geo, compfigs)
     _warm_chart_svgs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
+    _warm_interp_charts!(nb, compfigs, warnings, geo; theme = ct, progress = cid -> _export_progress(nb, cid))
     override && _warm_makie_figs!(nb; theme = ct, progress = cid -> _export_progress(nb, cid))
     _warm_html_rasters!(nb; theme = ct, figs = compfigs)   # one round-trip, under the EXPORT's palette (see above)
     _warm_component_figs!(nb, compfigs, geo; theme = ct, progress = cid -> _export_progress(nb, cid))

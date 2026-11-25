@@ -1125,6 +1125,22 @@ end
     @test NS._group_widths(p, 1000, (columns = 56, grid = 56, pad = 16)) ≈ [200, 380 - 32, 380, 200]
 end
 
+# The chart of a `{{ }}` value has no bytes on the server: the open tab draws it for the export, at the
+# width of the track of its grid cell. With no open tab the export says that it leaves the chart out.
+@testset "grid: a chart of a `{{ }}` value in a grid cell" begin
+    nb = _mknb("#%% md id=g\n## G\n\n:::: {.grid columns=\"2fr 1fr\" gap=32}\n::: cell\n{{ c }}\n:::\n" *
+               "::: cell\nText.\n:::\n::::\n")
+    only(nb.report.cells).interp = [RE.CellOutput("", RE.MimeChunk[], Any[Dict("series" => Any[])], Any[], RE.BindSpec[],
+                                                  "", nothing, nothing, 1.0)]
+    geo = NS._slide_figure_geometry(nb, NS.notebook_deck_settings(nb), "16:9", 2, "daylight")
+    cid, i, k, w, h = only(NS._interp_chart_targets(nb, geo))
+    @test (cid, i, k) == ("g", 1, 0)
+    @test w ≈ (1648 - 32) * 2 / 3 && h ≈ w / 2       # the 2fr track of the 1648 u body less the gap
+    warns = String[]
+    NS.exporter_deck(nb; warnings = warns)
+    @test any(x -> occursin("drew the chart of a `{{ }}` value", x) && endswith(x, "Cells: g."), warns)
+end
+
 @testset "presentation math macros print as plain math" begin
     f = NS._plain_math_macros
     @test f(raw"$\term{x}{\ddot x} + \stepat{2}{\term{g}{\gamma}\dot x} = \hl{0}$") == raw"${\ddot x} + {{\gamma}\dot x} = {0}$"

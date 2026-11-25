@@ -464,7 +464,7 @@ function Cell({ cell, selectedId, selSet, live, focusId, editingId, collapsed })
     const cs = window.charts[c.id];
     if (cs) { cs.forEach(i => { try { i.dispose(); } catch (_) {} }); delete window.charts[c.id]; }
     const el = ref.current;   // inline `{{ echart }}` instances live on the nodes, not in window.charts
-    if (el) el.querySelectorAll('.ichart').forEach(e => { if (e._inst) { try { e._inst.dispose(); } catch (_) {} } });
+    if (el) el.querySelectorAll('.ichart').forEach(e => { if (e.__inst) { try { e.__inst.dispose(); } catch (_) {} e.__inst = null; } });
     // A player owns a WebGL texture array, so an undisposed one holds GPU memory for the page's life.
     window.disposeAnimations && window.disposeAnimations(c.id);
     // Same for a PACKAGE output holding a resource. A deleted cell is the removal path no re-run swap
@@ -583,9 +583,10 @@ function Cell({ cell, selectedId, selSet, live, focusId, editingId, collapsed })
       if (md && h !== last.current.out) {
         // Dispose any inline `{{ echart }}` instances before the innerHTML swap orphans their nodes
         // (their ECharts instance + zrender would otherwise leak on every markdown re-render).
-        md.querySelectorAll('.ichart').forEach(e => { if (e._inst) { try { e._inst.dispose(); } catch (_) {} e._inst = null; } });
-        last.current.out = h; window._swapOutput(md, h, '', () => window.typesetVisible(md, c.id));
-      }
+        md.querySelectorAll('.ichart').forEach(e => { if (e.__inst) { try { e.__inst.dispose(); } catch (_) {} e.__inst = null; } });
+        // The inline charts draw into the new placeholders, so only after the swap commits.
+        last.current.out = h; window._swapOutput(md, h, '', () => { window.typesetVisible(md, c.id); window.renderCharts(c); });
+      } else if (md) window.renderCharts(c);   // the same markdown can hold a chart with new data
       if ((c.controls || []).length) window.syncControlValuesSoon(c);
       window.slateMarkBlank && window.slateMarkBlank(el, c);
       return;

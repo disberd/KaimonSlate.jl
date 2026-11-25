@@ -606,8 +606,12 @@
   }
 
   // ── Fit ─────────────────────────────────────────────────────────────────────
+  // The charts of a cell: those of its output (`window.charts`), then the charts of the `{{ }}`
+  // values of its markdown, which live on their `.ichart` nodes.
   function _cellCharts(el) {
-    return (window.charts && window.charts[el.id.replace(/^cell-/, '')]) || [];
+    const own = (window.charts && window.charts[el.id.replace(/^cell-/, '')]) || [];
+    const inline = Array.from(el.querySelectorAll('.md .ichart'), e => e.__inst).filter(Boolean);
+    return inline.length ? own.concat(inline) : own;
   }
   // A chart's natural size is its size in the notebook, recorded while the notebook is on screen: once
   // presenting, the notebook is hidden and a chart measured there has no real width. A chart first
@@ -1360,10 +1364,10 @@
     if (D.fs && document.exitFullscreen) { try { document.exitFullscreen(); } catch (e) {} D.fs = false; }
     if (window.typesetSoon) try { typesetSoon(document.getElementById('nb'), '__all__'); } catch (e) {}
     // `auto`, not a bare resize(): a chart the deck sized explicitly keeps that size until told to
-    // measure its container again.
-    requestAnimationFrame(() => Object.values(window.charts || {}).flat().forEach(inst => {
-      try { inst.resize({ width: 'auto', height: 'auto' }); } catch (e) {}
-    }));
+    // measure its container again. The inline charts of markdown (`.ichart`) too.
+    requestAnimationFrame(() => Object.values(window.charts || {}).flat()
+      .concat(Array.from(document.querySelectorAll('#nb .ichart'), e => e.__inst).filter(Boolean))
+      .forEach(inst => { try { inst.resize({ width: 'auto', height: 'auto' }); } catch (e) {} }));
   }
   function slideToggleCode() {
     D.showCode = !D.showCode;
