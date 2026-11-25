@@ -645,7 +645,11 @@
   }
   function _presentOpts(spec, u) {
     const px = n => Math.round(n * u);
-    const font = getComputedStyle(document.querySelector('.deck') || document.body).getPropertyValue('--deck-font').trim();
+    // Family names in single quotes: the computed value has double quotes, and the SVG renderer of an
+    // export writes the stack into a double-quoted `style="…"` attribute without escaping (as core.js
+    // `_slateEchartsThemeFrom` does for the theme font).
+    const font = getComputedStyle(document.querySelector('.deck') || document.body).getPropertyValue('--deck-font').trim()
+      .replace(/"/g, "'");
     const axes = (a, vertical) => (Array.isArray(a) ? a : [a || {}]).map(ax => ({
       axisLabel: { fontSize: px(20), margin: px(12) },
       // A y-axis name sits above the axis, centred on it, and `containLabel` leaves no room for it:
@@ -674,8 +678,9 @@
     return opt;
   }
   // The slide styling of a chart at `--u` 1, where 1 px is 1 u: the chart picture of a slides export
-  // (core.js `_renderInterpChartSvg`).
-  window._deckChartOpts = spec => _presentOpts(spec, 1);
+  // (core.js `_renderInterpChartSvg`). The deck element holds `--deck-font`, so it is built first: a
+  // tab that has not shown the deck has none, and its export would take the page font.
+  window._deckChartOpts = spec => { _buildDeckDom(); return _presentOpts(spec, 1); };
   // Plain-object deep merge (arrays merge by index), for laying slide styling over a chart's option.
   function _merge(a, b) {
     if (Array.isArray(b)) {

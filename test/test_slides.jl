@@ -1149,6 +1149,10 @@ end
     warns = String[]
     figs = NS._warm_interp_charts!(nb, NS._CompFigs(), warns, geo; draw = (c; kw...) -> NS._STALE_TAB)
     @test isempty(figs) && occursin("Reload the tab", only(warns))
+    # The tab draws the picture with the slide styling of the live deck: its font stack must not hold
+    # a double quote, or the SVG is invalid and Typst stops the slides PDF (node, when available).
+    node = Sys.which("node")
+    node === nothing || @test success(`$node $(joinpath(@__DIR__, "js", "deck_chart_font.mjs"))`)
 end
 
 @testset "presentation math macros print as plain math" begin
