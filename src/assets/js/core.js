@@ -142,14 +142,19 @@ function _snapCell(cellId, insts, spec) {
 // this returns. `themeName` is the Slate palette to render in (e.g. "midnight"/"daylight"/"nord")
 // — read straight from its stylesheet rule, so the export theme is honored REGARDLESS of the theme
 // the live UI is currently showing. Returns an SVG string, or '' if the cell has no live chart.
-window._renderChartSvg = function (cellId, themeName) {
+// `index` picks a chart of the cell: a markdown cell has one for each chart of its `{{ }}` values.
+// A `width` and a `height` in px (the column of the chart in the export) take the place of the size
+// of the drawn chart; a height that the chart sets (`height=`) stays.
+window._renderChartSvg = function (cellId, themeName, index = 0, width = 0, height = 0) {
   const cells = ((window.__slateState || window.nbState || {}).cells) || [];
   const cell = cells.find(c => c.id === cellId);
-  const spec = cell && cell.echarts && cell.echarts[0];
+  const spec = cell && cell.echarts && cell.echarts[index];
   if (!spec) return '';
-  const inst = (window.charts && window.charts[cellId] && window.charts[cellId][0]) || null;
-  const w = (inst && inst.getWidth()) || (spec.__size && spec.__size.width) || 640;
-  const h = (inst && inst.getHeight()) || (spec.__size && spec.__size.height) || 400;
+  const inst = (window.charts && window.charts[cellId] && window.charts[cellId][index]) || null;
+  const sz = spec.__size || {};
+  const w = width || (inst && inst.getWidth()) || sz.width || 640;
+  const h = width ? ((typeof sz.height === 'number' && sz.height) || height || 400)
+                  : ((inst && inst.getHeight()) || sz.height || 400);
   const pub = _pubSpec(spec);
   const vars = _themeVarsFor(themeName);
   const bg = vars['--bg'] || '#ffffff';                          // the target palette's page colour
@@ -931,7 +936,7 @@ window._reinitCharts = () => {
     // directly. A code cell's charts are owned by the Preact host (`chartRuntime.onGen` below), which
     // re-creates them by bumping a generation the component's effect depends on — disposing them from
     // underneath it would leave the component holding a dead instance.
-    document.querySelectorAll('.ichart').forEach(e => { if (e._inst) { try { e._inst.dispose(); } catch (_) {} e._inst = null; } });
+    document.querySelectorAll('.ichart').forEach(e => { if (e.__inst) { try { e.__inst.dispose(); } catch (_) {} e.__inst = null; } });
     window.chartRuntime.gen++;
     if (window.chartRuntime.onGen) window.chartRuntime.onGen();
     ((window.__slateState || {}).cells || []).forEach(c => { try { renderCharts(c); } catch (_) {} });
@@ -1048,7 +1053,7 @@ function _chartsUnchanged(c) {
   // markdown around it may have just been re-rendered from under us — leaving a fresh, empty div. A
   // cell is only skippable once every placeholder it has is backed by a live instance.
   const inline = document.querySelectorAll('#cell-' + c.id + ' .ichart');
-  for (let i = 0; i < inline.length; i++) if (!inline[i]._inst) return false;
+  for (let i = 0; i < inline.length; i++) if (!inline[i].__inst) return false;
   return true;
 }
 
