@@ -322,6 +322,12 @@ were written when they went out. They are marked.
   inside the plot). With no open tab, or with a tab that loaded its page before this release, the
   export leaves the chart out and gives a warning with the cells: open the notebook, or reload its
   tab, then export again.
+- The chart of a code cell (`echart(…)`) on a slide has the size and the styling of the live deck in
+  the PDF deck and for an exporter: it fills the width of its column at the aspect of its notebook
+  size, at most the figure cap high, with the slide styling (20 u axis labels). It kept its size in
+  the notebook column before, so it was smaller than on the live deck. The open tab draws it; with no
+  open tab it keeps its notebook size, and a tab that loaded its page before this release gives a
+  warning to reload it.
 
 ## [2.2.0] - 2026-11-16
 

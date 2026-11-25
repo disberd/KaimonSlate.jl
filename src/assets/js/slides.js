@@ -681,6 +681,22 @@
   // (core.js `_renderInterpChartSvg`). The deck element holds `--deck-font`, so it is built first: a
   // tab that has not shown the deck has none, and its export would take the page font.
   window._deckChartOpts = spec => { _buildDeckDom(); return _presentOpts(spec, 1); };
+  // The chart of the code cell `cellId` as SVG for a slides export: the size and the slide styling
+  // that the deck gives it at figure scale 1 (`_fitBody`). That is its natural size scaled to fill
+  // `width` px, the width of its column, and at most `height` px, the figure cap. '' when the cell
+  // has no chart on this page. The export checks that this function exists, so a tab that loaded an
+  // older page is told apart from a tab with no chart.
+  window._renderSlideChartSvg = function (cellId, themeName, width, height) {
+    const cells = ((window.__slateState || window.nbState || {}).cells) || [];
+    const cell = cells.find(c => c.id === cellId);
+    const spec = cell && cell.echarts && cell.echarts[0];
+    const inst = window.charts && window.charts[cellId] && window.charts[cellId][0];
+    if (!spec || !inst) return '';
+    if (!_natural.has(inst.getDom())) _recordNatural(inst);
+    const [natW, natH] = _natural.get(inst.getDom());
+    const k = Math.min(width / natW, height / natH);
+    return _chartSvg(spec, themeName, natW * k, natH * k, window._deckChartOpts(spec));
+  };
   // Plain-object deep merge (arrays merge by index), for laying slide styling over a chart's option.
   function _merge(a, b) {
     if (Array.isArray(b)) {

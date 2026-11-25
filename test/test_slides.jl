@@ -1175,6 +1175,25 @@ end
     node === nothing || @test success(`$node $(joinpath(@__DIR__, "js", "deck_chart_font.mjs"))`)
 end
 
+# The chart of a code cell fills its column on the live deck, at its notebook aspect and at most the
+# figure cap high. The export asks the open tab for it at that size, so the slides PDF and an exporter
+# do not draw it at its notebook size. A tab with an older page of Slate gives a warning.
+@testset "a chart of a code cell on a slide is drawn for its column" begin
+    nb = _mknb("#%% md id=h\n## Chart\n\n#%% code id=c\necho()\n\n#%% md id=cap caption\nA caption.\n")
+    nb.report.cells[2].output = RE.CellOutput("", RE.MimeChunk[], Any[Dict("series" => Any[])], Any[], RE.BindSpec[],
+                                              "", nothing, nothing, 1.0)
+    geo = NS._slide_figure_geometry(nb, NS.notebook_deck_settings(nb), "16:9", 2, "daylight")
+    asked = []
+    figs = NS._warm_slide_charts!(nb, NS._CompFigs(), String[], geo;
+                                  draw = (c; kw...) -> (push!(asked, (c, NamedTuple(kw))); "<svg/>"))
+    c, kw = only(asked)
+    @test c == "c" && kw.width ≈ geo.body && kw.height ≈ 0.7 * 1080
+    @test figs[("c", NS._hook_slot(0))] == (codeunits("<svg/>"), "svg")
+    warns = String[]
+    @test isempty(NS._warm_slide_charts!(nb, NS._CompFigs(), warns, geo; draw = (c; kw...) -> NS._STALE_TAB))
+    @test occursin("Reload the tab", only(warns))
+end
+
 @testset "presentation math macros print as plain math" begin
     f = NS._plain_math_macros
     @test f(raw"$\term{x}{\ddot x} + \stepat{2}{\term{g}{\gamma}\dot x} = \hl{0}$") == raw"${\ddot x} + {{\gamma}\dot x} = {0}$"
