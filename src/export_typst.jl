@@ -918,20 +918,31 @@ function _typst_preamble_slides(title::AbstractString; syntax::AbstractString = 
     #let errblock(s) = block(width: 100%, inset: 19 * u, fill: $(p.errbg), radius: 8 * u, text(size: 0.875em, fill: $(p.errfg), raw(s)))
     // A figure is a marker that `fit` sizes for the slide. `width` is an upper bound on its drawn
     // width: a ratio of the column, or a length. With no `width`, the full size of a figure is the
-    // natural size of the picture that the live deck shows (`natural-w`), at most its column. At
-    // figure scale `f`, a figure is `f` of its full size, and at most `FIT.fig-cap` of the slide
-    // height. Outside `fit` it is drawn at `f = 1`. The sized picture has the label `<slate-figure>`:
-    // the rule for that label, after the deck template, gives it to `draw.figure`.
+    // natural size of the picture that the live deck shows (`natural-w`), at most its column. A picture
+    // with no natural size fills its column. At figure scale `f`, a figure is `f` of its full size, and
+    // at most `FIT.fig-cap` of the slide height. Outside `fit` it is drawn at `f = 1`. The sized picture
+    // has the label `<slate-figure>`: the rule for that label, after the deck template, gives it to
+    // `draw.figure`.
     #let figureimg(p, width: none, hook: false) = [#metadata((p: p, w: width, hook: hook)) <slate-fig>]
-    // The natural width in CSS px (1/96 in), which is `u` on the slide, of a PNG (its pixel width: a
-    // browser does not read its density) or an SVG. A PDF figure (a Makie figure) shows on the live
-    // deck as a PNG at twice its size, so it fills its column: `none`. A picture of a figure hook
-    // (`hook`) has the size at which the live deck draws its value: the page size of a PDF or an SVG,
-    // and a PNG at `FigureContext.scale` (2) px for each px.
+    // The natural width in CSS px (1/96 in), which is `u` on the slide, or `none` for a picture with no
+    // natural size. A PNG has its pixel width (a browser does not read its density). An SVG has a natural
+    // size only when its root `<svg>` tag has an absolute `width` or `height` (a number, px, pt, ...):
+    // the browser takes the width from the height and the aspect. An SVG with only a `viewBox`, or
+    // with sizes in `%`, fills its column on the live deck: `none`. A PDF figure (a Makie figure) shows
+    // on the live deck as a PNG at twice its size, so it fills its column: `none`. A picture of a figure
+    // hook (`hook`) has the size at which the live deck draws its value: the page size of a PDF or an
+    // SVG, and a PNG at `FigureContext.scale` (2) px for each px.
     #let natural-w(p, n, hook: false) = if lower(p).ends-with(".png") {
       let b = read(p, encoding: none)
       (b.at(16) * 16777216 + b.at(17) * 65536 + b.at(18) * 256 + b.at(19)) / if hook { 2 } else { 1 }
-    } else if hook or lower(p).ends-with(".svg") { n.width / (1in / 96) }
+    } else if hook { n.width / (1in / 96) } else if lower(p).ends-with(".svg") {
+      let tag = read(p).match(regex("<svg[^>]*"))
+      let absolute(k) = tag != none and {
+        let m = tag.text.match(regex("[[:space:]]" + k + "[[:space:]]*=[[:space:]]*[^[:space:]>]+"))
+        m != none and not m.text.contains("%")
+      }
+      if absolute("width") or absolute("height") { n.width / (1in / 96) }
+    }
     // A video or audio file of markdown alone in its paragraph (Julia `_clip_typ`). A PDF cannot play
     // it, so it draws a placeholder in the box that the live deck gives the clip: a frame with a play
     // mark and `label`. A video of `w` × `h` px fills the width of its column at that aspect, up to the

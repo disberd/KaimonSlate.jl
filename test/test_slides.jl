@@ -1454,6 +1454,20 @@ end
     @test boxes[2].y ≈ boxes[1].y
 end
 
+# An SVG with only a `viewBox` has no natural size: the live deck draws it as wide as its column, so the
+# PDF does too, not at the viewBox width. An SVG with an absolute `width` keeps that width.
+@testset "slides PDF: an SVG with only a viewBox fills its column" begin
+    root = mktempdir()
+    write(joinpath(root, "vb.svg"), """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 132"><rect width="1500" height="132" stroke-width="2" fill="red"/></svg>""")
+    write(joinpath(root, "w.svg"), """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 132" width="300"><rect width="600" height="132" fill="red"/></svg>""")
+    nb = _hooknb("#%% md id=v\n## V\n\n![](vb.svg)\n\n#%% md id=w\n## W\n\n![](w.svg)\n")
+    nb.report.meta["assetbase"] = root
+    vb, w = [only(b.box for b in s.blocks if b.kind == "figure") for s in NS.slide_layout(nb)]
+    # The column of a markdown cell of the base deck at 16:9 is 1648 u wide, from x = 136.
+    @test vb.x ≈ 136 && vb.w ≈ 1648 && vb.h ≈ 1648 * 132 / 1500
+    @test w.w ≈ 300
+end
+
 # The base slides PDF marks list items as the live deck does: `•`, then `◦`, then `▪`.
 @testset "slides PDF: the list markers of the live deck" begin
     f = tempname() * ".pdf"
