@@ -795,6 +795,7 @@ Each slide:
 | `"transition"`, `"auto"` | The values of the `transition=` and `auto=` tags of the slide, or `nothing`. |
 | `"regions"` | A `Vector` of `Dict`s, one for each region that the slides PDF draws from notebook content and marks (see below): `"name"` (`"title"`, `"subtitle"`, `"byline"` or `"abstract"`), `"text"` (its markdown), `"box"`, `"size"` (its text size in `u`) and `"lineheight"` (its line height in `u`). |
 | `"blocks"` | A `Vector` of `Dict`s, one for each block of the body, in reading order. |
+| `"cells"` | A `Vector` of `Dict`s, one for each grid cell (a `::: cell` of a `:::: grid`) of the slide, in the order of the document: `"path"` (the path of the grid cell; a block is in it when the `"path"` of the block starts with it), `"box"` (the whole grid cell, its pad included, or `nothing`), `"fill"` (a hex string, or `nothing` for no fill), `"align"` (`"left"`, `"center"` or `"right"`) and `"valign"` (`"top"`, `"middle"` or `"bottom"`). |
 
 Each block:
 
@@ -803,9 +804,9 @@ Each block:
 | `"kind"` | `"prose"`, `"key-message"`, `"caption"`, `"admonition"`, `"code"`, `"figure"` or `"table"`. |
 | `"cell"` | The id of its cell. |
 | `"frag"` | The number of its cell fragment on the slide, from 1; 0 for the lines of a `title` cell that are not a region. |
-| `"index"` | Its number in the fragment, from 1, in reading order. The blocks of `::: column` 1 come before those of column 2. |
+| `"index"` | Its number in the fragment, from 1, in reading order. The blocks of the first container (a `::: column` or a grid cell) of a group come before those of the second. |
 | `"row"`, `"column"` | The row of cells of the slide that holds it, from 1, and the `column=` value of its cell. |
-| `"divcolumn"` | The number of the `::: column` that holds it, or 0. |
+| `"path"` | Its place among the groups (`:::: columns` and `:::: grid`), outermost first: a `Vector` of `[group, container]` pairs, where `group` is the number of the group in its container and `container` the number of the column or grid cell in the group, both from 1. Empty outside a group. |
 | `"markdown"` | Its markdown, with `{{ }}` values resolved and each block of a kind in its `<slate-<kind>>` element. An output of a code cell has `nothing`, with two exceptions: a markdown output splits into blocks as a markdown cell does, and the `text/plain` value of the cell is a fenced code block of its text. |
 | `"box"`, `"size"`, `"lineheight"` | Its box, its text size in `u` and its line height in `u`; `nothing` when the slides PDF does not draw it. The box of a figure is the picture, the box of a table is the table, the box of each other block is as wide as its column. The text size and the line height of a table are those of its cells, and those of a code block are those of its code text. |
 | `"cols"`, `"rows"` | Only on a table: the widths of its columns and the heights of its rows in `u`, a `Vector{Float64}`. |

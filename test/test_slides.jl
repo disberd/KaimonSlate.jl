@@ -259,7 +259,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
             @test occursin("#slidecols((40%, none,),", doc)
             @test occursin("#slidecols((none, none,),", doc)
             @test count("#slidecols((none, none,),", doc) == 2     # the `column=2` row and the equal group
-            @test NS._column_width_typst("min-width=50%") == "none" && NS._column_width_typst(".column width=30") == "30%"
+            @test NS._column_width_typst(Dict("min-width" => "50%")) == "none" && NS._column_width_typst(Dict("width" => "30")) == "30%"
             md = join((read(joinpath(dir, f), String) for f in readdir(dir) if endswith(f, ".md")), "\n")
             @test occursin("kept text", md) && !occursin(":::", md)
             # The columns start where the widths say: on a 16:9 page 1 u is 720 pt / 1920, the margins
@@ -774,7 +774,7 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         b = only(NS.slide_layout(_mknb(src))).blocks
         @test [x.index for x in b] == 1:8
         @test [x.kind for x in b] == ["prose", "prose", "key-message", "prose", "prose", "prose", "table", "code"]
-        @test [x.divcolumn for x in b] == [0, 0, 0, 1, 1, 2, 0, 0]
+        @test [x.path for x in b] == [[], [], [], [(1, 1)], [(1, 1)], [(1, 2)], [], []]
         @test all(x -> x.cell == "a" && x.frag == 1 && x.row == 1 && x.page == 1, b)
         @test occursin("A key message", b[3].src)
         inpage(q) = q.x >= 0 && q.y >= 0 && q.x + q.w <= 1920 && q.y + q.h <= 1080
@@ -796,6 +796,49 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test length(b[7].cols) == 2 && length(b[7].rows) == 2
         @test sum(b[7].cols) ≈ b[7].box.w && sum(b[7].rows) ≈ b[7].box.h
         @test all(x -> x.cols === nothing && x.rows === nothing, b[1:6])
+    end
+
+    # A grid of a markdown cell in the slides PDF: the tracks and the gaps of the live CSS grid, a
+    # nested grid, the path of each block and the box of each grid cell.
+    @testset "layout source: a grid, its grid cells and the paths of their blocks" begin
+        src = "#%% md id=g\n## G\n\nIntro.\n\n" *
+              ":::: {.grid columns=\"1fr 2fr\" gap=40}\n::: cell\nLeft.\n:::\n::: cell\n" *
+              "::::: {.grid columns=2 gap=10 fill=accent}\n::: cell\nA.\n:::\n::: cell\nB.\n:::\n::: cell\nC.\n:::\n:::::\n" *
+              ":::\n::::\n"
+        nb = _mknb(src)
+        sl = only(NS.slide_layout(nb))
+        b = sl.blocks
+        @test [x.src for x in b] == ["Intro.", "Left.", "A.", "B.", "C."]
+        @test [x.path for x in b] == [[], [(1, 1)], [(1, 2), (1, 1)], [(1, 2), (1, 2)], [(1, 2), (1, 3)]]
+        @test [c.path for c in sl.cells] == [[(1, 1)], [(1, 2)], [(1, 2), (1, 1)], [(1, 2), (1, 2)], [(1, 2), (1, 3)]]
+        @test [c.fill for c in sl.cells] == [nothing, nothing, "accent", "accent", "accent"]
+        # The body is 1648 u: the 1fr and 2fr tracks share it less the 40 u gap (536 and 1072 u). The
+        # nested grid has two tracks of (1072 − 10) / 2 = 531 u, and a filled grid cell has the 16 u
+        # pad of `grid.pad` inside it. C wraps to the second row, under A.
+        @test b[2].box.w ≈ 536 atol = 0.5
+        @test all(c -> c.box.w ≈ 531 && c.page == 1, sl.cells[3:5])
+        @test all(i -> b[i].box.w ≈ 531 - 32 && b[i].box.x ≈ sl.cells[i].box.x + 16, 3:5)
+        @test b[5].box.x ≈ b[3].box.x && b[5].box.y > b[3].box.y + b[3].box.h
+        @test sl.cells[4].box.x ≈ sl.cells[3].box.x + 531 + 10
+        # The exporter gets the paths and the grid cells, the fill as a hex colour.
+        d = only(NS.exporter_deck(nb)["slides"])
+        @test d["blocks"][3]["path"] == [[1, 2], [1, 1]]
+        @test length(d["cells"]) == 5 && d["cells"][1]["fill"] === nothing && startswith(d["cells"][3]["fill"], "#")
+        @test d["cells"][3]["align"] == "left" && d["cells"][3]["valign"] == "top"
+    end
+
+    # A value that is not valid gives an export warning and leaves the slides PDF as it is: the grid
+    # gets one track, the value is dropped.
+    @testset "slides project: a bad grid value warns and the PDF compiles" begin
+        src = "#%% md id=g\n## G\n\n:::: {.grid columns=99 gap=99999999999999999999 colspan=2}\n" *
+              "::: {.cell size=0 fill=nopaint}\nA\n:::\nstray\n::::\n\n::: cell\nB\n:::\n"
+        w = String[]
+        d = NS.exporter_deck(_mknb(src); warnings = w)
+        @test length(only(d["slides"])["cells"]) == 1
+        for part in ("columns=\"99\"", "gap=\"99999999999999999999\"", "`colspan` is not an attribute", "size=\"0\"",
+                     "fill=\"nopaint\"", "outside a grid cell", "a grid cell outside a grid")
+            @test any(x -> startswith(x, "Cell g: ") && occursin(part, x), w)
+        end
     end
 
     # The marks take no space: the pages and the fit of each page are the same with and without them.
@@ -1037,6 +1080,49 @@ end
     h = KaimonSlate.ReportRender.markdown_html(":::: columns\n::: {.column width=\"40%\"}\nL\n:::\n::: {.column width=60}\nR\n:::\n::::")
     @test occursin("style=\"flex:0 1 40%;max-width:40%\"", h)
     @test occursin("style=\"flex:0 1 60%;max-width:60%\"", h)
+end
+
+@testset "grid: the live render" begin
+    R = KaimonSlate.ReportRender
+    h = R.markdown_html(":::: {.grid columns=\"1fr 400u\" gap=24 fill=tint-blue align=center}\n::: cell\nA\n:::\n" *
+                        "::: {.cell size=3.6 valign=middle fill=accent}\nB\n:::\n::::")
+    @test occursin("class=\"deck-grid\"", h) && occursin("grid-template-columns:1fr calc(400 * var(--u, 1px))", h)
+    @test occursin("gap:calc(24 * var(--u, 1px))", h) && count("class=\"deck-grid-cell filled\"", h) == 2
+    @test occursin("background:var(--deck-palette-tint-blue)", h)
+    @test occursin("background:var(--deck-palette-accent, var(--deck-accent))", h)
+    @test occursin("font-size:3.6em", h) && occursin("align-content:center", h) && count("text-align:center", h) == 2
+    @test !occursin("data-warn", h) && !occursin("class=\"cell", h)
+    # A div of a value or of raw HTML keeps its class and its attributes.
+    @test occursin("<div class=\"ag-grid\" data-rows=\"5\">", R.markdown_html("<div class=\"ag-grid\" data-rows=\"5\">x</div>"))
+    # A bad value, an unknown attribute, content in no grid cell and a grid cell outside a grid warn.
+    w = R.markdown_html(":::: {.grid columns=\"1 2\" colspan=2}\ntext\n::: {.cell size=20}\nA\n:::\n::::\n\n::: cell\nB\n:::")
+    @test count("data-warn=", w) == 3
+    @test all(p -> occursin(p, w), ("must be a count", "`colspan` is not an attribute", "outside a grid cell is not shown",
+                                    "size=&quot;20&quot;", "a grid cell outside a grid"))
+end
+
+# The live render and the Typst export read the groups from one parse, so they agree on a fence that
+# CommonMark does not take as a div, on a fence that does not close, and on a decimal or a percentage
+# without quotes.
+@testset "grid: one parse for both targets" begin
+    R = KaimonSlate.ReportRender
+    cols = ":::: columns\n::: {.column width=33.3}\nL\n:::\n::: {.column width=20%}\nR\n:::\n::::"
+    @test only(NS._split_groups(cols)).widths == ["33.3%", "20%"]
+    @test occursin("flex:0 1 33.3%", R.markdown_html(cols)) && occursin("flex:0 1 20%", R.markdown_html(cols))
+    @test only(only(NS._split_groups(":::: grid\n::: {.cell size=3.6}\nA\n:::\n::::")).cells).size == 3.6
+    nobraces = ":::: grid columns=2\n::: cell\nA\n:::\n::::"
+    @test all(p -> p isa AbstractString, NS._split_groups(nobraces)) && !occursin("deck-grid\"", R.markdown_html(nobraces))
+    # A `::::::` grid that a `::::` line does not close holds the rest of the cell, on both targets.
+    open6 = ":::::: grid\n::: cell\nA\n:::\n::::\n\nafter"
+    p = NS._split_groups(open6)
+    @test length(p) == 1 && !occursin("after", only(only(p).cols)) && "content outside a grid cell is not shown" in only(p).warns
+    @test occursin("outside a grid cell", R.markdown_html(open6))
+end
+
+@testset "grid: the width of a figure in a grid cell" begin
+    p = only(NS._split_groups(":::: {.grid columns=\"200u 1fr 1fr\" gap=20}\n::: cell\na\n:::\n::: {.cell fill=x}\nb\n:::\n" *
+                              "::: cell\nc\n:::\n::: cell\nd\n:::\n::::"))
+    @test NS._group_widths(p, 1000, (columns = 56, grid = 56, pad = 16)) ≈ [200, 380 - 32, 380, 200]
 end
 
 @testset "presentation math macros print as plain math" begin

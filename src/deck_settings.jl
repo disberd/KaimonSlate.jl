@@ -268,8 +268,10 @@ function deck_settings(template::AbstractString, notebook::AbstractString)
     s = Dict{String,Dict{String,Any}}(g => Dict{String,Any}(k => v isa AbstractDict ? copy(v) : v for (k, v) in d)
                                       for (g, d) in base)
     warns = String[]
+    s["grid"]["gap"] = nothing                       # a layer sets it, else it is `columns.gap`
     _deck_merge!(s, base, template, "deck template", warns)
     _deck_merge!(s, base, notebook, "notebook", warns)
+    s["grid"]["gap"] === nothing && (s["grid"]["gap"] = s["columns"]["gap"])
     _deck_check_surface!(s, warns)
     r = (; values = s, warnings = warns)
     lock(_DECK_LOCK) do
