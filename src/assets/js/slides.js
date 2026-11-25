@@ -289,6 +289,7 @@
       r.el.querySelectorAll('[style*="view-transition-name"]').forEach(n => n.style.removeProperty('view-transition-name'));
       r.el.querySelectorAll('.deck-ctl-hidden').forEach(n => n.classList.remove('deck-ctl-hidden'));
       r.el.querySelectorAll('[style*="--fitw"]').forEach(n => n.style.removeProperty('--fitw'));
+      r.el.querySelectorAll('[style*="--natw"]').forEach(n => n.style.removeProperty('--natw'));
       r.el.querySelectorAll('[style*="--fitk"]').forEach(n => { n.style.removeProperty('--fitk'); n.style.removeProperty('--fith'); });
       r.el.querySelectorAll('[data-deck-title]').forEach(m => { m.title = m.dataset.deckTitle; delete m.dataset.deckTitle; });
       _restoreCellCharts(r.el);
@@ -681,6 +682,22 @@
   // (core.js `_renderInterpChartSvg`). The deck element holds `--deck-font`, so it is built first: a
   // tab that has not shown the deck has none, and its export would take the page font.
   window._deckChartOpts = spec => { _buildDeckDom(); return _presentOpts(spec, 1); };
+  // The chart of the code cell `cellId` as SVG for a slides export: the size and the slide styling
+  // that the deck gives it at figure scale 1 (`_fitBody`). That is its natural size scaled to fill
+  // `width` px, the width of its column, and at most `height` px, the figure cap. '' when the cell
+  // has no chart on this page. The export checks that this function exists, so a tab that loaded an
+  // older page is told apart from a tab with no chart.
+  window._renderSlideChartSvg = function (cellId, themeName, width, height) {
+    const cells = ((window.__slateState || window.nbState || {}).cells) || [];
+    const cell = cells.find(c => c.id === cellId);
+    const spec = cell && cell.echarts && cell.echarts[0];
+    const inst = window.charts && window.charts[cellId] && window.charts[cellId][0];
+    if (!spec || !inst) return '';
+    if (!_natural.has(inst.getDom())) _recordNatural(inst);
+    const [natW, natH] = _natural.get(inst.getDom());
+    const k = Math.min(width / natW, height / natH);
+    return _chartSvg(spec, themeName, natW * k, natH * k, window._deckChartOpts(spec));
+  };
   // Plain-object deep merge (arrays merge by index), for laying slide styling over a chart's option.
   function _merge(a, b) {
     if (Array.isArray(b)) {
@@ -756,6 +773,24 @@
     for (let i = 0; i < 6; i++) { const m = (lo + hi) / 2; if (fits(m, tie(m))) lo = m; else hi = m; }
     return { s: lo, f: bestF(lo, tie(lo)), atFloor: false };
   }
+  // A markdown picture with a size of its own (a PNG, an SVG with an absolute `width` or `height`) is
+  // as many slide units wide as it has CSS px, as in the slides PDF (export_typst.jl `natural-w`), so it
+  // takes the same share of the slide at each window size. `--natw` holds that width and notebook.css
+  // draws the picture at `--natw` × `--u`. Only the layout tells the two kinds of SVG apart: with no
+  // size rule, a picture with a size of its own is `naturalWidth` wide, and an SVG with only a
+  // `viewBox` fills its column (its `naturalWidth` comes from a default height of 150 px). A picture with a
+  // `{width=…}` or `{height=…}` of the author keeps it. The `--fitw` of the last fit caps the width with
+  // `!important`, so it goes before the probe; the fit pass sets it again.
+  function _markNatural(img) {
+    img.style.removeProperty('--natw');
+    img.style.removeProperty('--fitw');
+    if (img.tagName !== 'IMG' || !img.naturalWidth || img.style.width || img.style.height) return;
+    const s = img.style, keep = s.cssText;
+    s.width = 'auto'; s.height = 'auto'; s.maxWidth = 'none'; s.maxHeight = 'none';
+    const w = img.offsetWidth;
+    s.cssText = keep;
+    if (Math.abs(w - img.naturalWidth) < 0.5) s.setProperty('--natw', img.naturalWidth);
+  }
   // Fit a slide body: set the text scale (`--shrink`) and the figure scale of its pictures (slide
   // figures, image outputs, markdown images, the chart snapshots of a preview), of its HTML figures
   // and of its `charts`. At figure scale `f` a figure is `f` of the size that fills its column, capped
@@ -774,6 +809,7 @@
       .filter(e => !e.closest('.slidefig > *') && getComputedStyle(e).position !== 'absolute');
     const htmls = [...body.querySelectorAll('.output .disp.html:has(svg, canvas):not(:has(table))')]
       .filter(e => !e.closest('.slidefig') && getComputedStyle(e).position !== 'absolute');
+    figs.forEach(e => e.closest('.md') && _markNatural(e));
     const over = (s, f) => {
       slide.style.setProperty('--shrink', s);
       figs.forEach(e => e.style.removeProperty('--fitw'));

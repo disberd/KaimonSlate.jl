@@ -333,6 +333,17 @@ were written when they went out. They are marked.
 - A figure reference `[@fig:label]` on a slide shows as `Figure N` in the PDF deck and in the deck
   value of an exporter, as in the PDF export. The PDF deck made it a citation, so a deck with no
   bibliography stopped with "the document does not contain a bibliography".
+- The chart of a code cell (`echart(…)`) on a slide has the size and the styling of the live deck in
+  the PDF deck and for an exporter: it fills the width of its column at the aspect of its notebook
+  size, at most the figure cap high, with the slide styling (20 u axis labels). It kept its size in
+  the notebook column before, so it was smaller than on the live deck. The open tab draws it; with no
+  open tab it keeps its notebook size, and a tab that loaded its page before this release gives a
+  warning to reload it.
+- On the live deck, a markdown picture with a size of its own (a PNG, an SVG with an absolute `width`
+  or `height`) is as many slide units wide as it has CSS px, as in the PDF deck and for an exporter.
+  It was that many screen px wide, so its share of the slide changed with the size of the window, and
+  in a window narrower than 1920 px it was larger than in the PDF. A picture with `{width=…}` keeps
+  that width.
 
 ## [2.2.0] - 2026-11-16
 
