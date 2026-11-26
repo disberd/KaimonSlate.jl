@@ -1219,41 +1219,63 @@ const _CITE_SHOW = raw"""#show regex("§c§[^§]*§[^§]+§[^§]*§"): it => {
 function _cite_token(key, sup, form)
     return string(_CITE_OPEN, form, "§", key, "§", replace(strip(sup), "§" => ""), "§")
 end
-# Default `emit` for the export path: a sentinel the preamble's `#show` rule turns into a Typst cite.
-_cite_sentinel(key, sup, form) = _cite_token(key, sup, form)
+
+# One citation of a group: its key and its locator (`p. 7`, or "").
+const _Cite = @NamedTuple{key::String, sup::String}
+
+# An `emit(cites, form)` renders one citation group: the `_Cite`s of a `[@a; @b, p. 7]` bracket
+# (`form` "n") or the single key of a bare `@key` (`form` "p", the prose form).
+#
+# A cited key the bibliography does not have, as the PDF prints it: the key, marked, rather than a cite
+# Typst would refuse (it fails the whole document on one). No `@`, which the Markdown reader would take
+# for a citation again.
+_cite_missing(c) = string("(", c.key, isempty(strip(c.sup)) ? "" : ", " * strip(c.sup), "?)")
+
+# Default `emit` for the export path: a sentinel per key, which the preamble's `#show` rule turns into
+# a Typst cite. Typst groups adjacent cites itself.
+_cite_sentinel(cites, form) = join(_cite_token(c.key, c.sup, form) for c in cites)
 
 # A `[@fig:label]` cross-reference → its rendered text. `figrefs` maps label → (num, anchor); the
 # export default emits plain "Figure N" (the number is authoritative even without a hyperlink), the
 # live view overrides `figemit` with an HTML link that jumps to the figure.
 _fig_text(num, anchor) = string("Figure ", num)
 
-# Rewrite one `[...]` citation group (its inner text, which contains an `@`); `emit(key,sup,form)`
-# builds each replacement (a Typst sentinel for export, an HTML link for the live view). A `fig:`
-# label resolved in `figrefs` becomes a figure cross-reference via `figemit` instead of a bib cite.
-function _rewrite_bracket_cite(inner, emit; figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text)
+# Rewrite one `[...]` citation group (its inner text, which contains an `@`); `emit(cites, form)`
+# renders the group (a Typst sentinel for export, an HTML link for the live view). A `fig:` label
+# resolved in `figrefs` becomes a figure cross-reference via `figemit` instead, splitting the group.
+# With `unknown(cite)`, a key not in `citekeys` is that text instead of a citation, splitting it too.
+function _rewrite_bracket_cite(inner, emit; figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text,
+                               citekeys = Set{String}(), unknown = nothing)
     io = IOBuffer()
+    run = _Cite[]
+    flush() = isempty(run) || (print(io, emit(copy(run), "n")); empty!(run))
     for spec in split(inner, ';')
         # Accept an optional leading `-` (Pandoc suppress-author) but render normally — Typst's year
         # form drops the parentheses, which reads wrong, so we don't honor suppression.
         m = match(r"^\s*-?@([\w:.\-]+)\s*(?:,\s*(.*\S))?\s*$", spec)
         m === nothing && return nothing            # not a clean citation group → leave the bracket as-is
-        key = m.captures[1]
+        key = String(m.captures[1])
         if haskey(figrefs, key)                    # figure cross-reference
+            flush()
             num, anchor = figrefs[key]
             print(io, figemit(num, anchor))
+        elseif unknown !== nothing && !(key in citekeys)
+            flush()
+            print(io, unknown((key = key, sup = m.captures[2] === nothing ? "" : String(m.captures[2]))))
         else
-            sup = m.captures[2] === nothing ? "" : m.captures[2]
-            print(io, emit(key, sup, "n"))
+            push!(run, (key = key, sup = m.captures[2] === nothing ? "" : String(m.captures[2])))
         end
     end
+    flush()
     return String(take!(io))
 end
 # Rewrite the citation syntax in one stretch of TEXT (no code spans). Bracketed groups first, then
 # bare `@key` (prose) — the latter only for defined keys, so emails/handles are left literal.
-function _rewrite_text_citations(text, citekeys, emit; figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text)
+function _rewrite_text_citations(text, citekeys, emit; figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text,
+                                 unknown = nothing)
     t = replace(text, r"\[([^\]\n]*@[^\]\n]*)\]" => m -> begin
         # `chop` strips the brackets safely; byte slicing breaks on a non-ASCII locator (`[@k, p. 3–4]`).
-        r = _rewrite_bracket_cite(chop(m; head = 1, tail = 1), emit; figrefs = figrefs, figemit = figemit)
+        r = _rewrite_bracket_cite(chop(m; head = 1, tail = 1), emit; figrefs, figemit, citekeys, unknown)
         r === nothing ? m : r
     end)
     (isempty(citekeys) && isempty(figrefs)) && return t
@@ -1264,7 +1286,7 @@ function _rewrite_text_citations(text, citekeys, emit; figrefs = Dict{String,Tup
         if haskey(figrefs, key)
             num, anchor = figrefs[key]; figemit(num, anchor) * suffix
         elseif key in citekeys
-            emit(key, "", "p") * suffix
+            emit([(key = String(key), sup = "")], "p") * suffix
         else
             m
         end
@@ -1288,10 +1310,11 @@ function _map_outside_code(f, md::AbstractString)
 end
 # Rewrite citations across a markdown source, skipping fenced code blocks AND inline `code` spans
 # (so a literal `[@key]` shown in backticks is left untouched). `emit` selects sentinel vs HTML link;
-# `figrefs`/`figemit` handle `[@fig:label]` figure cross-references.
+# `figrefs`/`figemit` handle `[@fig:label]` figure cross-references. With `unknown(cite)`, a bracketed
+# key the bibliography (`citekeys`) does not have is that text instead (see `_cite_missing`).
 _rewrite_citations(md::AbstractString, citekeys = Set{String}(); emit = _cite_sentinel,
-                   figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text) =
-    _map_outside_code(t -> _rewrite_text_citations(t, citekeys, emit; figrefs = figrefs, figemit = figemit), md)
+                   figrefs = Dict{String,Tuple{Int,String}}(), figemit = _fig_text, unknown = nothing) =
+    _map_outside_code(t -> _rewrite_text_citations(t, citekeys, emit; figrefs, figemit, unknown), md)
 
 # Bare text of a `{{ expr }}` interpolation for the Typst export — mirrors the live renderer's
 # `_math_value`: a scalar's text, else a `text/latex` chunk's TeX with its `$`/`$$` delimiters
@@ -1411,7 +1434,7 @@ function _md_for_typst(c::Cell, src::AbstractString = c.source; citekeys = Set{S
     s = _strip_deck_markup(s)
     s = ReportRender._md_kinds(s; plain = true, caption = :caption in c.flags ? fignum : nothing)
     s = _plain_math_macros(s)
-    return _rewrite_citations(s, citekeys; figrefs = figrefs)
+    return _rewrite_citations(s, citekeys; figrefs = figrefs, unknown = _cite_missing)
 end
 
 # The presentation macros (`\term`, `\step`, … — see SLATE_TEX_MACROS in core.js) mark up an equation
@@ -2710,30 +2733,78 @@ function _surname(author::AbstractString)
 end
 
 """
-    _cite_labels(style, entries, numbers) -> (; labels, open, close)
+    _cite_labels(style, entries, numbers) -> (; labels, names, tags, open, close, authordate)
 
 How a style labels each entry in running text, and the brackets a group goes in: a number for a
 numeric style (`[1; 3]`), the surname and year for `author-year-brackets` (`[Sun 2026; Elder 2025]`,
 with `a`, `b`, … where two entries would share a label, in order of first citation as Typst assigns
 them), and otherwise author and year (`(Sun et al., 2026)`). `numbers` is the first-citation order
 (`citation_numbers`).
+
+`names` (the authors as cited, `Sun et al.`) and `tags` (what follows them: the year, or the number)
+are the two halves the prose form puts apart, `Sun et al. (2026)` (see `_cite_text`). A work with no
+author is named by its title, as the styles do: `(Water levels, 2026)`.
 """
 function _cite_labels(style::AbstractString, entries, numbers)
+    named(e, name) = isempty(name) ? _cite_title(e.title) : String(name)
+    names = Dict{String,String}(e.key => named(e, _cite_name(e.author; surname = e.surname)) for e in entries)
     if _is_numeric_style(style)
-        return (labels = Dict{String,String}(e.key => string(get(numbers, e.key, "?")) for e in entries), open = "[", close = "]")
+        tags = Dict{String,String}(e.key => string(get(numbers, e.key, "?")) for e in entries)
+        return (; labels = tags, names, tags, open = "[", close = "]", authordate = false)
     elseif _is_bracket_style(style)
-        base = Dict(e.key => strip(string(e.surname, " ", e.year)) for e in entries)
-        labels = Dict{String,String}()
+        # This style names only the first author, never "et al.".
+        names = Dict{String,String}(e.key => named(e, e.surname) for e in entries)
+        years = Dict{String,String}(e.key => strip(e.year) for e in entries)
+        base = Dict(e.key => strip(string(names[e.key], " ", e.year)) for e in entries)
+        tags = Dict{String,String}()
         for lab in unique(values(base))
             es = sort([e for e in entries if base[e.key] == lab];
                       by = e -> (get(numbers, e.key, typemax(Int)), lowercase(_delatex(e.title))))
             for (i, e) in enumerate(es)
-                labels[e.key] = length(es) == 1 ? lab : string(lab, Char('a' + i - 1))
+                tags[e.key] = length(es) == 1 ? years[e.key] : string(years[e.key], Char('a' + i - 1))
             end
         end
-        return (labels = labels, open = "[", close = "]")
+        labels = Dict{String,String}(k => strip(string(names[k], " ", tags[k])) for k in keys(tags))
+        return (; labels, names, tags, open = "[", close = "]", authordate = false)
     end
-    return (labels = Dict{String,String}(e.key => _author_year_label(e.author, e.year) for e in entries), open = "(", close = ")")
+    tags = Dict{String,String}(e.key => strip(e.year) for e in entries)
+    labels = Dict{String,String}(k => join(filter(!isempty, [names[k], tags[k]]), ", ") for k in keys(tags))
+    return (; labels, names, tags, open = "(", close = ")", authordate = true)
+end
+
+"""
+    _cite_text(fmt, cites, form; wrap = (key, text) -> text) -> String
+
+A citation group as running text in the style `fmt` (`_cite_labels`). A bracket's group goes in the
+style's brackets, `(Sun et al., 2026; Elder, 2025)` or `[3, p. 7; 5]`, and in an author-date style
+an author's works one after another are named once, `(Ning et al., 2024, 2025)`. The prose form
+(`form` "p") names the authors in the sentence, `Sun et al. (2026)` or `Sun et al. [3]`. `wrap(key,
+text)` makes each key's part of the text what it is in the output (a link, escaped).
+"""
+function _cite_text(fmt, cites, form; wrap = (key, text) -> text)
+    label(c) = get(fmt.labels, c.key, c.key)
+    located(t, c) = isempty(strip(c.sup)) ? t : string(t, ", ", strip(c.sup))
+    if form == "p"
+        return join(map(cites) do c
+            name, tag = get(fmt.names, c.key, ""), get(fmt.tags, c.key, "")
+            text = isempty(name) ? string(fmt.open, located(label(c), c), fmt.close) :
+                   isempty(tag) ? located(name, c) : string(name, " ", fmt.open, located(tag, c), fmt.close)
+            wrap(c.key, text)
+        end, "; ")
+    end
+    parts = String[]
+    previous = nothing                                  # the last part's name, when another may join it
+    for c in cites
+        name = get(fmt.names, c.key, "")
+        tag = get(fmt.tags, c.key, "")
+        if fmt.authordate && previous !== nothing && name == previous && !isempty(tag)
+            parts[end] *= ", " * wrap(c.key, located(tag, c))
+        else
+            push!(parts, wrap(c.key, located(label(c), c)))
+        end
+        previous = fmt.authordate && !isempty(name) && !isempty(tag) && isempty(strip(c.sup)) ? name : nothing
+    end
+    return string(fmt.open, join(parts, "; "), fmt.close)
 end
 
 # Numeric CSL styles cite as [1]; the rest are author-date. Drives the LIVE citation format (the PDF
@@ -2742,20 +2813,24 @@ _is_numeric_style(style::AbstractString) =
     lowercase(String(style)) in ("ieee", "vancouver", "nature", "chicago-notes", "iso-690-numeric",
                                  "american-physics-society", "american-institute-of-physics")
 
-# A compact author-date label for the live view, e.g. "Knuth, 1984" / "Cormen et al., 2009".
-function _author_year_label(author::AbstractString, year::AbstractString)
+# The authors as an author-date citation names them: the first one's surname, "et al." when there
+# are more ("Knuth", "Cormen et al."); a braced name (`{W7-X Team}`) whole. An entry's `surname` is
+# read from its BibTeX before the braces go, so it is passed when there is one.
+function _cite_name(author::AbstractString; surname::AbstractString = _surname(author))
     a = strip(String(author))
-    surname = ""
-    if !isempty(a)
-        first = strip(split(a, r"\s+and\s+")[1])                 # first listed author
-        surname = occursin(",", first) ? strip(split(first, ",")[1]) :  # "Knuth, Donald"
-                  String(strip(split(first)[end]))                       # "Donald E. Knuth" → "Knuth"
-        occursin(r"\band\b", a) && (surname *= " et al.")
-    end
-    yr = strip(String(year))
-    isempty(surname) && return yr
-    return isempty(yr) ? surname : string(surname, ", ", yr)
+    (isempty(a) || isempty(surname)) && return String(surname)
+    return length(split(a, r"\s+and\s+")) > 1 ? surname * " et al." : String(surname)
 end
+
+# A work's title as a citation names a work with no author: whole when short, else its first words.
+function _cite_title(title::AbstractString)
+    words = split(strip(replace(String(title), r"[{}]" => "")))
+    return length(words) <= 5 ? join(words, " ") : join(words[1:4], " ") * " …"
+end
+
+# A compact author-date label for the live view, e.g. "Knuth, 1984" / "Cormen et al., 2009".
+_author_year_label(author::AbstractString, year::AbstractString) =
+    join(filter(!isempty, [_cite_name(author), strip(String(year))]), ", ")
 
 # The sources one `:bibliography` cell names: its embedded BibTeX, or one per line, each a `.bib`
 # path (resolved against `nbdir`) or an address (see `bib_endpoint`). `nb` is redrawn when an
@@ -2819,7 +2894,12 @@ end
 function citation_numbers(report, citekeys)
     order = String[]; seen = Set{String}()
     # Only a key in the bibliography takes a number: `[@fig:…]` and unknown keys reach `emit` too.
-    rec = (key, _sup, _form) -> (k = String(key); (k in citekeys && !(k in seen)) && (push!(order, k); push!(seen, k)); "")
+    rec = (cites, _form) -> begin
+        for c in cites
+            (c.key in citekeys && !(c.key in seen)) && (push!(order, c.key); push!(seen, c.key))
+        end
+        ""
+    end
     for c in report.cells
         (is_prose(c.kind) && !(:bibliography in c.flags)) || continue
         _rewrite_citations(first(ReportRender._md_spliced(c.source, c.interp)), citekeys; emit = rec)
@@ -2894,7 +2974,7 @@ function _build_typst_project(nb::LiveNotebook; include_source::Bool = true,
             absarg = "none"
             if !isempty(strip(fm.abstract))
                 write(joinpath(dir, "abstract.md"),
-                      _stage_typst_md_media(_rewrite_citations(fm.abstract, citekeys), dir, "abstract", _proj_root(nb);
+                      _stage_typst_md_media(_rewrite_citations(fm.abstract, citekeys; unknown = _cite_missing), dir, "abstract", _proj_root(nb);
                                             sizes = mediasz, warnings, cell = fm.rolecell))
                 absarg = _md_render("abstract.md")
             end

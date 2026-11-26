@@ -1405,7 +1405,9 @@ function _on_emit_message(name::String, kind::UInt8, buf::Vector{UInt8}, release
     return nothing
 end
 
-function _kill_worker!(k::GateKernel; kill_remote::Bool = false)
+# `exiting`: the worker accepted a shutdown request and is already on its way out, so it gets
+# `_EXIT_GRACE_S` before any signal. A SIGTERM landing mid-exit makes Julia dump every thread's stack.
+function _kill_worker!(k::GateKernel; kill_remote::Bool = false, exiting::Bool = false)
     k.conn === nothing || _detach_emit!(k.conn.name)
     # Detaching from a spawned-remote worker PARKS the wire: the live conn + tunnel move into the
     # park cache (see `park_remote!`) so reopening this notebook skips tunnel + dial entirely.
@@ -1427,7 +1429,7 @@ function _kill_worker!(k::GateKernel; kill_remote::Bool = false)
     end
     p = k.proc
     if p !== nothing
-        try; process_running(p) && kill(p); catch; end   # SIGTERM — ask nicely first
+        exiting || (try; process_running(p) && kill(p); catch; end)   # SIGTERM — ask nicely first
         # DON'T block waiting for it to actually die: this runs inside `close_notebook!`'s
         # `lock(h.lock)`, and a worker wedged in precompile/codegen can take real time to exit
         # even after SIGTERM. A blocking wait here serializes EVERY other hub operation (any
@@ -1435,28 +1437,36 @@ function _kill_worker!(k::GateKernel; kill_remote::Bool = false)
         # takes to die. Register it for the background reaper instead (see `reap_pending_kills!`,
         # ridden on the hub's existing 5s supervisor sweep) — it escalates to SIGKILL and logs,
         # without holding anything up. `_kill_worker!` itself returns essentially instantly.
-        register_pending_kill!(p)
+        register_pending_kill!(p; termed = !exiting)
     end
     k.conn = nothing; k.proc = nothing
     return nothing
 end
 
 # ── Background process reaper ─────────────────────────────────────────────────────────────────
-# A worker asked to exit (SIGTERM, above) is tracked here until it's CONFIRMED dead — escalating
-# to SIGKILL if it outlives its grace period, and logging either way — instead of a caller
-# blocking on it (see `_kill_worker!`). `reap_pending_kills!()` is called once per hub-wide 5s
-# sweep tick (server.jl `_supervise_runs!`), not per-notebook.
-const _PENDING_KILLS = Dict{Int,NamedTuple}()   # pid → (proc, term_at, kill_at::Union{Float64,Nothing})
+# A worker being ended is tracked here until it's CONFIRMED dead, instead of a caller blocking on
+# it (see `_kill_worker!`). Each record moves through stages: `:asked` (accepted a shutdown request,
+# exiting on its own) → `:termed` (SIGTERM sent) → `:killed` (SIGKILL sent), escalating when a stage's
+# grace runs out and logging either way. `reap_pending_kills!()` is called once per hub-wide 5s sweep
+# tick (server.jl `_supervise_runs!`), not per-notebook.
+const _PENDING_KILLS = Dict{Int,NamedTuple}()   # pid → (proc, stage::Symbol, since::Float64)
 const _PENDING_KILLS_LOCK = ReentrantLock()
+const _EXIT_GRACE_S = 5.0            # how long a worker exiting on request gets before SIGTERM
 const _KILL_GRACE_S = 3.0            # how long a SIGTERM'd process gets before SIGKILL
 const _KILL_GIVEUP_S = 15.0          # how long AFTER SIGKILL before we stop watching + warn once
 
-function register_pending_kill!(p)
+function register_pending_kill!(p; termed::Bool = true)
     pid = try; getpid(p); catch; return nothing; end
     lock(_PENDING_KILLS_LOCK) do
-        _PENDING_KILLS[pid] = (proc = p, term_at = time(), kill_at = nothing)
+        _PENDING_KILLS[pid] = (proc = p, stage = termed ? :termed : :asked, since = time())
     end
     return nothing
+end
+
+function _pending_stage!(pid::Int, rec, stage::Symbol, now::Float64)
+    lock(_PENDING_KILLS_LOCK) do
+        haskey(_PENDING_KILLS, pid) && (_PENDING_KILLS[pid] = (proc = rec.proc, stage = stage, since = now))
+    end
 end
 
 function reap_pending_kills!()
@@ -1469,17 +1479,40 @@ function reap_pending_kills!()
             lock(_PENDING_KILLS_LOCK) do; delete!(_PENDING_KILLS, pid); end
             continue
         end
-        if rec.kill_at === nothing
-            (now - rec.term_at < _KILL_GRACE_S) && continue    # still within SIGTERM grace
+        waited = now - rec.since
+        if rec.stage === :asked
+            waited < _EXIT_GRACE_S && continue
+            try; kill(rec.proc); catch; end
+            _rlog("worker reaper: pid $pid still alive $(round(waited; digits=1))s after a shutdown request — sent SIGTERM")
+            _pending_stage!(pid, rec, :termed, now)
+        elseif rec.stage === :termed
+            waited < _KILL_GRACE_S && continue
             try; kill(rec.proc, Base.SIGKILL); catch; end
-            _rlog("worker reaper: pid $pid still alive $(round(now - rec.term_at; digits=1))s after SIGTERM — sent SIGKILL")
-            lock(_PENDING_KILLS_LOCK) do
-                haskey(_PENDING_KILLS, pid) && (_PENDING_KILLS[pid] = (proc = rec.proc, term_at = rec.term_at, kill_at = now))
-            end
-        elseif now - rec.kill_at > _KILL_GIVEUP_S
+            _rlog("worker reaper: pid $pid still alive $(round(waited; digits=1))s after SIGTERM — sent SIGKILL")
+            _pending_stage!(pid, rec, :killed, now)
+        elseif waited > _KILL_GIVEUP_S
             @warn "slate: worker process would not die even after SIGKILL — giving up on it" pid = pid
             lock(_PENDING_KILLS_LOCK) do; delete!(_PENDING_KILLS, pid); end
         end
+    end
+    return nothing
+end
+
+# The hub is stopping and its reaper with it: give workers exiting on request up to `wait_s` to finish,
+# then SIGTERM the rest, so none outlives the hub waiting on a sweep that will not come.
+function term_pending_exits!(; wait_s::Real = 1.0)
+    asked() = lock(_PENDING_KILLS_LOCK) do
+        [(pid, rec) for (pid, rec) in _PENDING_KILLS if rec.stage === :asked]
+    end
+    running(rec) = try; process_running(rec.proc); catch; false; end
+    t0 = time()
+    while time() - t0 < wait_s && any(r -> running(last(r)), asked())
+        sleep(0.05)
+    end
+    for (pid, rec) in asked()
+        running(rec) || continue
+        try; kill(rec.proc); catch; end
+        _pending_stage!(pid, rec, :termed, time())
     end
     return nothing
 end
@@ -2258,17 +2291,22 @@ function env_info(k::GateKernel, report::Report)
     prepare!(k, report)
     wire = try
         _tool(k, "__slate_env_info", Dict{String,Any}())
-    catch
-        return (notebook = (path = "", deps = Dict{String,Any}[]), parent = nothing)
+    catch e
+        return (notebook = (path = "", deps = Dict{String,Any}[]), parent = nothing,
+                error = sprint(showerror, e))
     end
     _grp(g) = g === nothing ? nothing :
         (path = String(get(g, :path, get(g, "path", ""))),
          name = String(get(g, :name, get(g, "name", ""))),
          deps = Dict{String,Any}[Dict{String,Any}(String(kk) => v for (kk, v) in d)
                                  for d in get(g, :deps, get(g, "deps", Any[]))])
-    nb = _grp(get(wire, :notebook, get(wire, "notebook", nothing)))
+    w_nb = get(wire, :notebook, get(wire, "notebook", nothing))
+    nb = _grp(w_nb)
     par = _grp(get(wire, :parent, get(wire, "parent", nothing)))
-    return (notebook = nb === nothing ? (path = "", name = "", deps = Dict{String,Any}[]) : nb, parent = par)
+    err = w_nb === nothing ? "the worker did not describe its environment" :
+          string(get(w_nb, :error, get(w_nb, "error", "")))
+    return (notebook = nb === nothing ? (path = "", name = "", deps = Dict{String,Any}[]) : nb, parent = par,
+            error = err)
 end
 
 # The worker's SlateExtensionsBase extension manifest — what its loaded packages registered for the
@@ -2377,13 +2415,13 @@ function memo_pin!(k::GateKernel, report::Report, key::AbstractString, pin::Bool
     return nothing
 end
 
-# Add/remove a package in the notebook's own env. Adding the FIRST package while in base
+# Add, update or remove a package in the notebook's own env. Adding the FIRST package while in base
 # mode forks the notebook off its parent (seed + activate a single extended env) before the
 # add, so the parent's `Project.toml` is never touched and there's one consistent resolution.
 function pkg_op(k::GateKernel, report::Report, op::AbstractString, name::AbstractString;
                target::AbstractString = "notebook")
     prepare!(k, report)
-    # "project" target: add to the SHARED parent project (no fork), then re-resolve the notebook env.
+    # "project" target: change the SHARED parent project (no fork), then re-resolve the notebook env.
     if String(target) == "project"
         isempty(k.parent) && return Dict{String,Any}("ok" => false, "message" => "this notebook has no parent project")
         r = try
@@ -2470,26 +2508,74 @@ function _reconstruct_env!(k::GateKernel)
                           _pkg_op_timeout(), "could not rebuild the notebook's packages")
     r === nothing && return   # a failed rebuild keeps `pending`, so the next use retries
     stamp_env!(k.envdir, k.parent)
+    isempty(k.nbdir) || mark_notebook_env!(k.envdir, joinpath(k.nbdir, k.label))
     empty!(k.pending)
     return
 end
 
-# Run an env rebuild on the worker and report what went wrong (hub log + boot banner): a failure,
-# or local checkouts it had to skip because their path is missing here. `nothing` on failure.
+# What the last rebuild of each notebook env could not do, keyed by env dir, in two parts that end
+# differently. `failure`: the rebuild failed, so the env is behind its project; it ends when the env is
+# found current again (rebuilt, or the project put back). `left_out`: footer packages it did not add;
+# they end when a package operation rewrites the footer from the env. Kept by env dir because the
+# rebuilds run where only the env is known (before a worker exists, or from the project watcher).
+const _ENV_PROBLEMS = Dict{String,@NamedTuple{failure::String, left_out::Vector{String}}}()
+const _ENV_PROBLEMS_LOCK = ReentrantLock()
+
+"Record what a rebuild of `envdir` could not do, replacing what the last one recorded."
+function set_env_problem!(envdir::AbstractString; failure::AbstractString = "", left_out = String[])
+    lock(_ENV_PROBLEMS_LOCK) do
+        e = (failure = String(failure), left_out = String[String(s) for s in left_out])
+        isempty(e.failure) && isempty(e.left_out) ? delete!(_ENV_PROBLEMS, String(envdir)) :
+                                                    (_ENV_PROBLEMS[String(envdir)] = e)
+    end
+    return nothing
+end
+
+"Drop one part (`:failure` or `:left_out`) of what is recorded for `envdir`. Returns whether there was any."
+function clear_env_problem!(envdir::AbstractString, part::Symbol)
+    lock(_ENV_PROBLEMS_LOCK) do
+        e = get(_ENV_PROBLEMS, String(envdir), nothing)
+        e === nothing && return false
+        had = part === :failure ? !isempty(e.failure) : !isempty(e.left_out)
+        had || return false
+        failure, left_out = part === :failure ? ("", e.left_out) : (e.failure, String[])
+        isempty(failure) && isempty(left_out) ? delete!(_ENV_PROBLEMS, String(envdir)) :
+                                                (_ENV_PROBLEMS[String(envdir)] = (; failure, left_out))
+        return true
+    end
+end
+
+"What the last rebuild of `envdir` could not do, one line each, or `\"\"`."
+function env_problem(envdir::AbstractString)
+    e = lock(() -> get(_ENV_PROBLEMS, String(envdir), nothing), _ENV_PROBLEMS_LOCK)
+    e === nothing && return ""
+    return join(vcat(e.left_out, isempty(e.failure) ? String[] : [e.failure]), "\n")
+end
+
+"The notebook packages a rebuild left out, in words: missing checkouts and records whose name and UUID disagree."
+function left_out_notes(skipped, mismatched)
+    notes = String[]
+    isempty(skipped) || push!(notes, "local checkouts not found on this machine, so not added: " * join(skipped, ", "))
+    isempty(mismatched) || push!(notes, "Slate.env packages not added: " * join(mismatched, "; "))
+    return notes
+end
+
+# Run an env rebuild on the worker and report what went wrong (hub log + boot banner + the notebook's
+# env notice): a failure, or packages it left out. `nothing` on failure.
 function _env_rebuild_tool(k::GateKernel, tool::AbstractString, args, timeout, what::AbstractString)
     note(msg) = (@warn "KaimonSlate: $msg" notebook = k.label; k.online === nothing || (try; k.online(msg); catch; end))
+    fail(msg) = (note(msg); set_env_problem!(k.envdir; failure = msg); nothing)
     r = try
         _tool(k, tool, args; timeout = timeout)
     catch e
         e isa InterruptException && rethrow()
-        note("$what: " * sprint(showerror, e)); return nothing
+        return fail("$what: " * sprint(showerror, e))
     end
     field(key, d) = r isa AbstractDict ? get(r, Symbol(key), get(r, key, d)) : d
-    if field("ok", false) !== true
-        note("$what: " * string(field("message", "no response from worker"))); return nothing
-    end
-    skipped = field("skipped", String[])
-    isempty(skipped) || note("local checkouts not found on this machine, so not added: " * join(skipped, ", "))
+    field("ok", false) === true || return fail("$what: " * string(field("message", "no response from worker")))
+    notes = left_out_notes(field("skipped", String[]), field("mismatched", String[]))
+    foreach(note, notes)
+    set_env_problem!(k.envdir; left_out = notes)
     return r
 end
 
@@ -2622,8 +2708,9 @@ function _shutdown_locked!(k::GateKernel, kill_remote::Bool)
     # `send_shutdown!` tells the worker process to EXIT — only a local worker (or an explicit
     # remote kill) gets it. An attached worker isn't ours; a detaching remote must keep running.
     wants_exit = !(k.remote || (k.target isa RemoteTarget && !kill_remote))
-    (wants_exit && k.conn !== nothing) && (try; _kaimon().send_shutdown!(k.conn); catch; end)
-    _kill_worker!(k; kill_remote)   # proc === nothing for remote → no process kill; clears conn + routing
+    exiting = (wants_exit && k.conn !== nothing) &&
+              (try; _kaimon().send_shutdown!(k.conn) === true; catch; false; end)
+    _kill_worker!(k; kill_remote, exiting)   # proc === nothing for remote → no process kill; clears conn + routing
     return nothing
 end
 

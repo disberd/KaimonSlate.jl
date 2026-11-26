@@ -835,7 +835,7 @@ function env_info(k::InProcessKernel, ::Report)
         deps = filter(d -> !(string(get(d, "name", "")) in base), _project_deps())
         own = (path = dirname(Pkg.project().path), name = "", deps = deps)
     end
-    return (notebook = own, parent = _project_group(k.projectdir))
+    return (notebook = own, parent = _project_group(k.projectdir), error = "")
 end
 
 # `(path, name, deps)` for a project directory, read straight off its Project.toml. Deliberately
@@ -1147,6 +1147,17 @@ function _scaffold_replay_source(src::AbstractString)
     for call in _collect_theme_calls!(Any[], top)
         push!(out, string(call))
     end
+    return join(out, "\n")
+end
+
+# The statements that define what a cell defines (`_replay_plan`), as source for another namespace,
+# after the cell's `using`/`import` statements so the names its signatures use resolve there. `""`
+# when the cell defines nothing.
+function _definitions_replay_source(src::AbstractString)
+    plan = _replay_plan(src)
+    isempty(plan.idx) && return ""
+    out = String[string(s) for (_, s) in plan.stmts if s isa Expr && s.head in (:using, :import)]
+    append!(out, (string(plan.stmts[i][2]) for i in plan.idx))
     return join(out, "\n")
 end
 

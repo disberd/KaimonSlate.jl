@@ -808,8 +808,8 @@ end
 # Evaluate the type definitions among a cell's replayed statements (structs, abstract and primitive
 # types, `@kwdef` structs). Failures are left to the restore, which then misses and runs the cell.
 function _replay_types!(m::Module, source::AbstractString, cid::AbstractString)
-    plan = _replay_plan(source)
     fname = Symbol(isempty(cid) ? "none" : "cell:" * cid)
+    plan = _replay_plan(source; filename = String(fname))
     for i in plan.idx
         ln, s = plan.stmts[i]
         d = _unwrap_definition(s)
@@ -824,6 +824,10 @@ function _replay_scaffold!(m::Module, source::AbstractString; cid::AbstractStrin
     fname = isempty(cid) ? "none" : "cell:" * cid
     top = try; Meta.parseall(String(source); filename = fname); catch; return true; end   # unparseable → nothing to replay
     stmts = (top isa Expr && top.head === :toplevel) ? top.args : Any[top]
+    # The statements under the cell's name, as a run records them: a sweep ships a helper this cell
+    # defines by that text (`_helper_defs`), and a restored cell has otherwise left none.
+    (!isempty(cid) && _ns_defined(m, :__slate_cell_stmts)) &&
+        (_ns_read(m, :__slate_cell_stmts)[fname] = stmt_texts(source, top))
     for s in stmts                                   # top-level using/import — bring names into scope
         s isa LineNumberNode && continue
         (s isa Expr && s.head in (:using, :import)) || continue
@@ -834,7 +838,7 @@ function _replay_scaffold!(m::Module, source::AbstractString; cid::AbstractStrin
     # the names they bind (see `_eval_one`), so they run again here, in source order. Each carries a line
     # node naming this cell's `cell:<id>` file, the tag that later removes the methods it defines.
     isempty(cid) || _redefine_cell!(m, cid, source)
-    plan = _replay_plan(source)
+    plan = _replay_plan(source; filename = fname)
     for i in plan.idx
         ln, s = plan.stmts[i]
         try; Base.invokelatest(Core.eval, m, Expr(:toplevel, LineNumberNode(ln.line, Symbol(fname)), s))
@@ -1013,6 +1017,7 @@ function _eval_one(source::String, filename::String, memo_key::String,
                    memo_force::Bool = false, memo_always::Bool = false,
                    memo_unread::Vector{String} = String[], memo_safe::Vector{String} = String[];
                    memo_restore_only::Bool = false, slate_ctx = nothing)
+    _await_prepare()
     cid = replace(filename, r"^cell:" => "")
     # What the cell's top-level definitions bind is re-established from source on restore
     # (`_replay_scaffold!`), so the entry stores only the rest. A function value can't be stored
@@ -2017,6 +2022,9 @@ const _CONTROL_TOOLS = Set([
     "__slate_running", "__slate_cancel", "__slate_cancel_cells", "__slate_ports",
     "__slate_client_key", "__slate_server_key", "__slate_authorize_client", "__slate_revoke_client",
     "__slate_probe_peer",
+    # The hub's answer to a cluster operation a task here is parked on. Queued behind the default
+    # lane, it waits on the very calls that are waiting for it.
+    "__slate_sshop_reply",
 ])
 
 # Gate requests that render or answer the page → the UI threads. Each may run notebook code, but
@@ -2111,15 +2119,18 @@ end
 
 "Environment provenance for the package viewer: the notebook's own direct deps (the active
 project — where `Pkg.add` lands) and, separately, the parent project's deps (inherited via
-LOAD_PATH stacking). Shape: `{notebook:{path,deps}, parent:{path,deps}|nothing, payload_sha, job, env_rebuilt}`.
-`job` is the scheduler job this process booted in, and empty outside one (`BOOT_JOB`). `env_rebuilt`
-says the host built this worker's environment again after it booted."
+LOAD_PATH stacking). Shape: `{notebook:{path,deps[,error]}, parent:{path,deps}|nothing, payload_sha, job,
+env_rebuilt}`. `notebook.error` says the notebook's packages could not be read, so an empty `deps` is
+not mistaken for a notebook with none of its own. `job` is the scheduler job this process booted in,
+and empty outside one (`BOOT_JOB`). `env_rebuilt` says the host built this worker's environment
+again after it booted."
 function __slate_env_info()
     nb = Dict{String,Any}("path" => "", "deps" => Dict{String,Any}[])
     try
         nb["path"] = dirname(Pkg.project().path)
-        nb["deps"] = __slate_project_deps()
-    catch
+        nb["deps"] = _project_deps(; strict = true)
+    catch e
+        nb["error"] = sprint(showerror, e)
     end
     parent = nothing
     p = PARENT_PROJECT[]
@@ -2150,6 +2161,11 @@ function _seed_notebook_env!(envdir::AbstractString, parent::AbstractString)
         catch
             try; Pkg.develop(Pkg.PackageSpec(path = parent)); catch; end
         end
+    else
+        # No parent package to develop, so nothing has resolved the fork: the seed lists packages the
+        # copied manifest does not have (SlateExtensionsBase), and the copy can carry entries the
+        # project no longer lists, which block adding the package their UUID names.
+        Pkg.resolve()
     end
     return pname
 end
@@ -2169,25 +2185,27 @@ function __slate_fork(envdir, parent)
 end
 
 "Re-create the notebook's own packages after a re-seed, each the way it was added (`readd_specs`,
-envprep.jl). Returns the names of local checkouts that are missing on this machine."
-function _readd!(delta; pinned::Bool = false, preserve = Pkg.PRESERVE_TIERED)
-    s = readd_specs(delta; pinned)
+envprep.jl). Returns what was left out: local checkouts missing on this machine (`skipped`) and
+records whose name and UUID disagree (`mismatched`)."
+function _readd!(delta; pinned::Bool = false, preserve = Pkg.PRESERVE_TIERED, base::AbstractString = "")
+    s = readd_specs(delta; pinned, base)
     isempty(s.devs) || Pkg.develop([Pkg.PackageSpec(; d...) for d in s.devs]; preserve)
     isempty(s.adds) || Pkg.add([Pkg.PackageSpec(; a...) for a in s.adds]; preserve)
-    return s.skipped
+    return (; s.skipped, s.mismatched)
 end
 
 "Reconstruct a notebook env from its `.jl` footer: seed from the parent, then add the
 notebook's own packages at the recorded versions. Called on open when the env dir is
 absent (e.g. a fresh git clone) but the footer records a delta. `pkgs` is the footer's
-`{name, version, uuid[, source, origin]}` records. Returns `{ok, skipped}` or `{ok=false, message}`."
+`{name, version, uuid[, source, origin]}` records. Returns `{ok, skipped, mismatched}` or
+`{ok=false, message}`."
 function __slate_reconstruct(envdir, parent, pkgs)
     try
-        skipped = with_env_work() do
+        left = with_env_work() do
             _seed_notebook_env!(String(envdir), String(parent))
-            _readd!(pkgs; pinned = true)
+            _readd!(pkgs; pinned = true, base = String(parent))
         end
-        return Dict{String,Any}("ok" => true, "skipped" => skipped)
+        return Dict{String,Any}("ok" => true, "skipped" => left.skipped, "mismatched" => left.mismatched)
     catch e
         return Dict{String,Any}("ok" => false, "message" => sprint(showerror, e))
     finally
@@ -2253,8 +2271,8 @@ end
 remote region, not the hub's). See `_registry_add` (pkg_ops.jl)."
 __slate_registry_add(url) = _registry_add(url)
 
-"Add/remove package(s) in the notebook's PARENT PROJECT (shared) rather than its own env, then
-re-resolve the active notebook env so the change is visible. `parent` is the parent project dir.
+"Add, update or remove package(s) in the notebook's PARENT PROJECT (shared) rather than its own env,
+then re-resolve the active notebook env so the change is visible. `parent` is the parent project dir.
 Restores the active project even on error. Returns `{ok, message}`."
 function __slate_pkg_parent(op, name, parent)
     isempty(String(parent)) && return Dict{String,Any}("ok" => false, "message" => "no parent project")
@@ -2264,33 +2282,6 @@ function __slate_pkg_parent(op, name, parent)
     r = with_env_work(() -> _pkg_parent_now(String(op), tokens, String(parent)))
     _after_env_change!()
     return r
-end
-function _pkg_parent_now(o, tokens, parent)
-    cur = try; dirname(Pkg.project().path); catch; ""; end
-    try
-        Pkg.activate(parent)
-        if o == "add"
-            s = _pkg_add_specs(tokens)
-            add_installed_first!(s.adds)
-            isempty(s.devs) || Pkg.develop(s.devs)
-            msg = "added $(join(s.labels, ", ")) to the project"
-        elseif o == "rm"
-            Pkg.rm(String.(tokens)); msg = "removed $(join(tokens, ", ")) from the project"
-        else
-            isempty(cur) || Pkg.activate(cur)
-            return Dict{String,Any}("ok" => false, "message" => "unknown op '$o'")
-        end
-        # Back to the notebook env and re-resolve so it picks up the parent's change (the fork dev-refs
-        # the parent, so a resolve pulls the new dep through). Best-effort — the add already succeeded.
-        if !isempty(cur)
-            Pkg.activate(cur)
-            try; Pkg.resolve(); catch; end
-        end
-        return Dict{String,Any}("ok" => true, "message" => msg)
-    catch e
-        isempty(cur) || (try; Pkg.activate(cur); catch; end)
-        return Dict{String,Any}("ok" => false, "message" => sprint(showerror, e))
-    end
 end
 
 # ── Hot-reload of the parent project's /src (Revise) ──────────────────────────
@@ -2509,15 +2500,38 @@ function _bg_precompile_loop!()
     return nothing
 end
 
+# What `_prepare_env!` runs in its subprocess: the accurate full-closure total (`Base.isprecompiled` over
+# the manifest) as a control marker, then the precompile, whose combined output is what it classifies.
+const _PREP_SCRIPT = raw"""
+    using Pkg
+    try
+        local need = 0
+        for (uuid, info) in Pkg.dependencies()
+            info.name in ("KaimonGate", "Revise", "ExpressionExplorer") && continue
+            pid = Base.PkgId(uuid, info.name)
+            ready = (try; Base.in_sysimage(pid); catch; false; end) || (try; Base.isprecompiled(pid); catch; true; end)
+            ready || (need += 1)
+        end
+        println(stderr, "@@SLATE_PREP total=", need); flush(stderr)
+    catch; end
+    try
+        Pkg.precompile()
+    catch e
+        println(stderr, "@@SLATE_PREP error ", first(split(sprint(showerror, e), '\n')))
+    end
+    println(stderr, "@@SLATE_PREP done"); flush(stderr)
+"""
+
 # ── Proactive, NARRATED precompile on boot (the slow-Makie-open fix) ───────────────────────────────
 # A notebook whose env isn't precompiled pays that cost lazily, under the first cell's `using` — and
 # because cell output is capture-redirected, Julia's "Precompiling…" progress lands in the cell buffer,
 # INVISIBLE, so the topbar just shows a frozen "Running 0/N". Here we pay it up front instead: detect a
 # cold env, precompile it in a SUBPROCESS (in-process `Pkg.precompile()` crashes a live worker — see
 # `_bg_precompile_loop!`), and stream each package through the shared classifier onto `slate_prepare`, so
-# the browser narrates "Preparing packages · precompiling k/N · <pkg>". Non-blocking: cells and edits
-# proceed; a cell's own `using` that races this coordinates on Julia's per-package pidfile lock (it waits
-# on our compile rather than duplicating it). A warm env is a near-instant no-op — no subprocess, no banner.
+# the browser narrates "Preparing packages · precompiling k/N · <pkg>". Edits proceed; cells wait for it
+# (`_await_prepare`). They need its packages, and a cell's `using` that took the per-package precompile
+# lock first would compile them in this process, where the progress reaches no one, leaving the pass
+# here nothing to do. A warm env is a near-instant no-op — no subprocess, no banner.
 function _prepare_env!()
     projfile = try; Base.active_project(); catch; nothing; end
     projfile === nothing && return nothing
@@ -2533,29 +2547,8 @@ function _prepare_env!()
     cold || return nothing
     @info "slate prepare: env cold — precompiling in the background (one-time; narrated to the notebook)"
     tr = PrepareTracker(time())
-    # The subprocess computes the ACCURATE full-closure total (Base.isprecompiled over the manifest) and
-    # emits it as a control marker, then precompiles — its combined stdout/stderr is what we classify.
-    script = raw"""
-        using Pkg
-        try
-            need = 0
-            for (uuid, info) in Pkg.dependencies()
-                info.name in ("KaimonGate", "Revise", "ExpressionExplorer") && continue
-                pid = Base.PkgId(uuid, info.name)
-                ready = (try; Base.in_sysimage(pid); catch; false; end) || (try; Base.isprecompiled(pid); catch; true; end)
-                ready || (global need += 1)
-            end
-            println(stderr, "@@SLATE_PREP total=", need); flush(stderr)
-        catch; end
-        try
-            Pkg.precompile()
-        catch e
-            println(stderr, "@@SLATE_PREP error ", first(split(sprint(showerror, e), '\n')))
-        end
-        println(stderr, "@@SLATE_PREP done"); flush(stderr)
-    """
     out = Pipe()
-    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$proj -e $script`
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$proj -e $_PREP_SCRIPT`
     proc = try
         run(pipeline(cmd; stdout = out, stderr = out); wait = false)
     catch e
@@ -2916,6 +2909,15 @@ const _CONN_CACHE = Dict{String,Tuple{Float64,Bool}}()
 const _CONN_LOCK = ReentrantLock()
 const _CONN_TTL = 2.0
 
+# A cluster operation slower than this is logged, with what it ran.
+const _SLOW_SSHOP_S = 5.0
+function _op_what(args)
+    hasproperty(args, :script) || return ""
+    ls = [strip(l) for l in split(String(args.script), '\n')]
+    i = findfirst(l -> !isempty(l) && !startswith(l, "#") && !startswith(l, "set "), ls)
+    return i === nothing ? "" : first(ls[i], 120)
+end
+
 function _install_sshop_delegate!()
     # A long read reports on the running cell, and ends at the cell's Stop.
     Sweep.READ_HOOKS[] = (;
@@ -2938,7 +2940,11 @@ function _install_sshop_delegate!()
             @warn "slate: could not reach the hub to run a cluster operation" op exception = e
             return nothing
         end
+        t0 = time()
         r = Sweep.await_op(id; timeout = _sshop_timeout(op))
+        dt = time() - t0
+        dt > _SLOW_SSHOP_S && op !== :connect &&
+            @info "slate: a cluster operation took $(round(dt; digits = 1)) s" op host = get(args, :host, "") what = _op_what(args)
         # The hub reports a failure as a value rather than by throwing across the gate, so raise it
         # here — a cell asking for a cluster should fail with the reason, not with `nothing`.
         (r isa NamedTuple && haskey(r, :error)) && error(String(r.error))
@@ -3592,10 +3598,27 @@ _xfer_executor_task() = try; _xfer_executor!(); catch e
     @warn "slate worker: transfer executor died" exception = e
 end
 
+# Process exit closes every libuv handle, so a task asleep in `sleep` wakes with an EOFError from its
+# closed timer. That is the loop ending with the process, not a failure.
+_closed_at_exit(e) = e isa EOFError
+
 _ssh_fwd_reaper() = try
     while true; sleep(30); _ssh_fwd_reap_idle!(); end
 catch e
-    @warn "slate worker: ssh-forward reaper died" exception = e
+    _closed_at_exit(e) || @warn "slate worker: ssh-forward reaper died" exception = e
+end
+
+# The gate's shutdown hook: the hub asked this worker to exit. Julia's atexit hooks run and output is
+# flushed, then the process ends without the C runtime's exit teardown. Threads still inside native
+# code segfault when that teardown frees what they are running.
+function _exit_on_shutdown()
+    try; Base._atexit(Cint(0)); catch; end
+    try; flush(stdout); flush(stderr); catch; end
+    @static if Sys.iswindows()
+        ccall((:ExitProcess, "kernel32"), stdcall, Cvoid, (UInt32,), UInt32(0))
+    else
+        ccall(:_exit, Cvoid, (Cint,), Cint(0))
+    end
 end
 
 # Prewarm the eval path: the package image holds most of what the first run through
@@ -3645,8 +3668,20 @@ _prepare_env_task() = try; with_env_work(_prepare_env!); catch e
     @warn "slate worker: prepare pass died" exception = e
 end
 
+# Set while the boot's prepare pass runs, from before the gate opens, so no cell can start ahead of it.
+const _PREPARING = Ref{Union{Nothing,Base.Event}}(nothing)
+_await_prepare() = (ev = _PREPARING[]; ev === nothing || wait(ev); nothing)
+function _start_prepare!(ev::Base.Event)
+    try
+        _prepare_env_task()
+    finally
+        _PREPARING[] = nothing
+        notify(ev)
+    end
+end
+
 _telemetry_task(stats_path::String) = try; _telemetry_loop!(stats_path); catch e
-    @warn "slate worker: telemetry sampler died" exception = e
+    _closed_at_exit(e) || @warn "slate worker: telemetry sampler died" exception = e
 end
 
 # The worker log's logger: timestamps every record (the default logger emits none), on the stream
@@ -3736,10 +3771,12 @@ function start(; host::String = "127.0.0.1", port::Int, stream_port::Int,
     # the handshake that follows needs compiled code; while this function was still compiling the
     # tasks above, that handshake waited behind it and the hub's dial sat out its whole ping timeout.
     # Opened here, the port accepts only when the worker can answer at once.
+    prep = warm_deps ? nothing : Base.Event()
+    _PREPARING[] = prep
     _blog("start(): entering KaimonGate.serve")
     KaimonGate.serve(; mode = :tcp, host = host, port = port, stream_port = stream_port,
                      tools = tools(), force = true, allow_mirror = false,
-                     allow_restart = false, spawned_by = "slate",
+                     allow_restart = false, spawned_by = "slate", on_shutdown = _exit_on_shutdown,
                      curve = curve, allowed_clients = allowed_clients, _owner_wake_kw()...)
     _blog("start(): gate SERVING — port reachable (hub can dial now)")
     @info "slate worker: ready" port = port tools = length(tools()) revise = isdefined(Main, :Revise)
@@ -3752,8 +3789,8 @@ function start(; host::String = "127.0.0.1", port::Int, stream_port::Int,
     # Cold-env narration (attached workers; pool workers already warm via `warm_deps` above). If this
     # notebook's project isn't precompiled — the classic slow Makie open — precompile it in the background
     # NOW and stream structured progress, so a cold open reads as "Preparing packages · precompiling k/N"
-    # instead of a frozen "Running 0/N". Non-blocking; a warm env is a near-instant no-op.
-    warm_deps || Threads.@spawn _prepare_env_task()
+    # instead of a frozen "Running 0/N". Cells wait for it; a warm env is a near-instant no-op.
+    prep === nothing || Threads.@spawn _start_prepare!(prep)
     # Sample every worker — local kernels too. The `.stats` sidecar is still remote-only (empty
     # stats_path skips it), but the `slate_telemetry` PUB now flows from every worker process, so the
     # hub's watchdog can see cpu/rss/gc on a local kernel and not just remote regions.

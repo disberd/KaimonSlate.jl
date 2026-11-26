@@ -213,6 +213,8 @@ function _run_sshop(op::Symbol, a)
     op === :connect    && return S.connect!(a.host; interactive = a.interactive === true)
     op === :disconnect && return S.disconnect!(a.host)
     op === :exec       && return S.run_there(a.host, a.script; timeout = a.timeout)
+    # Only a worker on this machine shares the mirror the pass brings up to date.
+    op === :advance    && return a.machine == gethostname() && S.advance_now!(a.root; since = a.since)
     op === :io         && return S.run_io(a.host, a.script, a.input)
     op === :fetch      && return ReportEngine.fetch_viewed(a.host, a.script, a.dest, a.part;
                                                          input = a.input, name = a.name, total = a.total)
@@ -229,11 +231,13 @@ function _relay_sshop(nb::LiveNotebook, p)
     # Off the poller task: a connect waits for someone to answer a dialog, and everything else waits
     # for a cluster. Blocking here would stall every other notebook's worker events behind it.
     Threads.@spawn begin
+        t0 = time()
         res = try
             _run_sshop(Symbol(p.op), p.args)
         catch e
             (; error = first(sprint(showerror, e), 300))
         end
+        t1 = time()
         try
             ReportEngine._tool(nb.kernel, "__slate_sshop_reply",
                 Dict{String,Any}("id" => id,
@@ -241,6 +245,11 @@ function _relay_sshop(nb::LiveNotebook, p)
         catch e
             ReportEngine._rlog("cluster: could not return a result to the worker ($(first(sprint(showerror, e), 120)))")
         end
+        t2 = time()
+        # A worker's cluster operation that was slow says which half was: the cluster, or the reply.
+        (t1 - t0 > 5 || t2 - t1 > 2) && String(p.op) != "connect" &&
+            ReportEngine._rlog("cluster: $(p.op) for $(nb.id) ran $(round(t1 - t0; digits = 1)) s, " *
+                               "its reply took $(round(t2 - t1; digits = 1)) s")
     end
     return nothing
 end
@@ -403,33 +412,63 @@ end
 # with ONE reset-and-retry from the authoritative parent. The local mirror of the remote provisioner's
 # self-healing `build_env!`, and the counterpart to the worker's in-process `_seed_notebook_env!` for
 # when the worker can't run yet (a stale env would crash it at boot). Streams into the boot banner.
+#
+# All or nothing: when the rebuild fails, the fork's files are put back as they were, so the notebook
+# keeps its own packages and goes on running in the env it had, behind its project, and the next open or
+# project change tries again. What failed, or what was left out, goes to the notebook's env notice
+# (`set_env_problem!`). Returns whether the rebuild succeeded.
 function _rebuild_notebook_env!(envdir::AbstractString, parent::AbstractString; online = nothing,
                                 delta = Dict{String,Any}[])
+    say(msg) = (@warn "KaimonSlate: $msg" envdir; online === nothing || (try; online(msg); catch; end))
     # Read before the re-seed overwrites the fork's files.
     devs = ReportEngine.fork_devs(envdir, parent)
-    skipped = filter(n -> !haskey(devs, n), ReportEngine.readd_specs(delta).skipped)
-    if !isempty(skipped)
-        msg = "local checkouts not found on this machine, so not added: " * join(skipped, ", ")
-        @warn "KaimonSlate: $msg" envdir
-        online === nothing || (try; online(msg); catch; end)
-    end
+    left = ReportEngine.readd_specs(delta; base = parent)
+    notes = ReportEngine.left_out_notes(filter(n -> !haskey(devs, n), left.skipped), left.mismatched)
+    foreach(say, notes)
+    files = ("Project.toml", "Manifest.toml")
+    saved = Dict(f => read(joinpath(envdir, f)) for f in files if isfile(joinpath(envdir, f)))
+    tail = String[]   # the build's last lines, for the error it ends with
+    out = line -> (push!(tail, line); length(tail) > 40 && popfirst!(tail);
+                   online === nothing || (try; online(line); catch; end))
+    err = ""; refused = false
     build = function ()
-        pname = ReportEngine.seed_env_project!(envdir, parent)
-        dev = isempty(pname) ? "" :
+        empty!(tail)
+        pname = try
+            ReportEngine.seed_env_project!(envdir, parent)
+        catch e
+            err = sprint(showerror, e); refused = true
+            return false
+        end
+        # The develop resolves the fork. Without a parent package to develop, the resolve is explicit: the
+        # seed lists packages the copied manifest does not have (SlateExtensionsBase), and the copy can
+        # carry entries the project no longer lists, which block adding the package their UUID names.
+        dev = isempty(pname) ? "Pkg.resolve(); " :
               "Pkg.develop(Pkg.PackageSpec(path=raw\"$(parent)\"); preserve=Pkg.PRESERVE_ALL); "
-        ok = _instantiate_env!(envdir; online = online,
+        ok = _instantiate_env!(envdir; online = out,
                                code = "using Pkg; $(dev)Pkg.instantiate()" *
-                                      ReportEngine.env_add_code(delta, devs))
-        ok && ReportEngine.stamp_env!(envdir, parent)
+                                      ReportEngine.env_add_code(delta, devs; base = parent))
+        ok ? ReportEngine.stamp_env!(envdir, parent) : (err = ReportEngine.pkg_error(tail))
         return ok
     end
-    if !build()
+    ok = build()
+    if !ok && !refused
         # Reset the env + rebuild ONCE from the authoritative parent (a half-written / stale env dir
         # self-heals instead of wedging every future open — same policy as the remote provisioner).
-        for f in ("Project.toml", "Manifest.toml"); try; rm(joinpath(envdir, f); force = true); catch; end; end
-        build()
+        for f in files; try; rm(joinpath(envdir, f); force = true); catch; end; end
+        ok = build()
     end
-    return envdir
+    if !ok
+        for f in files
+            p = joinpath(envdir, f)
+            try
+                haskey(saved, f) ? write(p, saved[f]) : rm(p; force = true)
+            catch
+            end
+        end
+        say("not updated from its project: " * err)
+    end
+    ReportEngine.set_env_problem!(envdir; left_out = notes, failure = ok ? "" : "not updated from its project: " * err)
+    return ok
 end
 
 # ── A forked env follows its parent project ─────────────────────────────────────────────────────
@@ -444,12 +483,16 @@ const _FORK_LOCK = ReentrantLock()
 function _refresh_fork_env!(envdir::AbstractString, parent::AbstractString, delta; online = nothing)
     (isempty(parent) || isempty(envdir) || !isfile(joinpath(envdir, "Project.toml"))) && return false
     lock(_FORK_LOCK) do
-        ReportEngine.env_stale(envdir, parent) || return false
+        if !ReportEngine.env_stale(envdir, parent)
+            # Current again without a rebuild (the project was put back): an earlier failure is over.
+            ReportEngine.clear_env_problem!(envdir, :failure)
+            return false
+        end
         ReportEngine._rlog("fork: $(basename(envdir)) is behind its project $(basename(parent)) — re-resolving it")
         # `delta`: the re-seed comes from the PARENT, which knows nothing about what this notebook
-        # added, so its own packages have to be put back.
-        _rebuild_notebook_env!(envdir, parent; online = online, delta = delta)
-        return true
+        # added, so its own packages have to be put back. A failed rebuild leaves the fork as it was,
+        # so there is nothing new for a region worker's copy of it.
+        return _rebuild_notebook_env!(envdir, parent; online = online, delta = delta)
     end
 end
 
@@ -474,7 +517,13 @@ function _watch_fork!(nb::LiveNotebook)
     prev = get(_FORK_SEEN, nb.id, nothing)
     _FORK_SEEN[nb.id] = sig
     (prev === nothing || prev == sig) && return nothing
-    _refresh_nb_fork!(nb) || return nothing
+    before = ReportEngine.env_problem(k.envdir)
+    rebuilt = _refresh_nb_fork!(nb)
+    if rebuilt || ReportEngine.env_problem(k.envdir) != before   # the page shows the env notice
+        v = lock(nb.lock) do; nb.version += 1; end
+        try; _broadcast(nb, string(v)); catch; end
+    end
+    rebuilt || return nothing
     for rk in _nb_kernels(nb)
         (rk isa ReportEngine.GateKernel && rk.conn !== nothing && rk.target isa ReportEngine.RemoteTarget) || continue
         Threads.@spawn try
@@ -584,6 +633,7 @@ function _select_kernel(path::AbstractString, report; threads::AbstractString = 
             # Project.toml is written by the reconstruction itself, so a worker that never ran
             # leaves the env "absent" and reconstruction retries on the next open.
             mkpath(envdir)
+            ReportEngine.mark_notebook_env!(envdir, path)
             return GateKernel(envdir; parent = parent, envdir = envdir, nbdir = nbdir, pending = delta, threads = th, extra_flags = ef, dedicated_threads = dt, label = lbl, online = online)
         elseif parent == ""
             # Detached: the notebook env IS the whole world (everything is a "notebook add").
@@ -2771,6 +2821,72 @@ function _side_label(nb::LiveNotebook, side::AbstractString)
     return "$side ($(r.host))"
 end
 
+# ── What a worker does before the notebook can run on it ─────────────────────────────────────────
+# A connected worker still has setup to do before its first cell: the notebook's packages are loaded
+# there (`_prime_namespace!`, which waits on any precompile they need) and the exports of its bare
+# `using`s are read (`_run_loop!`). On a cold depot that is minutes. The stage is published with the
+# worker (`_worker_entry`), so its pill, the run status and the cells waiting behind it say what it is.
+const _SETUP = Dict{Tuple{String,String},@NamedTuple{stage::String, what::String, n::Int, cell::String, since::Float64}}()
+const _SETUP_LOCK = ReentrantLock()
+
+_setup(nb::LiveNotebook, side::AbstractString) =
+    lock(() -> get(_SETUP, (nb.id, String(side)), nothing), _SETUP_LOCK)
+
+# Run `f` with `side` in setup `stage` ("loading", "analyzing") of the packages `pkgs`, then put back
+# what was there before. `since` is kept from an enclosing stage, so the time shown is the whole setup's.
+function _with_setup(f, nb::LiveNotebook, side::AbstractString, stage::AbstractString;
+                     pkgs = String[], cell::AbstractString = "")
+    key = (nb.id, String(side))
+    before = lock(_SETUP_LOCK) do
+        b = get(_SETUP, key, nothing)
+        _SETUP[key] = (; stage = String(stage), what = _names_phrase(pkgs), n = length(pkgs), cell = String(cell),
+                       since = b === nothing ? time() : b.since)
+        b
+    end
+    try; facts_changed!(); catch; end
+    try
+        return f()
+    finally
+        lock(_SETUP_LOCK) do
+            before === nothing ? delete!(_SETUP, key) : (_SETUP[key] = before)
+        end
+        try; facts_changed!(); catch; end
+    end
+end
+
+# What the worker's pill says during a stage: short, since the pill has little room. The packages by
+# name go in the worker's note.
+function _setup_face(su)
+    su.stage == "loading" || return "analyzing imports"
+    return su.n == 1 ? "loading " * su.what : su.n > 1 ? "loading $(su.n) packages" : "loading packages"
+end
+
+# The packages a cell's `using`/`import` statements load, as written: `using A, B.C: f` → ["A", "B.C"].
+# A relative path (`using .M`) names a module of the notebook, not a package, and is left out.
+function _cell_packages(src::AbstractString)
+    top = try; Meta.parseall(src); catch; return String[]; end
+    out = String[]
+    for s in (top isa Expr && top.head === :toplevel ? top.args : Any[top])
+        (s isa Expr && s.head in (:using, :import)) || continue
+        for a in s.args
+            p = a isa Expr && a.head === :(:) ? a.args[1] : a
+            p isa Expr && p.head === :as && (p = p.args[1])
+            (p isa Expr && p.head === :. && !isempty(p.args) && p.args[1] !== :.) || continue
+            push!(out, join(string.(p.args), "."))
+        end
+    end
+    return unique!(out)
+end
+
+# "A", "A and B", "A, B and 3 more".
+function _names_phrase(names)
+    n = length(names)
+    n == 0 && return ""
+    n == 1 && return names[1]
+    n == 2 && return names[1] * " and " * names[2]
+    return names[1] * ", " * names[2] * " and " * string(n - 2) * " more"
+end
+
 # Namespace parity primer: run the notebook's pure-`using`/`import` cells on kernel `k` so a side
 # that's about to RECEIVE a boundary value can DECODE it (a DataFrame needs DataFrames loaded there,
 # an Arrow blob needs Arrow, a JLS blob needs whatever types it holds). The env is the SAME fork
@@ -2862,10 +2978,12 @@ function _prime_namespace!(nb::LiveNotebook, k, side::AbstractString)
                                    first(sprint(showerror, e), 160))
             end
             prime_src = _everywhere_replay_source(c)   # the marked statements when safe, else the whole cell
-            err = _replay_on(k, nb, prime_src, "cell:" * c.id * "#prime")
-            # Per-statement replay can fail if a marked statement referenced a cell-local name defined by
-            # an UNMARKED earlier statement — fall back to the whole cell source (always sufficient).
-            err !== nothing && prime_src != c.source && (err = _replay_on(k, nb, c.source, "cell:" * c.id * "#prime"))
+            err = _with_setup(nb, side, "loading"; pkgs = _cell_packages(prime_src), cell = c.id) do
+                e = _replay_on(k, nb, prime_src, "cell:" * c.id * "#prime")
+                # Per-statement replay can fail if a marked statement referenced a cell-local name defined
+                # by an UNMARKED earlier statement — fall back to the whole cell source (always sufficient).
+                (e !== nothing && prime_src != c.source) ? _replay_on(k, nb, c.source, "cell:" * c.id * "#prime") : e
+            end
             _note_setup!(nb, side, c.id, err)
             err === nothing && continue
             clean = false
@@ -4221,7 +4339,7 @@ function _supervise_runs!(h)   # NOTE: `Hub` is defined later (server_hub.jl, in
     # the notebooks that happen to be open. A sweep's second wave used to wait on a sweep card
     # polling, so closing the tab left the rest of a grid unsubmitted until someone came back.
     # Both of these wait on remote hosts, so they run beside the pass rather than in it.
-    _background_step!("sweep advance", ReportEngine.Sweep.advance_started!)
+    _background_step!("sweep advance", () -> ReportEngine.Sweep.advance_started!(; wait = false))
     _background_step!("region sweep driver", () -> _drive_region_sweeps!(h))   # a region sweep's chunks, on its node
     part("diag log") do                                            # a leak is only visible as a series, so write one
         line = SlateDiag.diag_log_line()
@@ -4730,6 +4848,44 @@ function _ensure_resource_on!(nb::LiveNotebook, cell::Cell, dst_k, dst_side::Abs
     return nothing
 end
 
+# (nb id, `_worker_key` of the kernel, writer cell id) whose definitions are being evaluated there now,
+# so definitions that read each other's names stop instead of recursing.
+const _REGION_DEFINING = Set{Tuple{String,UInt,String}}()
+
+# Evaluate the definitions `writer` makes (`_definitions_replay_source`) on `dst_k`, once per writer
+# source and kernel namespace. The writer's own cross-side reads, such as a global a function body
+# uses, are staged first. Recorded in `_REGION_SYNCED`, so forgetting or tearing down the kernel
+# forgets these too. Throws when the definitions fail there, so the reading cell shows why.
+function _ensure_definitions_on!(nb::LiveNotebook, writer::Cell, dst_k, dst_side::AbstractString)
+    key = string(isempty(dst_side) ? "main" : dst_side, ":#defs:", writer.id, ":g", _kgen(dst_k))
+    token = string(writer.src_hash)
+    lock(_REGION_LOCK) do; get(get(_REGION_SYNCED, nb.id, Dict{String,String}()), key, ""); end == token &&
+        return nothing
+    guard = (nb.id, _worker_key(dst_k), writer.id)
+    lock(_REGION_LOCK) do
+        guard in _REGION_DEFINING ? true : (push!(_REGION_DEFINING, guard); false)
+    end && return nothing
+    try
+        ReportEngine.prepare!(dst_k, nb.report)
+        _prime_namespace!(nb, dst_k, dst_side)
+        # Best effort, as for a prime: inference counts names a body only binds locally as reads.
+        try; _region_presync!(nb, writer, dst_k; dst_side); catch e
+            ReportEngine._rlog("region: staging the reads of $(writer.id)'s definitions on " *
+                               "$(_side_label(nb, dst_side)) failed: " * first(sprint(showerror, e), 160))
+        end
+        src = ReportEngine._definitions_replay_source(writer.source)
+        err = _replay_on(dst_k, nb, src, "cell:" * writer.id * "#defs")
+        _note_setup!(nb, dst_side, writer.id, err)
+        err === nothing || error("the definitions in cell $(writer.id) failed on " *
+                                 _side_label(nb, dst_side) * ": " * first(err, 300))
+        lock(_REGION_LOCK) do; get!(Dict{String,String}, _REGION_SYNCED, nb.id)[key] = token; end
+        ReportEngine._rlog("region: defined cell $(writer.id)'s definitions on $(_side_label(nb, dst_side))")
+    finally
+        lock(_REGION_LOCK) do; delete!(_REGION_DEFINING, guard); end
+    end
+    return nothing
+end
+
 # Which transport the region runner asks `transfer_binding!` to use for a cross-boundary value.
 # Default `:auto` — try a direct worker→worker pull (one leg) and fall back to the hub relay when
 # not viable (see WORKER_CHANNEL_SPIKE.md). `KAIMONSLATE_REGION_XFER=relay` is the kill switch (force
@@ -4846,6 +5002,12 @@ function _region_presync!(nb::LiveNotebook, cell::Cell, dst_k; dst_side::Abstrac
             end
             _source_current!(src_side, src_k)
             _ensure_resource_on!(nb, writer, dst_k, dst_side)
+            continue
+        end
+        # A function, type or method the writer defines lives in the notebook's namespace module, which
+        # the far side cannot decode a value from. Its definitions are evaluated there instead.
+        if r in ReportEngine._definition_names(writer.source)
+            _ensure_definitions_on!(nb, writer, dst_k, dst_side)
             continue
         end
         token = _transfer_token(nb, cell, writer, r, src_side, digests)
@@ -5443,6 +5605,12 @@ function _eval_one_run!(nb::LiveNotebook, cid::AbstractString, run::ReportEngine
     out.memo == "absent" && return _hold_locked!(nb, cid, run)   # restore-only, and nothing was stored
     out = _with_setup_note(out, nb, side)
     if _region_active(nb) && ReportEngine._is_pure_using(cell.source) && out.exception === nothing
+        # Its own worker is done with it, and a mirror can wait on a region's bring-up for minutes:
+        # still `:dispatched`, the orphan reconciler would find no worker running it and settle it STALE.
+        lock(nb.lock) do
+            c = _run_cell(nb, cid, run)
+            c === nothing || (run.phase = :mirroring)
+        end
         sides = Set{String}([""])
         for c in nb.report.cells
             s = _cell_region(c); isempty(s) || push!(sides, s)
@@ -5682,11 +5850,11 @@ end
 # a plot downstream of a sweep raised `UndefVarError` on every cold open, then worked when re-run by
 # hand, because by then its producer had run in the serial pass.
 #
-# MARKDOWN is excluded because the serial path renders it (static prose first, interpolating prose
-# after its deps); TOOL because it never runs automatically, so deferring its readers would strand
+# Markdown is in the batch so each prose cell renders as soon as the cells it interpolates from are
+# done. TOOL is excluded because it never runs automatically, so deferring its readers would strand
 # them rather than order them.
-_batch_cells(cells) = [c for c in cells if c.state == STALE && c.run === nothing && evaluates(c.kind) &&
-                       runs_automatically(c.kind)]
+_batch_cells(cells) = [c for c in cells if c.state == STALE && c.run === nothing && runs_automatically(c.kind) &&
+                       (evaluates(c.kind) || is_prose(c.kind))]
 
 # Build the parallel-batch scheduler specs for the cells about to run (document order). Plotting cells share
 # Makie's non-thread-safe globals (theme / current-figure / display stack), invisible to dataflow
@@ -5699,6 +5867,10 @@ function _batch_specs(code)
     # the provenance half catches aliased/re-exported plot verbs the regex can't (crash-on-miss).
     gnames = ReportEngine._graphics_export_names()
     for c in code
+        if is_prose(c.kind)   # writes nothing and draws nothing: ordered by what it reads alone
+            push!(specs, ParCell(c.id, copy(c.deps), copy(c.reads), Set{Symbol}(), false))
+            continue
+        end
         w = copy(c.writes)
         ReportEngine._is_graphics_cell(c, gnames) && push!(w, _GRAPHICS_SENTINEL)
         push!(specs, ParCell(c.id, copy(c.deps), copy(c.reads), w, (:opaque in c.flags) || _cell_defines(c)))
@@ -5706,7 +5878,7 @@ function _batch_specs(code)
     return specs
 end
 
-# Run every stale CODE cell as a PARALLEL dataflow batch. Independent cells evaluate CONCURRENTLY —
+# Run every stale cell that runs automatically as a PARALLEL dataflow batch. Independent cells evaluate CONCURRENTLY —
 # each on its own task making its own gate `__slate_eval` call (the request channel muxes them by
 # correlation id; each runs on its own worker task with task-local DemuxCapture) — while par_blockers
 # serialises any dependent/conflicting pair. Each cell goes through the SAME `_eval_one!` as the serial
@@ -5876,16 +6048,22 @@ function _run_loop!(nb::LiveNotebook)
                 isempty(paths) && continue
                 k = isempty(side) ? nb.kernel : _region_kernel_if_active(nb, side)
                 k === nothing && continue
-                ReportEngine.resolve_usings!(nb.report, k, paths) && (resolved = true)
+                _with_setup(nb, side, "analyzing"; pkgs = paths) do
+                    ReportEngine.resolve_usings!(nb.report, k, paths)
+                end && (resolved = true)
             end
-            resolved && lock(nb.lock) do; ReportEngine.rebuild_precise!(nb.report); end
             # Same pre-run phasing for macro-recovered bindings: package macros (`@kwdef`, `@enum`,
             # `@chain`, …) are expandable as soon as their modules are imported (just above), so the
             # graph + memo keys see macro-hidden writes from the FIRST eval. Notebook-defined macros
             # resolve post-drain (refine_macros! below). Round-trip outside nb.lock, like the usings.
             pending = lock(nb.lock) do; ReportEngine.pending_macro_cells(nb.report); end
-            if !isempty(pending) && ReportEngine.resolve_macros!(nb.report, nb.kernel, pending)
-                lock(nb.lock) do; ReportEngine.rebuild_precise!(nb.report); end
+            if resolved || !isempty(pending)
+                _with_setup(nb, "", "analyzing") do
+                    resolved && lock(nb.lock) do; ReportEngine.rebuild_precise!(nb.report); end
+                    if !isempty(pending) && ReportEngine.resolve_macros!(nb.report, nb.kernel, pending)
+                        lock(nb.lock) do; ReportEngine.rebuild_precise!(nb.report); end
+                    end
+                end
             end
         end
         cancelled = false

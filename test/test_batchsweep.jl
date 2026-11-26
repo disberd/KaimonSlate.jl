@@ -1206,8 +1206,289 @@ end
             @test Sweep.advance_started!(every = 0.0) == 1       # one run still has work
             @test length(BS.read_attempts(root)) == 1            # …the probe wave, and only that
             @test isempty(HUB_LOG)
+            # A cluster whose last advance is still going (a host that stopped answering) is left to it.
+            Sweep._ADVANCING["t1"][] = true
+            @test Sweep.advance_started!(every = 0.0) == 0
+            Sweep._ADVANCING["t1"][] = false
+            @test Sweep.advance_started!(every = 0.0) == 1
         end
         empty!(HUB_CLUSTERS)
+    end
+
+    @testset "a submitter and a reader of a remote mirror take its locks in one order" begin
+        # A pull holds the collector's lock and then the store's; a submitting reconcile holds the
+        # store's and then pulls. In opposite orders the two wait on each other for good.
+        t = Sweep.ClusterTarget("h"; kind = :exec, root = mktempdir(), root_remote = "/s")
+        c = Sweep.collector(t)
+        @test Sweep._with_store_lock(() -> c.pull_lk.locked_by === current_task(), t)
+        try
+            Sweep.set_delegate!() do op, a
+                op in (:connected, :connect) ? true :
+                op === :io ? (sleep(0.005); (true, UInt8[])) : error("unexpected op :$op")
+            end
+            ts = [Threads.@spawn(isodd(i) ? Sweep._with_store_lock(() -> Sweep.collect_pull!(t; force = true), t) :
+                                            Sweep.collect_pull!(t; force = true)) for i in 1:40]
+            @test timedwait(() -> all(istaskdone, ts), 30.0) === :ok
+        finally
+            Sweep.set_delegate!(nothing)
+        end
+    end
+
+    @testset "a remote mirror takes what changed since the last pull it finished" begin
+        store = mktempdir(); mirror = mktempdir()
+        for d in Sweep.META_DIRS; mkpath(joinpath(store, d)); end
+        s = Sweep.RemoteStore("h", store, mirror, "")
+        fail = Ref(false)
+        try
+            # The far side is this machine: the pull's own script, run here.
+            Sweep.set_delegate!() do op, a
+                op in (:connected, :connect) && return true
+                op === :io || error("unexpected op :$op")
+                fail[] && return (false, UInt8[])
+                return (true, read(`bash -c $(a.script)`))
+            end
+            for (d, f) in (("events", "e1"), ("manifests", "m1"), ("jobs", "j1"))
+                write(joinpath(store, d, f), "a")
+            end
+            @test Sweep.pull_meta!(s)                        # nothing here yet: everything
+            @test isfile(joinpath(mirror, "events", "e1")) && Sweep._pulled_at(s) !== nothing
+            # What changed since is sent; what is older than the last pull, less its overlap, is not.
+            old = joinpath(store, "events", "e0"); write(old, "x"); run(`touch -t 202601010000 $old`)
+            write(joinpath(store, "events", "e2"), "b")
+            @test Sweep.pull_meta!(s)
+            @test isfile(joinpath(mirror, "events", "e2")) && !isfile(joinpath(mirror, "events", "e0"))
+            # A pull that fails records nothing, so what it would have brought comes with the next.
+            at = Sweep._pulled_at(s)
+            fail[] = true; write(joinpath(store, "events", "e3"), "c")
+            @test !Sweep.pull_meta!(s) && Sweep._pulled_at(s) == at
+            fail[] = false
+            @test Sweep.pull_meta!(s) && isfile(joinpath(mirror, "events", "e3"))
+        finally
+            Sweep.set_delegate!(nothing)
+        end
+    end
+
+    @testset "a chunk whose job ended as the mirror was pulled is not launched again" begin
+        # The far side is this machine. The job's results land just after the reconcile's first pull,
+        # and the job is gone by the time the reconcile asks: the chunk looks lost until pulled again.
+        store = mktempdir()
+        pulls = Ref(0); landed = Ref(false); chunk = Ref("")
+        sh(script, input) = (out = IOBuffer();
+                             ok = success(pipeline(`bash -c $script`; stdin = input === nothing ? devnull : IOBuffer(input), stdout = out));
+                             (ok, take!(out)))
+        try
+            Sweep.set_delegate!() do op, a
+                op in (:connected, :connect) && return true
+                op === :exec && return ((ok, o) = sh(a.script, nothing); (ok, String(o)))
+                op === :io || error("unexpected op :$op")
+                res = sh(a.script, a.input)
+                if occursin("date +%s", a.script) && (pulls[] += 1) == 1 && !isempty(chunk[])
+                    SlateTask.run_chunk(store, chunk[]); landed[] = true
+                end
+                return res
+            end
+            t = Sweep.ClusterTarget("h"; kind = :exec, root_remote = store, chunk = 2,
+                                    payload = joinpath(@__DIR__, "..", "src", "slatetask.jl"))
+            r = Sweep.@sweep(Sweep.paramgrid(x = 1:2), t; submit = false) do p; p.x; end
+            root = Sweep.store_root(t)
+            c = only(BS.sweep_chunks(root, r.run))
+            # Tried once already, by a job no longer running.
+            BS.bump_attempts!(root, [c])
+            write(BS.index_path(root, BS.submission_name([c])), c * "\n")
+            BS.start!(root, r.run)
+            chunk[] = c; pulls[] = 0
+            # Pulled by the caller, so the scheduler is asked after the pull.
+            Sweep.sync_in!(t; force = true)
+            p = Sweep.reconcile_and_sync!(t, r.run, Sweep.launcher_for(t); submit = true, pulled = true)
+            @test landed[] && pulls[] >= 2
+            @test p.shards_done == 2 && isempty(p.to_submit) && BS.read_attempts(root)[c] == 1
+        finally
+            Sweep.set_delegate!(nothing)
+        end
+        empty!(HUB_CLUSTERS)
+    end
+
+    @testset "two submitters at once launch a chunk once" begin
+        # A card's poll and the hub's supervisor both submit for a started run.
+        mktempdir() do root
+            payload = joinpath(@__DIR__, "..", "src", "slatetask.jl")
+            t = Sweep.LocalTarget(; root, project = tempdir(), chunk = 2, payload)
+            r = Sweep.@sweep(Sweep.paramgrid(g = 1:4), t; submit = false) do p; (; g = p.g); end
+            BS.start!(root, r.run)
+            @sync for _ = 1:4
+                Threads.@spawn Sweep.reconcile_and_sync!(t, r.run, Sweep.launcher_for(t); submit = true)
+            end
+            @test sum(values(BS.read_attempts(root))) == 1
+        end
+        empty!(HUB_CLUSTERS)
+    end
+
+    @testset "the supervisor passes over a started run whose units have all landed" begin
+        # A store keeps a started marker for every run it ever ran, and a round's landing reopens them
+        # all. Reconciling each took the store's lock once per finished run, every pass.
+        empty!(HUB_CLUSTERS); empty!(HUB_LOG)
+        mktempdir() do root
+            payload = joinpath(@__DIR__, "..", "src", "slatetask.jl")
+            t = Sweep.LocalTarget(; root, project = tempdir(), chunk = 2, payload)
+            r = Sweep.@sweep(Sweep.paramgrid(g = 1:4), t; submit = false) do p; (; g = p.g); end
+            BS.start!(root, r.run)
+            for c in BS.sweep_chunks(root, r.run); SlateTask.run_chunk(root, c); end
+            push!(HUB_CLUSTERS, Dict{String,Any}("name" => "t1", "kind" => "exec", "host" => "",
+                                                 "root_remote" => root, "project" => tempdir(),
+                                                 "payload" => payload))
+            # Someone else holds the store's lock the whole time; a reconcile would wait on it.
+            held, release = Channel{Nothing}(1), Channel{Nothing}(1)
+            holder = Threads.@spawn Sweep.with_store_lock(() -> (put!(held, nothing); take!(release)), root)
+            take!(held)
+            took = @elapsed(n = Sweep.advance_started!(every = 0.0))
+            put!(release, nothing); wait(holder)
+            @test n == 0 && took < 5
+            @test isempty(BS.read_attempts(root))
+        end
+        empty!(HUB_CLUSTERS); empty!(HUB_LOG)
+    end
+
+    @testset "a launch does not resend what this machine already sent" begin
+        # Every round of a campaign is a launch, and each one sent the runner, checked the task
+        # environment and sent the run's descriptors over again: a round trip apiece.
+        t = Sweep.ClusterTarget("h"; kind = :exec, root = mktempdir(), root_remote = "/s")
+        Sweep._descriptors_sent!(t, "run1")
+        lock(() -> empty!(Sweep._DESC_SENT), Sweep._DESC_LOCK)        # another process, same mirror
+        @test Sweep._descriptors_were_sent(t, "run1") && !Sweep._descriptors_were_sent(t, "run2")
+        ops = Symbol[]
+        try
+            Sweep.set_delegate!() do op, a
+                push!(ops, op)
+                op in (:connected, :connect) ? true : op === :io ? (true, UInt8[]) : (true, "")
+            end
+            Sweep.provision_payload!("h", "/s/payload-test")
+            n = count(!=(:connected), ops)
+            Sweep.provision_payload!("h", "/s/payload-test")
+            @test n > 0 && count(!=(:connected), ops) == n
+        finally
+            Sweep.set_delegate!(nothing)
+        end
+    end
+
+    @testset "a worker hands a launch to the hub without pulling or sending first" begin
+        # The hub's pass pulls the store and sends the run's descriptors from the mirror both share.
+        store = mktempdir()
+        ops = Symbol[]; hub = Ref(true); asked = Float64[]
+        sh(script, input) = (out = IOBuffer();
+                             ok = success(pipeline(`bash -c $script`; stdin = input === nothing ? devnull : IOBuffer(input), stdout = out));
+                             (ok, take!(out)))
+        try
+            Sweep.set_delegate!() do op, a
+                op in (:connected, :connect) && return true
+                push!(ops, op)
+                op === :advance && (push!(asked, a.since); return hub[])
+                op === :exec && return ((ok, o) = sh(a.script, nothing); (ok, String(o)))
+                op === :io && return sh(a.script, a.input)
+                error("unexpected op :$op")
+            end
+            t = Sweep.ClusterTarget("h"; kind = :exec, root_remote = store, chunk = 2,
+                                    payload = joinpath(@__DIR__, "..", "src", "slatetask.jl"))
+            Sweep.@sweep(Sweep.paramgrid(x = 0:1), t; submit = false) do p; p.x; end   # what the host is, once
+            empty!(ops); t0 = time()
+            r = Sweep.@sweep(Sweep.paramgrid(x = 1:2), t; submit = true) do p; p.x; end
+            @test ops == [:advance]
+            @test only(asked) >= t0                 # a send needs a pass that starts after it
+            @test Sweep._hub_advance!(t; since = 5.0) && last(asked) == 5.0   # a read takes an earlier one
+            @test BS.is_started(Sweep.store_root(t), r.run)
+            # No hub keeps this cluster: the worker pulls, sends and launches for itself.
+            empty!(ops); hub[] = false
+            r = Sweep.@sweep(Sweep.paramgrid(x = 3:4), t; submit = true) do p; p.x; end
+            @test first(ops) === :advance && :io in ops
+            @test Sweep._descriptors_were_sent(t, r.run)
+        finally
+            Sweep.set_delegate!(nothing)
+        end
+    end
+
+    @testset "several scripts in one round trip come back apart" begin
+        sh(script) = (out = IOBuffer(); ok = success(pipeline(`sh -c $script`; stdout = out)); (ok, take!(out)))
+        bin = "printf '\\000\\001\\nSLATE_PART 0 9\\n'"           # binary, and a line like a header
+        ok, out = sh("echo a login banner; " * BL.framed(["echo one", bin, "echo err >&2; exit 3", "echo four"]))
+        @test ok
+        parts = BL.unframe(out, 4)
+        @test parts[1] == (true, Vector{UInt8}("one\n"))
+        @test parts[2] == (true, UInt8[0x00, 0x01, UInt8('\n'), codeunits("SLATE_PART 0 9\n")...])
+        @test parts[3] == (false, Vector{UInt8}("err\n")) && parts[4] == (true, Vector{UInt8}("four\n"))
+        # With `stop`, nothing runs after a part that failed.
+        ok, out = sh(BL.framed(["exit 1", "touch never"]; stop = true))
+        @test ok && BL.unframe(out, 2) == [(false, UInt8[]), (false, UInt8[])]
+        @test BL.unframe(UInt8[], 1) == [(false, UInt8[])]
+    end
+
+    @testset "a pass asks the scheduler and pulls in one round trip, and launches in one more" begin
+        store = mktempdir()
+        scripts = Tuple{Symbol,String}[]
+        sh(script, input) = (out = IOBuffer();
+                             ok = success(pipeline(`bash -c $script`; stdin = input === nothing ? devnull : IOBuffer(input), stdout = out));
+                             (ok, take!(out)))
+        try
+            Sweep.set_delegate!() do op, a
+                op in (:connected, :connect) && return true
+                sc = String(a.script)
+                push!(scripts, (op, sc))
+                sc = replace(sc, "nohup sh -c" => "nohup true")     # starts nothing
+                op === :exec && return ((ok, o) = sh(sc, nothing); (ok, String(o)))
+                op === :io && return sh(sc, a.input)
+                error("unexpected op :$op")
+            end
+            t = Sweep.ClusterTarget("h"; kind = :exec, root_remote = store, chunk = 2,
+                                    payload = joinpath(@__DIR__, "..", "src", "slatetask.jl"))
+            r = Sweep.@sweep(Sweep.paramgrid(x = 1:2), t; submit = false) do p; p.x; end
+            root = Sweep.store_root(t)
+            c = only(BS.sweep_chunks(root, r.run))
+            BS.start!(root, r.run)
+            empty!(scripts)
+            Sweep.reconcile_and_sync!(t, r.run, Sweep.launcher_for(t); submit = true)
+            has(sc, w...) = all(x -> occursin(x, sc), w)
+            # The scheduler and the pull, in one script.
+            ask = [sc for (op, sc) in scripts if op === :io && has(sc, "tar cf")]
+            @test length(ask) == 1 && has(ask[1], "SLATE_PART")
+            # The counts and the launch, in one script.
+            go = [sc for (op, sc) in scripts if op === :io && has(sc, "tar x", "nohup")]
+            @test length(go) == 1
+            @test count(((op, sc),) -> occursin("nohup", sc) || occursin("tar x", sc), scripts) == 1
+            @test BS.read_attempts(root)[c] == 1 && BS.read_attempts(store)[c] == 1
+            # A launch that fails on the far side puts the counts back on both sides.
+            BS.write_attempts!(root, Dict{String,Int}()); Sweep.sync_out!(t; dirs = ("jobs",))
+            rm(joinpath(root, "jobs", BS.submission_name([c]) * ".index"); force = true)
+            Sweep.set_delegate!() do op, a
+                op in (:connected, :connect) && return true
+                sc = replace(String(a.script), "nohup sh -c" => "nohup true", "cut -d' '" => "false && cut -d' '")
+                op === :exec && return ((ok, o) = sh(sc, nothing); (ok, String(o)))
+                op === :io && return sh(sc, a.input)
+                error("unexpected op :$op")
+            end
+            @test_throws ErrorException Sweep.reconcile_and_sync!(t, r.run, Sweep.launcher_for(t); submit = true)
+            @test get(BS.read_attempts(root), c, 0) == 0 && get(BS.read_attempts(store), c, 0) == 0
+        finally
+            Sweep.set_delegate!(nothing)
+        end
+    end
+
+    @testset "callers waiting on a cluster share its next pass" begin
+        # Two notebooks waiting on rounds, and the supervisor, used to pull and ask the scheduler
+        # each for themselves, taking the store's lock in turn.
+        n = Threads.Atomic{Int}(0)
+        go = Channel{Nothing}(Inf)
+        pass() = (Threads.atomic_add!(n, 1); take!(go))
+        a = Threads.@spawn Sweep._with_pass(pass, "shared")
+        timedwait(() -> n[] == 1, 10.0)
+        @test !Sweep._with_pass(pass, "shared"; block = false)      # the timer leaves it to the pass
+        since = time()
+        bc = [Threads.@spawn(Sweep._with_pass(pass, "shared"; since)) for _ in 1:2]
+        sleep(0.2)
+        @test n[] == 1                                             # they wait for the running pass…
+        put!(go, nothing); wait(a)
+        timedwait(() -> n[] == 2, 10.0)
+        put!(go, nothing)
+        @test all(fetch, bc) && n[] == 2                           # …then share the one after it
+        @test Sweep._with_pass(pass, "shared"; since = 0.0) && n[] == 2   # an older request is served
+        @test !Sweep.advance_now!(mktempdir())                     # no cluster keeps this store
     end
 
     @testset "releasing a run takes its marker with it" begin
@@ -1530,6 +1811,32 @@ end
             other = Sweep.@sweep(g, t; submit = false) do p; p.x * 4; end
             @test other.key != first_key
         end
+    end
+
+    @testset "a cell run again under a new key says what changed" begin
+        mktempdir() do root
+            t = Sweep.LocalTarget(; root, project = tempdir(), chunk = 2,
+                                  payload = joinpath(@__DIR__, "..", "src", "slatetask.jl"))
+            g = Sweep.paramgrid(x = 1:2)
+            r1 = Sweep.run_sweep(t, g, "p -> p.x * a"; captures = Dict(:a => 1), cell = "fit")
+            @test Sweep.rekeyed(root, r1.run) === nothing                 # the cell's first run
+            BS.start!(root, r1.run)
+            r2 = Sweep.run_sweep(t, g, "p -> p.x * a"; captures = Dict(:a => 2), cell = "fit")
+            rk = Sweep.rekeyed(root, r2.run)
+            @test rk.previous == r1.run && rk.what == ["`a`"]
+            @test occursin(r1.run, Sweep._rekey_html(root, r2.run))
+            @test Sweep._find_run(root, r1.run[3:12]) == r1.run           # as the Sweeps panel shows it
+            # An unstarted run is dropped when the cell moves on, so the comparison is with the last
+            # run that went out.
+            r3 = Sweep.run_sweep(t, g, "p -> p.x * a + 0"; captures = Dict(:a => 2), cell = "fit")
+            @test Sweep.rekeyed(root, r3.run).what == ["the body", "`a`"]
+            # Another cell's runs are not this one's history.
+            o = Sweep.run_sweep(t, g, "p -> p.x"; cell = "other")
+            @test Sweep.rekeyed(root, o.run) === nothing
+        end
+        @test Sweep.key_change(Dict("env" => "e1", "sources" => Dict("A" => "1", "B" => "1")),
+                               Dict("env" => "e2", "sources" => Dict("A" => "1", "B" => "2"))) == ["B's source"]
+        @test Sweep.key_change(Dict("env" => "e1"), Dict("env" => "e2")) == ["the environment"]
     end
 
     @testset "only genuinely free names are captured" begin
@@ -2593,6 +2900,50 @@ end
         end
     end
 
+    @testset "every launch of a task keeps its own log" begin
+        mktempdir() do root
+            t = Sweep.LocalTarget(; root, project = tempdir(), chunk = 2,
+                                  payload = joinpath(@__DIR__, "..", "src", "slatetask.jl"))
+            r = Sweep.@sweep(Sweep.paramgrid(x = 1:2), t; submit = false) do p; p.x; end
+            mkpath(joinpath(root, "logs")); mkpath(BS.jobs_dir(root))
+            chunks = BS.sweep_chunks(root, r.run)
+            name = BS.submission_name(chunks)
+            write(BS.index_path(root, name), join(chunks, "\n") * "\n")
+            a = joinpath(root, "logs", "$(name).100_1.log")
+            b = joinpath(root, "logs", "$(name).200_1.log")
+            write(a, "first try\n"); write(b, "second try\n")
+            byp = Dict(f.path => f for f in Sweep.log_files(t, r.run))
+            @test byp[a].attempt == 1 && !byp[a].current && byp[a].pid == 0 && !byp[a].running
+            @test byp[b].attempt == 2 && byp[b].current
+            out = Sweep.logs(t, r.run)
+            @test occursin("first try", out) && occursin("second try", out)
+            @test occursin("try 1 of 2", out) && occursin("try 2 of 2", out)
+            @test findfirst("first try", out) < findfirst("second try", out)
+
+            # The task logger colours a record's head. Plain-text reads drop the codes, and a
+            # literal search matches a phrase that crosses one.
+            write(b, "\e[36m\e[1m┌ \e[22m\e[39m\e[36m\e[1mInfo 16:07:03.538: \e[22m\e[39mchunk began\n")
+            @test occursin("┌ Info 16:07:03.538: chunk began", Sweep.logs(t, r.run))
+            @test !occursin('\e', Sweep.logs(t, r.run))
+            @test rstrip(Sweep.log_tail(t, r.run, b)) == "┌ Info 16:07:03.538: chunk began"
+            s = Sweep.log_search(t, r.run, b, "Info 16:07:03.538: chunk")
+            @test s.total == 1 && s.hits[1].text == "┌ Info 16:07:03.538: chunk began"
+            @test Sweep.log_search(t, r.run, b, "┌ info"; ignorecase = true).total == 1
+            @test Sweep.log_search(t, r.run, b, "a.b(").total == 0     # metacharacters stay literal
+
+            # The far side reads every file in one command, quoting each path.
+            sh = sc -> (true, read(`sh -c $sc`, String))
+            odd = joinpath(root, "logs", "it's here.log"); write(odd, "x\ny\n")
+            got = BL._remote_log_tails(sh, [a, odd, joinpath(root, "nope.log")], 1)
+            @test got[a] == "first try\n" && got[odd] == "y\n" && got[joinpath(root, "nope.log")] == ""
+            # The local launcher names each launch apart.
+            l = BL.ExecLauncher(; maxproc = 1)
+            spec = BL.JobSpec("slate-x", ["c"]; root, project = "", payload = "", command = "true")
+            BL.submit!(l, spec); sleep(0.01); BL.submit!(l, spec)
+            @test count(f -> startswith(f, "slate-x."), readdir(joinpath(root, "logs"))) == 2
+        end
+    end
+
     @testset "a healthy log does not read as a failing one" begin
         # The runner's own success line is "N ran, 0 skipped, 0 failed of N". Matching the bare word
         # `failed` painted the most common line in a healthy log the colour of the thing you are
@@ -3116,6 +3467,15 @@ end
             html = sprint(show, MIME"text/html"(), Sweep.refresh!(r))
             @test occursin("data-sw='chart'", html)
             @test occursin("\"data\":[1,2,3,4]", html)
+
+            # Shown inside another card it is a section of that card: no frame or chart, only the
+            # controls a host does not own, and a poll that reads the run without advancing it.
+            hosted = sprint(show, MIME"text/html"(), r; context = :sweep_hosted => true)
+            @test startswith(hosted, "<div data-sweep='$(r.run)' data-sw-hosted='1' style='font-family:inherit;color:var(--text,#d4d8e8);'>")
+            @test !occursin("data-sw='chart'", hosted) && occursin("data-sw-allow='logs'", hosted)
+            @test occursin("data-sw-do='reset'", html) && !occursin("data-sw-do='reset'", hosted)
+            @test occursin("advance: false", hosted) && occursin("var hosted = true", hosted)
+            @test occursin("window.slateSweeps && !hosted", hosted)
         end
     end
 

@@ -732,6 +732,37 @@ _mknb(src) = NS.LiveNotebook("deck", "/tmp/slidetest.jl", RE.parse_report(src),
         @test cap43 ≈ 0.7 atol = 0.01
     end
 
+    @testset "a slide taller than the page starts below the top margin" begin
+        # The fit shrinks the text of a tall body. The title must not start above the page.
+        # `typst query` reads the page position of a marker at the start of the title.
+        plain = try
+            NS.export_pdf(_mknb("#%% md id=s\n## One\n\nplain\n"); layout = "slides")
+        catch
+            nothing
+        end
+        if plain === nothing
+            @info "tall slide centring check skipped (typst unavailable)"
+            @test true
+        else
+            mark = "<!--raw-typst #context { let p = here().position(); " *
+                   "[#metadata((y: p.y.pt())) <slidetop>] }-->"
+            items = join(("- item $i" for i in 1:15), "\n")
+            dir = NS._build_slides_project(_mknb("#%% md id=s\n## $mark Tall\n\n$items\n"))
+            try
+                out = IOBuffer()
+                query(exe) = run(pipeline(`$exe query --root $dir $(joinpath(dir, "doc.typ")) "<slidetop>" --field value`;
+                                          stdin = devnull, stdout = out, stderr = devnull))
+                sys = Sys.which("typst")
+                sys === nothing ? NS.Typst_jll.typst(query) : query(sys)
+                pos = JSON.parse(String(take!(out)))
+                @test length(pos) == 1
+                @test pos[1]["y"] >= 12 * 72 / 25.4 - 1       # the title is not above the 12 mm top margin
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        end
+    end
+
     # The block kinds in the PDF (the `draw` dictionary of the slides preamble, the handlers of the
     # document preamble). A mark inside a paragraph records the text size there.
     @testset "block kinds in the PDF: paint, a template draw function, an unknown key" begin

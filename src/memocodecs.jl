@@ -59,6 +59,57 @@ function _raw_header(io::IO)
     error("raw codec: bad magic")
 end
 
+# Serialization that carries a notebook's closures with their code. Julia's serializer does that only
+# for anonymous functions in `Main`, and writes any other by its generated name, which exists only in
+# the process that made it. A notebook's namespace is a module under `Main`, so a value holding a
+# closure made there (an option `rows -> …`, a field a macro filled) could be decoded nowhere else.
+# The standard deserializer reads both forms.
+mutable struct _SlateSerializer{I<:IO} <: Serialization.AbstractSerializer
+    io::I
+    counter::Int
+    table::IdDict{Any,Any}
+    pending_refs::Vector{Int}
+    known_object_data::Dict{UInt64,Any}
+    version::Int
+    _SlateSerializer(io::I) where {I<:IO} =
+        new{I}(io, 0, IdDict(), Int[], Dict{UInt64,Any}(), Serialization.ser_version)
+end
+
+function Serialization.should_send_whole_type(s::_SlateSerializer, t::DataType)
+    invoke(Serialization.should_send_whole_type, Tuple{Any,DataType}, s, t) && return true
+    tn = t.name
+    mod = tn.module
+    (mod !== Main && Base.moduleroot(mod) === Main) || return false
+    (t.super === Function && startswith(String(tn.name), "#")) || return false
+    # A named function's type is hidden too, but it is reached by its name.
+    name = tn.singletonname
+    return !isdefined(mod, name) || t != typeof(getglobal(mod, name))
+end
+
+# A closure that builds another closure in its body names the inner one's type in its code, by a
+# global reference into the notebook's module. Written as a name it would fail in another process,
+# so the type itself is sent, as the standard serializer does for references into `Main`.
+function Serialization.serialize(s::_SlateSerializer, g::GlobalRef)
+    mod = g.mod
+    if mod !== Main && Base.moduleroot(mod) === Main && isdefined(mod, g.name) && isconst(mod, g.name)
+        v = getglobal(mod, g.name)
+        unw = Base.unwrap_unionall(v)
+        if unw isa DataType && v === unw.name.wrapper && Serialization.should_send_whole_type(s, unw)
+            Serialization.writetag(s.io, Serialization.FULL_GLOBALREF_TAG)
+            Serialization.serialize(s, v)
+            return
+        end
+    end
+    invoke(Serialization.serialize, Tuple{Serialization.AbstractSerializer,GlobalRef}, s, g)
+end
+
+function _serialize(io::IO, v)
+    s = _SlateSerializer(io)
+    Serialization.writeheader(s)
+    Serialization.serialize(s, v)
+    return nothing
+end
+
 "The manifest codec for `v` (restore-mode `zc` never affects the pick, only the decode)."
 function _codec_pick(v)
     _rawable(v) && return "raw"
@@ -87,7 +138,7 @@ function _codec_encode(io::IO, codec::String, v)
     elseif codec == "arrow"
         _codec_loaded("Arrow").write(io, v)          # pure IPC bytes — see header comment
     else
-        Serialization.serialize(io, v)
+        _serialize(io, v)
     end
     return nothing
 end

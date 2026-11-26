@@ -93,7 +93,8 @@ export standalone!
 One computation of one cell, from the runner picking the cell up to its result being merged.
 
 `phase` is `:preparing` until the cell is handed to a worker (a region's bring-up, the namespace
-prime and the input transfer all happen first) and `:dispatched` after. A result is accepted only
+prime and the input transfer all happen first) and `:dispatched` after. A pure `using` cell's run
+is then `:mirroring` while the import is replayed on the notebook's other sides. A result is accepted only
 from the run that is still the cell's (`cell.run === run`), so a restart, a replaced worker or a
 superseded edit drops the late answer instead of overwriting newer state.
 
@@ -104,7 +105,7 @@ mutable struct Run
     id::String
     src_hash::UInt64          # the source this run computes
     side::String              # "" = the main kernel, else the region; set when the cell is routed
-    phase::Symbol             # :preparing | :dispatched
+    phase::Symbol             # :preparing | :dispatched | :mirroring
     rerun::Bool
     stop_at::Float64
     started::Float64
@@ -641,6 +642,9 @@ implicit content after a header is taken as that explicit cell's verbatim body.)
 """
 function parse_report(text::AbstractString; id::AbstractString = "r", title::AbstractString = "")
     report = Report(id, title)
+    # A CRLF file (a Windows checkout under `core.autocrlf`) reads as LF. A kept `\r` ends every line,
+    # so the `@md` skin no longer unwraps and each cell's source differs from the editor's copy.
+    text = replace(text, "\r\n" => "\n")
     # Lift out Slate's footer blocks (`# ╔═╡ Slate.<kind>` … `# ╚═╡`) before cell parsing, so their
     # comment lines aren't taken for a markdown cell. Slate writes them last, but each block is removed
     # wherever it sits and every other line is kept: an edit that appends a cell after them, by hand or
@@ -730,9 +734,22 @@ function parse_report(text::AbstractString; id::AbstractString = "r", title::Abs
         tags = Symbol[]
     end
 
+    # Inside a prose cell's `@md"""…"""` skin every line is body, so prose that shows a `#%%` line (a
+    # notebook's own syntax, in a code block) is not taken for a header. The skin never holds `"""`
+    # (`_cell_source`), so its first `"""` line closes it.
+    inskin = false
     for line in view(lines, firsthdr:length(lines))
+        if inskin
+            push!(body, line)
+            line == "\"\"\"" && (inskin = false)
+            continue
+        end
         m = match(_HEADER, line)
-        if m !== nothing                  # explicit header → start a new explicit cell
+        if m === nothing && is_prose(kind) && had_header && all(l -> isempty(strip(l)), body) &&
+           occursin(r"^@md(?: raw)?\"\"\"$", line)
+            push!(body, line)
+            inskin = true
+        elseif m !== nothing              # explicit header → start a new explicit cell
             flush!()
             kind, cid, ctrls, tags = _parse_header(m.captures[1]; format, changes)
             rawhdr = String(strip(m.captures[1]))

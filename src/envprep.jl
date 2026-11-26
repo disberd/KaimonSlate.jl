@@ -10,7 +10,7 @@
 #     whose SDK is a `[sources]` path dep),
 #   • FINGERPRINT the parent so a later parent change (a dep added, a re-resolve) is detected as
 #     stale and the fork rebuilt — the robustness the remote path already had and the local didn't.
-import Pkg   # Pkg.TOML only
+import Pkg   # Pkg.TOML, registry lookups and project validation; never a resolve
 
 # ── workspace-aware project/manifest resolution ───────────────────────────────
 # A project listed in an ancestor's `[workspace] projects` has NO manifest of its own — the whole
@@ -41,6 +41,16 @@ function project_file_in(dir::AbstractString)
 end
 
 _same_dir(a, b) = try; samefile(a, b); catch; normpath(abspath(a)) == normpath(abspath(b)); end
+
+"""
+    is_fork(envdir, parent) -> Bool
+
+Whether `envdir` is a forked notebook env of `parent`: both set and not the same directory. An env
+that IS its parent (an app installed from a bundle runs in the project it shipped) is never seeded,
+stamped, or refreshed from it.
+"""
+is_fork(envdir::AbstractString, parent::AbstractString) =
+    !isempty(envdir) && !isempty(parent) && !_same_dir(envdir, parent)
 
 "The ancestor project file whose `[workspace] projects` lists `projectfile`'s dir, or `\"\"`."
 function workspace_parent(projectfile::AbstractString)
@@ -252,29 +262,6 @@ function _inherit_workspace!(seed::AbstractDict, projectfile::AbstractString)
     return seed
 end
 
-"""
-    add_installed_first!(specs)
-
-`Pkg.add(specs)` into the active project, choosing among the versions this depot already holds when
-those satisfy it. They are, as a rule, already compiled, so a notebook that adds a package goes on
-sharing compiled code with the notebooks beside it instead of pulling in the newest release of every
-dependency it touches. A normal resolve follows when nothing installed will do.
-"""
-function add_installed_first!(specs)
-    isempty(specs) && return nothing
-    was = Pkg.OFFLINE_MODE[]
-    try
-        Pkg.offline(true)
-        Pkg.add(deepcopy(specs))
-        return nothing
-    catch
-    finally
-        Pkg.offline(was)
-    end
-    Pkg.add(specs)
-    return nothing
-end
-
 const _SEB_UUID = "bc31d39e-4442-48fa-b9ae-1bd99fed63f7"
 
 """
@@ -345,6 +332,90 @@ function _require_worker_seb!(seed::AbstractDict)
 end
 
 """
+    registered_name(uuid) -> Union{String,Nothing}
+
+The name a reachable registry records for `uuid`, or `nothing` when no registry here knows it (a
+private package, an unregistered one, or a machine whose registries can't be read).
+"""
+function registered_name(uuid, regs = _registries())
+    u = tryparse(Base.UUID, string(uuid))
+    u === nothing && return nothing
+    try
+        for r in regs
+            haskey(r, u) && return String(r[u].name)
+        end
+    catch
+    end
+    return nothing
+end
+
+_registries() = try; Pkg.Registry.reachable_registries(); catch; []; end
+
+"""
+    name_uuid_mismatches(entries) -> Vector{String}
+
+For `name => uuid` pairs, a description of each whose UUID a registry records under a different
+name: `"GLMakie = 13f3f980-… (CairoMakie's UUID)"`. Pkg accepts such a pair without complaint and
+writes it into the project and manifest, after which the package that UUID really belongs to can no
+longer be added. A UUID no registry here knows is not reported.
+"""
+function name_uuid_mismatches(entries; regs = nothing)
+    out = String[]
+    for (name, uuid) in entries
+        regs === nothing && (regs = _registries())
+        reg = registered_name(uuid, regs)
+        (reg === nothing || reg == String(name)) && continue
+        push!(out, "$name = $uuid ($(reg)'s UUID)")
+    end
+    return out
+end
+
+"""
+    check_project_file(projectfile)
+
+Throws when the project at `projectfile` cannot be forked: what Pkg rejects when it reads the file
+(a `[compat]` entry naming a package the project does not list, say), or a package listed under the
+UUID of a differently-named registered package. Run before a fork is seeded from the project, so the
+error names the project's own file rather than the fork's copy of it.
+"""
+function check_project_file(projectfile::AbstractString)
+    f = abspath(projectfile)
+    try
+        Pkg.Types.read_project(f)
+    catch e
+        e isa Pkg.Types.PkgError && rethrow()
+    end
+    t = _toml(f)
+    entries = Pair{String,String}[]
+    for sect in ("deps", "weakdeps", "extras")
+        s = get(t, sect, nothing)
+        s isa AbstractDict && append!(entries, (String(k) => string(v) for (k, v) in s))
+    end
+    bad = name_uuid_mismatches(entries)
+    isempty(bad) || error("$f lists " * join(bad, "; "))
+    return nothing
+end
+
+"""
+    pkg_error(lines) -> String
+
+The error a Pkg subprocess ended with, from the last lines of its output: the `ERROR:` line and what
+follows it up to the stacktrace.
+"""
+function pkg_error(lines)
+    # A subprocess started with `--color=yes` (a CI runner's flags carry over) colours the `ERROR:`.
+    lines = filter(!isempty, [String(strip(replace(l, r"\e\[[0-9;]*[A-Za-z]" => ""))) for l in lines])
+    i = findlast(l -> startswith(l, "ERROR:"), lines)
+    i === nothing && return isempty(lines) ? "the build failed" : last(lines)
+    msg = String[strip(chopprefix(lines[i], "ERROR:"))]
+    for l in @view lines[i+1:end]
+        (startswith(l, "Stacktrace") || startswith(l, "[")) && break
+        isempty(l) || push!(msg, l)
+    end
+    return join(msg, " ")
+end
+
+"""
     seed_env_project!(envdir, parent) -> parent_pkg_name
 
 Write a forked env's `Project.toml` (the parent's `[deps]`+`[compat]`+`[sources]`, with dev paths
@@ -354,12 +425,17 @@ the parent as the resolution baseline (path deps absolutised). PURE files — th
 isn't a package).
 """
 function seed_env_project!(envdir::AbstractString, parent::AbstractString)
+    # The seed is a nameless fork project. Written over the parent itself it would erase the
+    # package's own `name`/`uuid`, and with them `using Parent`.
+    (isempty(parent) || is_fork(envdir, parent)) ||
+        error("refusing to seed a notebook env into its own parent project: $parent")
     mkpath(envdir)
     ppf = project_file_in(parent)
     if isempty(ppf)
         write(joinpath(envdir, "Project.toml"), "")
         return ""
     end
+    check_project_file(ppf)
     pdir = dirname(abspath(ppf))
     pt = _toml(ppf)
     seed = Dict{String,Any}()
@@ -441,20 +517,51 @@ function sync_fork_preferences!(envdir::AbstractString, parent::AbstractString)
 end
 
 """
-    readd_specs(delta; pinned = false) -> (; devs, adds, skipped)
+    footer_origin(dir, base = "") -> String
+
+How the footer records checkout `dir`: relative to the notebook's project `base` when it is inside it,
+so the footer holds wherever the project is cloned; else `~/…` under the home directory, for anyone
+who keeps it at the same place; else as it is. `origin_dir` reads it back.
+"""
+function footer_origin(dir::AbstractString, base::AbstractString = "")
+    root = isempty(base) ? "" : joinpath(abspath(base), "")
+    !isempty(root) && startswith(joinpath(dir, ""), root) && return relpath(dir, root)
+    home = homedir()
+    startswith(dir, home * "/") ? "~" * dir[ncodeunits(home)+1:end] : String(dir)
+end
+
+"""
+    origin_dir(origin, base = "") -> String
+
+A footer's checkout path as a directory on this machine: `~/…` under the home directory, a relative
+path under the notebook's project `base` (a checkout inside the project is recorded relative to it,
+so the footer holds wherever the project is cloned), an absolute path as it is.
+"""
+function origin_dir(origin::AbstractString, base::AbstractString = "")
+    p = expanduser(origin)
+    isabspath(p) || isempty(base) ? abspath(p) : normpath(joinpath(abspath(base), p))
+end
+
+"""
+    readd_specs(delta; pinned = false, base = "") -> (; devs, adds, skipped, mismatched)
 
 `Pkg.PackageSpec` keyword sets that re-create a notebook's OWN packages (its `Slate.env` records)
 after a re-seed, each the way it was added: a local checkout (`source = "path"`) is developed from
 its path, a git package (`"git"`) is added from its `url#rev`, and any other package is added by
 name and uuid. A checkout whose path does not exist on this machine goes to `skipped`, so the rest
-still install.
+still install. A relative checkout path is under `base`, the notebook's project (see `origin_dir`).
+
+A registry record whose UUID a registry files under another name (a footer edited by hand, the name
+changed and the UUID left) is not added: Pkg would install it under the wrong name, and the package
+that UUID belongs to could then not be added. Its description goes to `mismatched`.
 
 Seeding rebuilds a fork from its PARENT, which knows nothing about what the notebook added, so every
 rebuild path re-adds these afterwards. A registry package is left to resolve unless `pinned`: its
 recorded version would fight the parent's fresh resolution, which is the thing that just changed.
 """
-function readd_specs(delta; pinned::Bool = false)
-    devs = NamedTuple[]; adds = NamedTuple[]; skipped = String[]
+function readd_specs(delta; pinned::Bool = false, base::AbstractString = "")
+    devs = NamedTuple[]; adds = NamedTuple[]; skipped = String[]; mismatched = String[]
+    regs = nothing   # read once, on the first record that needs them
     for e in (delta isa AbstractVector ? delta : ())
         e isa AbstractDict || continue
         f(k) = string(get(e, k, get(e, Symbol(k), "")))
@@ -462,31 +569,34 @@ function readd_specs(delta; pinned::Bool = false)
         isempty(nm) && continue
         src = f("source"); origin = f("origin")
         if src == "path" && !isempty(origin)
-            dir = abspath(expanduser(origin))
+            dir = origin_dir(origin, base)
             isdir(dir) ? push!(devs, (; name = nm, path = dir)) : push!(skipped, nm)
         elseif src == "git" && !isempty(origin)
             url, rev = (split(origin, '#'; limit = 2)..., "")
             push!(adds, isempty(rev) ? (; url = String(url)) : (; url = String(url), rev = String(rev)))
         else
             uu = f("uuid"); v = f("version")
+            isempty(uu) || regs !== nothing || (regs = _registries())
+            bad = isempty(uu) ? String[] : name_uuid_mismatches((nm => uu,); regs)
+            isempty(bad) || (append!(mismatched, bad); continue)
             s = isempty(uu) ? (; name = nm) : (; name = nm, uuid = uu)
             pinned && !isempty(v) && (s = merge(s, (; version = v)))
             push!(adds, s)
         end
     end
-    return (; devs, adds, skipped)
+    return (; devs, adds, skipped, mismatched)
 end
 
 """
-    env_add_code(delta, devs = Dict()) -> String
+    env_add_code(delta, devs = Dict(); base = "") -> String
 
 Pkg code that re-adds the notebook's own packages (`readd_specs`) after a re-seed, for a rebuild
 that runs in a subprocess. `devs` (name => path, from [`fork_devs`](@ref)) are the checkouts the
 fork had developed. They are read from the fork itself, so for those packages they win over the
 footer's record. Checkouts are developed first, so a package that depends on one resolves against it.
 """
-function env_add_code(delta, devs::AbstractDict = Dict{String,String}())
-    s = readd_specs(delta)
+function env_add_code(delta, devs::AbstractDict = Dict{String,String}(); base::AbstractString = "")
+    s = readd_specs(delta; base)
     spec(t) = "Pkg.PackageSpec(" * join(("$k=$(repr(v))" for (k, v) in pairs(t)), ", ") * ")"
     paths = sort!(collect(String, values(devs)))
     for d in s.devs
@@ -624,10 +734,11 @@ end
     env_stale(envdir, parent) -> Bool
 
 A forked env is STALE if the parent has changed since it was seeded (or it was never stamped) — the
-trigger to rebuild it before booting a worker. Always `false` for a parentless (detached) notebook.
+trigger to rebuild it before booting a worker. Always `false` when `envdir` is not a fork
+([`is_fork`](@ref)): a parentless (detached) notebook, or an env that is the parent project itself.
 """
 function env_stale(envdir::AbstractString, parent::AbstractString)
-    isempty(parent) && return false
+    is_fork(envdir, parent) || return false
     sf = _env_stamp_file(envdir)
     isfile(sf) || return true
     return strip(read(sf, String)) != env_parent_fingerprint(parent)

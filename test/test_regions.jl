@@ -1189,6 +1189,26 @@ end
                 end
             end
 
+            @testset "a using cell mirroring to a region coming up is not an orphan" begin
+                # Its own kernel finished it and runs nothing; the mirror waits on the region's bring-up.
+                rep = RE.parse_report("#%% code id=u\nusing LinearAlgebra\n#%% code id=c region=gpu\n1\n")
+                nb = NS.LiveNotebook("mirror", joinpath(mktempdir(), "mirror.jl"), rep, RE.GateKernel(mktempdir()), 1,
+                                     String[], String[], ReentrantLock(), Channel{String}[],
+                                     ReentrantLock(), "", false, Dict{String,String}())
+                u = rep.cells[1]
+                run = RE.begin_run!(u)
+                run.phase = :mirroring; run.dispatched = time() - 60
+                try
+                    for _ in 1:3
+                        NS._LAST_RUNNING[nb.id] = (Set{String}(), Set(["local"]), Set(["local", "gpu"]))
+                        NS._reconcile_nb_runs!(nb)
+                    end
+                    @test u.run === run && run.misses == 0
+                finally
+                    delete!(NS._LAST_RUNNING, nb.id)
+                end
+            end
+
             @testset "closing does not wait on a worker still starting" begin
                 # A close finds the kernel's lock held (a spawn in progress) and returns at once; the
                 # ending happens once the lock is free. A restart still waits, so it starts fresh.
@@ -2383,6 +2403,74 @@ end
         end
     end
 
+    @testset "a machine's test task is read back from the file its launcher wrote" begin
+        # Each launcher names its output its own way (`.log` for exec, `.out` with the array id for a
+        # scheduler); the test asks the launcher rather than guessing, so a plain machine passes too.
+        mktempdir() do dir
+            env = mkpath(joinpath(dir, "env"))
+            write(joinpath(env, "Project.toml"), "")
+            jl = Base.julia_cmd()[1]
+            t = RE.Sweep.ClusterTarget(""; kind = :exec, root = dir, prologue = "export PATH=$(dirname(jl)):\$PATH")
+            # An earlier test of the same environment left its output; the new one is what is read.
+            mkpath(joinpath(dir, "logs"))
+            old = joinpath(dir, "logs", "slate-test-$(RE.Sweep.env_key(t)).0.log")
+            write(old, "stale"); run(`touch -t 202501010000 $old`)
+            measured = Dict{String,Any}()
+            st, detail = RE._batch_test!(t, env, measured, _ -> nothing; every = 0.5)
+            @test st in ("ok", "warn") && haskey(measured, "precompile_s") && occursin("precompiled", detail)
+        end
+    end
+
+    @testset "a hub-resolved sweep runs its developed packages as they are at submit" begin
+        mktempdir() do dir
+            home = mkpath(joinpath(dir, "home"))
+            pkg(name, uuid, body; deps = Pair{String,String}[], sources = "") = begin
+                d = mkpath(joinpath(dir, name, "src"))
+                write(joinpath(d, "$name.jl"), "module $name\n$body\nend\n")
+                write(joinpath(dir, name, "Project.toml"), "name = \"$name\"\nuuid = \"$uuid\"\nversion = \"0.1.0\"\n" *
+                      (isempty(deps) ? "" : "[deps]\n" * join(("$n = \"$u\"" for (n, u) in deps), "\n") * "\n") * sources)
+                dirname(d)
+            end
+            u1, u2 = "6e0b2a52-5c43-4c84-9f39-6d9e3c6a0f01", "6e0b2a52-5c43-4c84-9f39-6d9e3c6a0f02"
+            dev2 = pkg("Dev2", u2, "g() = 10")
+            dev1 = pkg("Dev1", u1, "using Dev2\nf() = 1 + Dev2.g()"; deps = ["Dev2" => u2],
+                       sources = "[sources]\nDev2 = {path = \"$(dev2)\"}\n")
+            fork = mkpath(joinpath(dir, "fork"))
+            write(joinpath(fork, "Project.toml"), "[deps]\nDev1 = \"$u1\"\n\n[sources]\nDev1 = {path = \"$(dev1)\"}\n")
+            jl = Base.julia_cmd()[1]
+            depot = join(DEPOT_PATH, ':')
+            run(`$jl --startup-file=no --project=$fork -e 'import Pkg; Pkg.resolve()'`)
+            # The machine's shared environment, as a prepare left it.
+            shared = mkpath(joinpath(home, RE.Sweep.shared_env(fork)))
+            cp(joinpath(fork, "Project.toml"), joinpath(shared, "Project.toml"))
+            cp(joinpath(fork, "Manifest.toml"), joinpath(shared, "Manifest.toml"))
+            setup = "export PATH=$(dirname(jl)):\$PATH; "
+            withenv("HOME" => home, "JULIA_DEPOT_PATH" => depot) do
+                cd(home) do
+                    load(rel) = readchomp(`$jl --startup-file=no --project=$(joinpath(home, rel)) -e 'using Dev1; print(Dev1.f())'`)
+                    v1 = RE.Sweep.batch_env!("", fork; setup)
+                    # Named as the sweep key names its environment (`env_key`).
+                    @test v1 == RE.Sweep.shared_env(fork) * ".batch/" * first(RE.Sweep.env_source_fingerprint(fork), 12)
+                    @test load(v1) == "11"
+                    # Both the environment and the copy's own `[sources]` point at the copies.
+                    @test occursin(joinpath(home, v1, "devsrc", "Dev1"), read(joinpath(home, v1, "Manifest.toml"), String))
+                    @test occursin(joinpath(home, v1, "devsrc", "Dev2"),
+                                   read(joinpath(home, v1, "devsrc", "Dev1", "Project.toml"), String))
+                    # Unchanged sources: the same snapshot, not built again.
+                    write(joinpath(home, v1, "marker"), "")
+                    @test RE.Sweep.batch_env!("", fork; setup) == v1 && isfile(joinpath(home, v1, "marker"))
+                    # An edit makes a new snapshot; the one a running sweep uses keeps its code.
+                    write(joinpath(dev2, "src", "Dev2.jl"), "module Dev2\ng() = 20\nend\n")
+                    v2 = RE.Sweep.batch_env!("", fork; setup)
+                    @test v2 != v1 && load(v2) == "21" && load(v1) == "11"
+                    rm(shared; recursive = true)
+                    write(joinpath(dev2, "src", "Dev2.jl"), "module Dev2\ng() = 30\nend\n")
+                    @test_throws "prepare the machine" RE.Sweep.batch_env!("", fork; setup)
+                end
+            end
+        end
+    end
+
     @testset "a remote program's colours reach the activity only" begin
         @test RE._strip_ansi("\e[32m  ✓ \e[39mJSON \e[90m[682c06a0]\e[39m") == "  ✓ JSON [682c06a0]"
         @test RE._strip_ansi("no colour here") == "no colour here"
@@ -2747,7 +2835,22 @@ end
             # A listener that throws must not break disconnecting — that would strand the session.
             ST.on_drop!((_, _) -> error("boom"))
             @test ST._announce_drop("login") === nothing
+            # Retrying a host that refused is no drop: that session never signed in, so carried nothing.
+            empty!(saw)
+            ST.on_drop!((h, died) -> push!(saw, "$h:$died"))
+            key = "slate-test-unresolvable.invalid"
+            failed(signed_in) = (s = ST.Session(ST.resolve(key), Cint(-1), C_NULL, Channel{Any}(1), nothing,
+                                                 ST.Prompter(key), false, "refused", ST.Fwd[]);
+                                 s.signed_in = signed_in; s)
+            ask = (_, _, _) -> nothing
+            for signed_in in (false, true)
+                lock(() -> (ST._SESSIONS[key] = failed(signed_in)), ST._REG_LOCK)
+                ST.session(key; ask)
+                timedwait(() -> !isempty(saw), signed_in ? 5.0 : 0.5)
+            end
+            @test saw == ["$key:true"]
         finally
+            try; ST.disconnect!("slate-test-unresolvable.invalid"); catch; end
             ST._ON_DROP[] = prev
         end
 

@@ -158,6 +158,21 @@ const RE = KaimonSlate.ReportEngine
             # A machine that names its own julia puts that directory first instead of juliaup's.
             j = RE.machine_setup(RE.Machine("pm", "hpc1", :slurm, "", "/opt/julia/bin/julia", "", ""))
             @test occursin("'/opt/julia/bin':", j) && !occursin("juliaup", j)
+            # The hub's version, once a prepare added it with juliaup, is asked for by channel; a
+            # machine naming its own julia is not.
+            RE.host_facts_merge!("hpc1", Dict{String,Any}("julia_channel" => "1.13.4"))
+            @test occursin("export JULIAUP_CHANNEL='1.13.4'", RE.machine_setup(m))
+            @test !occursin("JULIAUP_CHANNEL", RE.machine_setup(RE.Machine("pm", "hpc1", :slurm, "", "/opt/julia/bin/julia", "", "")))
+            # The version a host reports, recorded at a prepare and compared at every start, is that
+            # same channel's, on the host and on a node reached through it.
+            lock(() -> (RE._VIA["hpc1-nid1"] = (host = "hpc1", job = "1", kind = :slurm)), RE._VIA_LOCK)
+            try
+                @test startswith(RE._host_state_script("env"; host = "hpc1"), "export JULIAUP_CHANNEL='1.13.4'\n")
+                @test startswith(RE._julia_channel_sh("hpc1-nid1"), "export JULIAUP_CHANNEL='1.13.4'")
+                @test RE._julia_channel_sh("elsewhere") == "" && !occursin("JULIAUP", RE._host_state_script("env"))
+            finally
+                lock(() -> delete!(RE._VIA, "hpc1-nid1"), RE._VIA_LOCK)
+            end
             RE.host_facts_set!("hpc1", Dict{String,Any}())
             @test RE.machine_setup(RE.Machine("", "box", :exec, "", "", "", "")) ==
                   "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; "
@@ -236,6 +251,60 @@ const RE = KaimonSlate.ReportEngine
                 write(joinpath(env, "Manifest.toml"), "julia_version = \"$VERSION\"\n")
                 @test RE._env_fingerprint(env, "i") != fp1
             end
+        end
+
+        @testset "a package from a registry only this machine reaches travels as a developed one" begin
+            uuid = "00000000-0000-0000-0000-00000000000a"; tree = "4d09a6cf483cc8aa823f0999ee04051d38147069"
+            manifest = """
+                [[deps.Local]]
+                git-tree-sha1 = "$tree"
+                registries = "Mine"
+                uuid = "$uuid"
+                version = "0.2.0"
+
+                [[deps.Shared]]
+                git-tree-sha1 = "d470f5891d50dc1145ce0dfbe535eaa5e9118b3e"
+                registries = "General"
+                uuid = "00000000-0000-0000-0000-00000000000b"
+                version = "1.0.0"
+
+                [registries.General]
+                url = "https://github.com/JuliaRegistries/General.git"
+                uuid = "23338594-aafe-5451-b93e-139f81909106"
+
+                [registries.Mine]
+                url = "file:///Users/someone/registries/Mine.git"
+                uuid = "00000000-0000-0000-0000-00000000000c"
+                """
+            depot = mktempdir()
+            src = joinpath(depot, "packages", "Local", Base.version_slug(Base.UUID(uuid), Base.SHA1(tree))); mkpath(src)
+            mktempdir() do env
+                write(joinpath(env, "Manifest.toml"), manifest)
+                pushfirst!(DEPOT_PATH, depot)
+                try
+                    @test RE.Sweep.local_registry_deps(joinpath(env, "Manifest.toml")) == ["Local" => src]
+                finally
+                    popfirst!(DEPOT_PATH)
+                end
+            end
+            # where it lands: a path entry like a developed package's, the registry it came from gone
+            home = mktempdir(); proj = mkpath(joinpath(home, "env"))
+            write(joinpath(proj, "Manifest.toml"), manifest); write(joinpath(proj, "Project.toml"), "[deps]\nLocal = \"$uuid\"\n")
+            withenv("HOME" => home) do
+                Base.include_string(Module(), RE.Sweep.devpaths_script("env", [("Local", "devsrc/Local")]))
+            end
+            m = RE.Sweep.TOML.parsefile(joinpath(proj, "Manifest.toml")); e = only(m["deps"]["Local"])
+            @test e["path"] == joinpath(home, "devsrc/Local") && !haskey(e, "git-tree-sha1") && !haskey(e, "registries")
+            @test collect(keys(m["registries"])) == ["General"] && haskey(only(m["deps"]["Shared"]), "git-tree-sha1")
+        end
+
+        @testset "a failed run is reported by its error, not its start" begin
+            out = "   Resolving package versions...\n" * repeat("  [1234abcd] + Pkg v1\n", 100) *
+                  "ERROR: LoadError: Unsatisfiable requirements detected\nStacktrace:\n [1] resolve"
+            @test startswith(RE._failure_of(out, 60), "ERROR: LoadError: Unsatisfiable")
+            @test length(RE._failure_of(out, 60)) == 60
+            @test RE._failure_of(repeat("a", 50) * " the end", 7) == "…the end"
+            @test RE._failure_of("short", 100) == "short"
         end
 
         @testset "batch tasks start in their machine's shell" begin

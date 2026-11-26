@@ -607,8 +607,20 @@ function _ssh_julia!(host, code::AbstractString, what::AbstractString; stream::B
     end
     ok, out = _run_on(String(host), script; timeout = _JULIA_SCRIPT_TIMEOUT, online = tap)
     out = _strip_ansi(out)                 # callers parse it and show it in a step's detail
-    ok || _rlog("FAILED: $what\n    out: $(first(strip(out), 1200))")
+    ok || _rlog("FAILED: $what\n    out: $(_failure_of(out, 1200))")
     return (ok, out)
+end
+
+"""
+    _failure_of(out, n) -> String
+
+What a failed run's output says went wrong, at most `n` characters: from its first `ERROR` line, where
+Julia and Pkg report it after everything they printed on the way, or else the output's end.
+"""
+function _failure_of(out::AbstractString, n::Integer)
+    s = strip(out)
+    i = findfirst(r"^ERROR"m, s)
+    i === nothing ? (length(s) <= n ? String(s) : "…" * last(s, n)) : first(s[first(i):end], n)
 end
 
 # Every remote `julia` call goes through this PATH prefix. juliaup installs its launcher shim at
@@ -634,7 +646,7 @@ function _ensure_julia!(host; version::AbstractString = "", setup::AbstractStrin
         # gate) and Manifest resolution can differ across Julia versions. `juliaup add $ver` fixes it.
         m = match(r"(\d+\.\d+\.\d+)", out)
         m !== nothing && m.captures[1] != ver &&
-            _rlog("provision: $host runs Julia $(m.captures[1]) but the hub runs $ver — version skew (Serialization/Manifest may differ); run `juliaup add $ver && juliaup default $ver` on $host to match")
+            _rlog("provision: $host runs Julia $(m.captures[1]) but the hub runs $ver — version skew (Serialization/Manifest may differ); preparing the machine adds $ver with juliaup when it has it")
         return true
     end
     # A compute node shares its home directory with the login node it is reached through, so Julia is
@@ -1331,10 +1343,12 @@ end
 # Everything a start needs to know about the host, read in ONE command. On a scheduler node each
 # command is a job step, and a step costs seconds to create, so asking piecemeal cost more than most
 # of what it asked about. `projrel` is the worker env ($HOME-relative); "" leaves the env lines out.
+# `host` is where it runs, for the Julia version it reports (`_julia_channel_sh`).
 function _host_state_script(projrel::AbstractString = ""; stamp::AbstractString = "$projrel/$_ENV_STAMP",
-                            held::AbstractString = "")
+                            held::AbstractString = "", host::AbstractString = "")
     q(p) = (startswith(p, "/") || startswith(p, "~/")) ? Sweep.shq_path(p) : "\"\$HOME/\"" * Sweep.shq(p)
     io = IOBuffer()
+    isempty(host) || print(io, _julia_channel_sh(host))
     print(io, _STAMP_SCRIPT)
     # Touched as it is read, so the version in use is never the one an old-version prune removes.
     println(io, "echo \"runtime=\$(test -f ", q(_runtime_dir() * "/" * _RUNTIME_READY), " && touch -c ",
@@ -1361,7 +1375,7 @@ end
 # `nothing` when the host did not answer.
 function _host_state(host::AbstractString, projrel::AbstractString = ""; stamp::AbstractString = "$projrel/$_ENV_STAMP",
                      held::AbstractString = "")
-    ok, out = _run_on(String(host), _host_state_script(projrel; stamp, held))
+    ok, out = _run_on(String(host), _host_state_script(projrel; stamp, held, host))
     ok || return nothing
     return _parse_probe(out)
 end
@@ -1563,7 +1577,7 @@ function _provision_remote!(t::RemoteTarget, parent_project::AbstractString; pre
         ok, out = _ssh_julia!(host, _env_repair_script(rel; precompile, held_file = _env_held_path(t), stamp = had),
                               "instantiate on $host"; stream = true, online = _bringup_note, setup = t.setup)
         scripted = ok
-        ok || (_rlog("provision [3/3] instantiating on $host failed, building: " * first(strip(out), 140)); built = true)
+        ok || (_rlog("provision [3/3] instantiating on $host failed, building: " * _failure_of(out, 400)); built = true)
     end
     if !built
         repair || (_rlog("provision [3/3] environment unchanged on $host" *
@@ -2211,11 +2225,11 @@ function _replicate_env!(t::RemoteTarget; precompile::Bool = true, stamp::Abstra
                           "instantiate on $host"; stream = true, online = _bringup_note, setup = t.setup)
     ok, out = inst(merged !== nothing)
     if !ok && merged !== nothing
-        _rlog("env: instantiating the combined environment on $host failed, resolving: " * first(strip(out), 300))
+        _rlog("env: instantiating the combined environment on $host failed, resolving: " * _failure_of(out, 600))
         put_own!()
         ok, out = inst(false)
     end
-    ok || error("env: instantiate failed on $host — $(first(strip(out), 500))")
+    ok || error("env: instantiate failed on $host — $(_failure_of(out, 900))")
     return nothing
 end
 
@@ -2296,7 +2310,7 @@ function _infra_ref!(t::RemoteTarget, julia::AbstractString)
                 end
                 _run_on(_host_for_files(host), _versions_prune_sh("$_REMOTE_WORKER/infra", key))
             else
-                _rlog("provision [3/3] resolving Slate's packages on $host failed: " * first(strip(out), 300))
+                _rlog("provision [3/3] resolving Slate's packages on $host failed: " * _failure_of(out, 600))
             end
         end
         got === nothing || lock(() -> (_INFRA_REF[ck] = got), _INFRA_REF_LOCK)
@@ -6585,7 +6599,7 @@ end
 # job step that costs seconds to create. `nothing` when the host did not answer.
 function _start_survey(host::AbstractString, projrel::AbstractString; stamp::AbstractString = "$projrel/$_ENV_STAMP")
     ok, txt = try
-        _run_on(String(host), _host_state_script(projrel; stamp) * "echo '" * _SURVEY_SPLIT * "'\n" *
+        _run_on(String(host), _host_state_script(projrel; stamp, host) * "echo '" * _SURVEY_SPLIT * "'\n" *
                               _busy_ports_sh() * "\n" * _workers_probe_sh())
     catch
         (false, "")

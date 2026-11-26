@@ -46,6 +46,13 @@ mean(data)
         @test r.cells[1].source == "x = 1"
     end
 
+    @testset "parse: CRLF reads as LF" begin
+        lf = "#%% md id=intro\n@md\"\"\"\n# Hello\n\nsome text\n\"\"\"\n\n#%% code id=a\nx = 1\ny = 2\n"
+        r = parse_report(replace(lf, "\n" => "\r\n"))
+        @test [c.source for c in r.cells] == ["# Hello\n\nsome text", "x = 1\ny = 2"]
+        @test serialize_report(r) == serialize_report(parse_report(lf))
+    end
+
     @testset "hybrid: pure-Literate input (# = md, bare = code)" begin
         literate = """
         # # Title
@@ -247,6 +254,26 @@ mean(data)
         @test length(s.devs) == 1 && s.devs[1].path == abspath("./local")
         @test s.labels == ["Foo", "Bar@1.2", "https://github.com/x/Y.jl#main", "./local"]
         @test ReportEngine._pkg_apply("add", " , ")["ok"] == false            # nothing named
+    end
+
+    @testset "the parent project takes the same ops as the notebook env" begin
+        RE = ReportEngine
+        before = Base.active_project()
+        parent = mktempdir(); write(joinpath(parent, "Project.toml"), "")
+        # Offline: `update` would otherwise refresh registries. Naming a non-dependency fails in Pkg,
+        # which shows the op was dispatched rather than refused.
+        was = RE.Pkg.OFFLINE_MODE[]
+        RE.Pkg.offline(true)
+        r = try
+            redirect_stderr(devnull) do
+                RE._pkg_parent_now("update", ["NotADependency"], parent)
+            end
+        finally
+            RE.Pkg.offline(was)
+        end
+        @test r["ok"] == false && !occursin("unknown op", r["message"])
+        @test RE._pkg_parent_now("frobnicate", ["Foo"], parent)["message"] == "unknown op 'frobnicate'"
+        @test Base.active_project() == before
     end
 
     @testset "a load that waits for environment work waits until it ends" begin
@@ -452,6 +479,19 @@ end
         end
         # Legacy files written with the plain skin still read, whatever they contain.
         @test parse_report("#%% md id=m\n@md\"\"\"\nlegacy\n\"\"\"\n").cells[1].source == "legacy"
+    end
+
+    # Prose that shows a notebook's own syntax, a `#%%` line in a code block, stays one cell.
+    @testset "a header line inside the skin is prose" begin
+        md = "A bibliography cell:\n\n```\n#%% md id=kb bibliography\nhttps://kb.example.org\n```\n\nThen cite it."
+        rq = ReportEngine.Report("r", "")
+        push!(rq.cells, ReportEngine.Cell("m", MARKDOWN, md))
+        push!(rq.cells, ReportEngine.Cell("c", CODE, "x = 1"))
+        s = serialize_report(rq)
+        back = parse_report(s)
+        @test [c.id for c in back.cells] == ["m", "c"]
+        @test back.cells[1].source == md
+        @test serialize_report(back) == s
     end
 end
 

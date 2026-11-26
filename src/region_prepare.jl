@@ -100,6 +100,16 @@ echo "julia=$(PATH="$HOME/.juliaup/bin:$PATH" julia --version 2>/dev/null)"
 MODULES_LINE
 """, "MODULES_LINE" => _MODULES_LINE)
 
+# Run before a script that reads `julia --version` on `host`: the juliaup channel a prepare chose there
+# for the hub's version (`_use_hub_julia!`), so the script reads the Julia workers run rather than the
+# user's default. A node takes its login host's. Every reading of the version, recorded or compared,
+# goes through this, or the two disagree on such a machine.
+function _julia_channel_sh(host::AbstractString)
+    v = via(host)
+    ch = String(get(host_facts(v === nothing ? String(host) : v.host), "julia_channel", ""))
+    return isempty(ch) ? "" : "export JULIAUP_CHANNEL=" * Sweep.shq(ch) * "\n"
+end
+
 _stamps_of(facts::AbstractDict) = Dict{String,Any}(
     "julia" => get(facts, "julia", ""),
     "modules" => join(sort(split(get(facts, "modules", ""))), " "))
@@ -497,6 +507,9 @@ function _site_steps!(step, host::AbstractString, m, facts; own::AbstractString 
         if isempty(m.julia)
             _ensure_julia!(host; version = ok ? out : "") || return ("fail", "no working julia after the install; see remote.log")
             ok || ((ok, out) = _run_on(host, machine_setup(m) * "julia --version"))
+            v = ok ? match(r"(\d+\.\d+\.\d+)", out) : nothing
+            (v !== nothing && v.captures[1] != string(VERSION) && _use_hub_julia!(host, m)) &&
+                ((ok, out) = _run_on(host, machine_setup(m) * "julia --version"))
         end
         ok || return ("fail", strip(out))
         v = match(r"(\d+\.\d+\.\d+)", out)
@@ -504,7 +517,7 @@ function _site_steps!(step, host::AbstractString, m, facts; own::AbstractString 
             ("warn", "$(strip(out)), the hub runs $VERSION: results and environments may not carry across")
     end
     step("Read the site") do
-        ok, out = _run_on(host, _PROBE_SCRIPT)
+        ok, out = _run_on(host, _julia_channel_sh(host) * _PROBE_SCRIPT)
         ok || return ("fail", first(strip(out), 300))
         merge!(facts, Dict("host" => _parse_probe(out)))
         h = facts["host"]
@@ -530,6 +543,18 @@ function _site_steps!(step, host::AbstractString, m, facts; own::AbstractString 
                d * (isempty(m.depot) ? " (scratch)" : ""))
     end
     return signed
+end
+
+# A machine whose juliaup runs another version than the hub: the hub's is added there and recorded,
+# and `machine_setup` asks for it by channel. Results and environments then carry across, and the
+# user's default stays theirs. `false` when there is no juliaup or the version would not install.
+function _use_hub_julia!(host::AbstractString, m)
+    ver = string(VERSION)
+    _run_on(host, machine_setup(m) * "juliaup add " * ver; timeout = 1800.0)   # fails when already added
+    ok, out = _run_on(host, machine_setup(m) * "JULIAUP_CHANNEL=" * ver * " julia --version")
+    (ok && occursin(ver, out)) || return false
+    host_facts_merge!(host, Dict{String,Any}("julia_channel" => ver))
+    return true
 end
 
 # The shell a prepare's own Julia runs in on a host of `r`: the machine's setup, which already carries
@@ -590,7 +615,7 @@ function _prepare_on_node!(r::Region, step, facts, measured, ref; keep_node::Boo
     pro = _region_prologue(r.name)
     try
         step("Read the node") do
-            ok, out = _run_on(node, _PROBE_SCRIPT)
+            ok, out = _run_on(node, _julia_channel_sh(r.host) * _PROBE_SCRIPT)
             ok || return ("fail", first(strip(out), 300))
             nf = _parse_probe(out)
             facts["node"] = nf
@@ -821,7 +846,7 @@ function readiness_check!(t::RemoteTarget; seen = nothing)
     want = get(hf, "stamps", nothing)
     (want isa AbstractDict && !isempty(want)) || return nothing
     if seen === nothing
-        ok, out = _run_on(t.ssh_host, _STAMP_SCRIPT)
+        ok, out = _run_on(t.ssh_host, _julia_channel_sh(r.host) * _STAMP_SCRIPT)
         ok || return nothing
         seen = _parse_probe(out)
     end

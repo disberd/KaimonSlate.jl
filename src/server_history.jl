@@ -196,13 +196,17 @@ _pkg_manageable(k::InProcessKernel) = !isempty(k.envdir) || !isempty(k.projectdi
 # `{name, version, uuid}` — the set difference active − parent − parent-package. Shared by
 # the package viewer's "notebook" group and the `.jl` reproducibility footer.
 function _notebook_adds(nb::LiveNotebook)
+    # `ok = false` distinguishes a FAILED env probe from a genuinely detached notebook (both
+    # `detached = true`) — so a failure can't be read as "no packages" and wipe the footer. The probe
+    # fails by throwing, or by answering with an `error`: an environment whose manifest is out of step
+    # with its project reads as no packages at all.
+    failed = (adds = Dict{String,Any}[], parent = Dict{String,Any}[], parentpath = "", detached = true, ok = false)
     info = try
         ReportEngine.env_info(nb.kernel, nb.report)
     catch
-        # `ok = false` distinguishes a FAILED env probe from a genuinely detached notebook (both
-        # `detached = true`) — so a transient failure can't be read as "no packages" and wipe the footer.
-        return (adds = Dict{String,Any}[], parent = Dict{String,Any}[], parentpath = "", detached = true, ok = false)
+        return failed
     end
+    isempty(string(get(info, :error, ""))) || return failed
     pdeps = info.parent === nothing ? Dict{String,Any}[] : info.parent.deps
     pnames = Set(string(get(d, "name", "")) for d in pdeps)
     info.parent === nothing || push!(pnames, info.parent.name)
@@ -218,14 +222,11 @@ end
 
 # One footer record. A local checkout or git package also records where it came from, so a rebuild
 # can develop or clone it again instead of looking its name up in a registry.
-function _env_record(d)
+function _env_record(d; base::AbstractString = "")
     r = Dict{String,Any}("name" => string(get(d, "name", "")), "version" => string(get(d, "version", "")),
                          "uuid" => string(get(d, "uuid", "")))
     src = string(get(d, "source", "registry")); origin = string(get(d, "origin", ""))
-    # A checkout under the home directory is recorded `~/…`, so the footer holds for anyone who keeps
-    # it at the same place.
-    home = homedir()
-    src == "path" && startswith(origin, home * "/") && (origin = "~" * origin[ncodeunits(home)+1:end])
+    src == "path" && (origin = ReportEngine.footer_origin(origin, base))
     src in ("path", "git") && !isempty(origin) && (r["source"] = src; r["origin"] = origin)
     return r
 end
@@ -237,7 +238,11 @@ function _refresh_env_meta!(nb::LiveNotebook)
     # nb.lock (protocol), then apply the change + persist under the lock. Sole caller: `notebook_pkg_op!`.
     info = _notebook_adds(nb)
     info.ok || return nb   # env probe failed transiently — leave the footer as-is rather than wiping it
-    env = Dict{String,Any}[_env_record(d) for d in info.adds]
+    env = Dict{String,Any}[_env_record(d; base = info.parentpath) for d in info.adds]
+    # The footer is about to be written from the env, so footer packages a rebuild left out are gone from it.
+    let k = nb.kernel
+        k isa ReportEngine.GateKernel && !isempty(k.envdir) && ReportEngine.clear_env_problem!(k.envdir, :left_out)
+    end
     @report_op nb report begin
         cur = get(report.meta, "env", Dict{String,Any}[])
         changed = if isempty(env)
@@ -967,7 +972,11 @@ function _bib_source_html(io::IO, s, nbid::AbstractString)
         site = something(match(r"^https?://[^/?#]+"i, s.name), (match = s.name,)).match
         print(io, "<div class=\"bibcard-file bibcard-remote\" data-url=\"", esc(r.url), "\"><a href=\"", esc(site),
               "\" target=\"_blank\" rel=\"noopener\"><code>", esc(replace(site, r"^https?://"i => "")), "</code></a>")
-        if r.status in (:signin, :denied)
+        if r.status == :signin && r.oauth
+            # A site that offers signing in (see bib_remote.jl) is signed in to; no token to paste.
+            print(io, "<span class=\"bibcard-warn\">", esc(r.message), "</span>",
+                  "<button class=\"bibcard-btn\" onclick=\"bibSignin(this)\">Sign in</button>")
+        elseif r.status in (:signin, :denied)
             print(io, "<span class=\"bibcard-warn\">", esc(r.message), "</span>",
                   "<button class=\"bibcard-btn\" onclick=\"bibToken(this)\">", r.status == :signin ? "Add token" : "Replace token", "</button>")
         elseif r.status == :error
@@ -1023,24 +1032,24 @@ end
 # A live `[@fig:label]` cross-reference → an HTML link that scrolls to the figure and shows "Figure N".
 _fig_link_emit(num, anchor) =
     string("<a class=\"figref\" href=\"#cell-", replace(String(anchor), "\"" => ""), "\">Figure ", num, "</a>")
-# Fallback bracket-cite emit for the live view when the notebook has NO bibliography: reconstruct the
-# original `[@key]` literally so a stray citation isn't turned into a Typst sentinel (§c§…) on screen.
-_cite_literal(key, sup, _form) = isempty(strip(sup)) ? string("[@", key, "]") : string("[@", key, ", ", strip(sup), "]")
+# Fallback cite emit for the live view when the notebook has NO bibliography: the citation as it was
+# written, so a stray one isn't turned into a Typst sentinel (§c§…) on screen.
+function _cite_literal(cites, form)
+    one(c) = isempty(strip(c.sup)) ? string("@", c.key) : string("@", c.key, ", ", strip(c.sup))
+    return form == "p" ? join(one.(cites), " ") : string("[", join(one.(cites), "; "), "]")
+end
 
+# A live citation group in the notebook's bibstyle (`_cite_text`), each key's part a link to the
+# bibliography cell with the entry as its tooltip.
 function _cite_link_emit(ctx)
     esc = _esc   # shared HTML-escape (server_hub) — same &<>" mapping
-    return (key, sup, _form) -> begin
-        core = get(ctx.labels, String(key), String(key))
-        inner = isempty(strip(sup)) ? core : string(core, ", ", strip(sup))
-        text = string(ctx.open, inner, ctx.close)
-        href = isempty(ctx.anchor) ? "" : " href=\"#cell-$(esc(ctx.anchor))\""
-        string("<a class=\"cite\"", href, " title=\"", esc(get(ctx.tips, String(key), String(key))),
-               "\">", esc(text), "</a>")
-    end
+    href = isempty(ctx.anchor) ? "" : " href=\"#cell-$(esc(ctx.anchor))\""
+    link(key, text) = string("<a class=\"cite\"", href, " title=\"", esc(get(ctx.tips, key, key)), "\">", esc(text), "</a>")
+    return (cites, form) -> _cite_text(ctx.fmt, cites, form; wrap = link)
 end
 # Live-citation context from the notebook's :bibliography cells — the anchor cell, per-key tooltips,
-# per-key in-text label (a number for numeric styles, an author-year string otherwise), the
-# numeric flag, and (numeric only) the card numbers. `nothing` when the notebook has no bibliography.
+# the style's labels (`fmt`, see `_cite_labels`), and the first-citation numbers. `nothing` when the
+# notebook has no bibliography.
 function _bib_link_ctx(nb)
     bi = bibliography_index(nb.report, dirname(abspath(nb.path)); nb)
     isempty(bi) && return nothing
@@ -1048,10 +1057,8 @@ function _bib_link_ctx(nb)
     anchor = idx === nothing ? "" : nb.report.cells[idx].id
     tips = Dict{String,String}(e.key => strip(join(filter(!isempty, [e.author, e.title]), " · ")) for e in bi)
     style = get(nb.report.meta, "bibstyle", "ieee")
-    numeric = _is_numeric_style(style)
     numbers = citation_numbers(nb.report, Set(e.key for e in bi))
-    (; labels, open, close) = _cite_labels(style, bi, numbers)
-    return (anchor = anchor, tips = tips, labels = labels, numeric = numeric, numbers = numbers, open = open, close = close)
+    return (; anchor, tips, numbers, numeric = _is_numeric_style(style), fmt = _cite_labels(style, bi, numbers))
 end
 
 # A SESSION-BOUND (live) output — one whose HTML is a view onto state that lives in the WORKER, e.g. a
@@ -1211,9 +1218,10 @@ function cell_json(c::Cell, bindref::Dict{String,Tuple{Cell,BindSpec}} = Dict{St
         d["bibCount"] = length(es)
         labs, by = Dict{String,String}(), e -> 0
         if bibctx !== nothing
-            labs = Dict{String,String}(k => string(bibctx.open, v, bibctx.close) for (k, v) in bibctx.labels
+            fmt = bibctx.fmt
+            labs = Dict{String,String}(k => string(fmt.open, v, fmt.close) for (k, v) in fmt.labels
                                        if haskey(bibctx.numbers, k))
-            by = bibctx.numeric ? (e -> get(bibctx.numbers, e.key, typemax(Int))) : (e -> lowercase(get(bibctx.labels, e.key, e.key)))
+            by = bibctx.numeric ? (e -> get(bibctx.numbers, e.key, typemax(Int))) : (e -> lowercase(get(fmt.labels, e.key, e.key)))
         end
         d["output"] = _bib_card_html(srcs, es, nbid, cited, labs; by)  # card instead of raw BibTeX
     end
@@ -1312,6 +1320,9 @@ end
 # reactive heart of @bind). A group cell's blast radius is by cell id, which is
 # conservative (touches readers of any of its vars) but never under-invalidates.
 function set_bind!(nb::LiveNotebook, id::AbstractString, name::AbstractString, value)
+    # A value parsed from JSON (a form's object, from the page or the tool) is made of the JSON
+    # library's types, which a worker without that library cannot receive.
+    value = _plainify(value)
     idx = findfirst(c -> c.id == id, nb.report.cells)
     idx === nothing && return nb
     cell = nb.report.cells[idx]
@@ -1519,6 +1530,17 @@ function _worker_entry(nb::LiveNotebook, side::AbstractString, k)
             end)
             # Started by the region's prepare for this notebook, which loads its packages before handing it over.
             (code == "bringup" && !isempty(side) && _env_preparing(nb, side)) && (d["face"] = "preparing")
+        elseif (su = _setup(nb, side)) !== nothing
+            # Connected, but the notebook can't run here yet: its packages are loading. Not "ok" until
+            # they have, since a cell asked to run now waits for them. Ahead of the busy check, which a
+            # package load sets off.
+            d["status"] = "connecting"
+            d["noteCode"] = "setup"
+            d["setupStage"] = su.stage
+            d["setupWhat"] = su.what
+            d["setupCell"] = su.cell
+            d["setupSince"] = round(su.since; digits = 1)
+            d["face"] = _setup_face(su)
         elseif (busy = get(_KERNEL_BUSY_SINCE, k, nothing)) !== nothing
             d["noteCode"] = "busy_no_reply"
             d["busySince"] = round(Float64(busy); digits = 1)
@@ -1759,6 +1781,14 @@ end
 # array and each touched cell are copied rather than written to.
 function _annotate_running!(nb::LiveNotebook, meta::AbstractDict)
     meta["now"] = time()
+    # The run under way, if any. Its start is announced once (`runbatch:`), and an open announces it
+    # before the page that shows it has connected: without this, a page saw nothing of the run until
+    # a cell started, which after a long package load reads as a notebook doing nothing.
+    since = lock(_RUNNER_LOCK) do
+        get(_RUNNERS, nb.id, false) ? get(_RUNNER_STARTED, nb.id, nothing) : nothing
+    end
+    since === nothing ||
+        (meta["run"] = Dict{String,Any}("pending" => _pending_count(nb.report), "since" => round(since; digits = 2)))
     live = _live_snapshot!(nb)
     (isempty(live) || !haskey(meta, "cells")) && return meta
     cells = meta["cells"] = Any[c for c in meta["cells"]]
@@ -1907,6 +1937,14 @@ function state_json(nb::LiveNotebook)
     # Whether the notebook has citation keys: `[@` then asks the hub for them (`/api/{id}/bibkeys`).
     bibctx === nothing || (meta["hasBib"] = true)
     haskey(nb.report.meta, "hydrate_error") && (meta["hydrateError"] = nb.report.meta["hydrate_error"])
+    # What the last rebuild of the notebook's env could not do (`set_env_problem!`): the worker runs, but
+    # in an env behind its project or without some of the notebook's packages.
+    let k = nb.kernel
+        if k isa ReportEngine.GateKernel && !isempty(k.envdir)
+            p = ReportEngine.env_problem(k.envdir)
+            isempty(p) || (meta["envProblem"] = p)
+        end
+    end
     # Package-declared front-end scripts (SlateExtensionsBase manifest → `_refresh_extensions!`). The
     # browser injects each `<script>` once (deduped by id) so a package's widget renderer / editor
     # extension registers with no boot cell (see `_frontend_scripts`, view.js `injectFrontendScripts`).

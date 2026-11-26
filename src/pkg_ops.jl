@@ -90,7 +90,7 @@ function _pkg_apply_now(o, tokens)
             return Dict{String,Any}("ok" => true, "message" => "updated $(join(tokens, ", "))")
         elseif o == "add"
             s = _pkg_add_specs(tokens)
-            add_installed_first!(s.adds)    # envprep.jl: reuse versions this depot already holds
+            isempty(s.adds) || Pkg.add(s.adds)
             isempty(s.devs) || Pkg.develop(s.devs)
             return Dict{String,Any}("ok" => true, "message" => "added $(join(s.labels, ", "))")
         else
@@ -99,6 +99,28 @@ function _pkg_apply_now(o, tokens)
     catch e
         return Dict{String,Any}("ok" => false, "message" => sprint(showerror, e))
     end
+end
+
+"""
+    _pkg_parent_now(op, tokens, parent) -> Dict("ok", "message")
+
+`_pkg_apply_now` against the notebook's parent project at `parent`, then back in the notebook's env,
+which is re-resolved so it picks up the change (the fork dev-refs the parent, so a resolve pulls it
+through). The active project is restored even on error.
+"""
+function _pkg_parent_now(o, tokens, parent)
+    cur = try; dirname(Pkg.project().path); catch; ""; end
+    r = try
+        Pkg.activate(parent)
+        _pkg_apply_now(o, tokens)
+    catch e
+        Dict{String,Any}("ok" => false, "message" => sprint(showerror, e))
+    finally
+        isempty(cur) || (try; Pkg.activate(cur); catch; end)
+    end
+    # Best-effort: the operation itself already succeeded.
+    get(r, "ok", false) && !isempty(cur) && (try; Pkg.resolve(); catch; end)
+    return r
 end
 
 """
@@ -120,8 +142,10 @@ end
 "The active project's direct dependencies as `{name, version, uuid, source, origin}` (for eager docs
 auto-index + the package viewer). `source` = \"registry\" | \"path\" (a dev'd local checkout) | \"git\"
 (added from a URL); `origin` carries the path or `url#rev` for the non-registry ones — so the UI can flag
-that a dep points at something machine-specific rather than a pinned registry release."
-function _project_deps()
+that a dep points at something machine-specific rather than a pinned registry release.
+`strict = true` throws when the environment can't be read (a manifest out of step with its project)
+instead of answering with an empty list."
+function _project_deps(; strict::Bool = false)
     out = Dict{String,Any}[]
     try
         proj = Pkg.project()
@@ -148,6 +172,7 @@ function _project_deps()
                                         "source" => source, "origin" => origin))
         end
     catch
+        strict && rethrow()
     end
     return out
 end

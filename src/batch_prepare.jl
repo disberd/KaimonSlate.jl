@@ -50,12 +50,14 @@ function prepare_batch!(machine::AbstractString; project::AbstractString, resour
         # Read again now the depot is settled: the target's shell has to carry it.
         spec = Dict{String,String}(String(k) => string(v) for (k, v) in cluster_get_resolved(machine))
         t = Sweep.with_resources(Sweep._with(Sweep.cluster(spec); parent = ref[1]), resources)
-        # The environment a region's worker for this project uses, built the same way: a sweep runs in it.
+        # The environment a region's worker for this project uses, built the same way. A sweep runs in
+        # its snapshot of the current sources (`batch_env!`), so the test task does too.
         envdir = Ref("~/" * Sweep.shared_env(ref[1]))
         built = step("Install $(basename(ref[1]))") do
             rt = RemoteTarget(m.host; project = envdir[], origin_env = ref[1], depot = machine_depot(m),
                               setup = machine_setup(m))
             provision_remote!(rt, ref[2]; precompile = false)
+            envdir[] = "~/" * Sweep.batch_env!(m.host, ref[1]; setup = machine_setup(m))
             ("ok", "")
         end
         built == "fail" && return
@@ -69,7 +71,7 @@ end
 
 # One task through the scheduler, as the sweep's would go: same script, same shell, same node type,
 # a short walltime. It precompiles where the tasks run, then loads every package and reports.
-function _batch_test!(t, envdir::AbstractString, measured, note; qos::AbstractString = "")
+function _batch_test!(t, envdir::AbstractString, measured, note; qos::AbstractString = "", every::Real = 15)
     code = "t0 = time(); import Pkg; Pkg.precompile(); println(\"precompile=\", round(time() - t0; digits = 1))\n" *
            _LOAD_CODE
     # A node of the same kind already held by a region on this machine: the test runs there, as a
@@ -97,13 +99,17 @@ function _batch_test!(t, envdir::AbstractString, measured, note; qos::AbstractSt
     deadline = time() + 6 * 3600
     while true
         time() > deadline && return ("fail", "job $id did not finish within 6 hours; it was left queued")
-        sleep(15)
+        sleep(every)
         st = get(BatchLauncher.poll(l, t.root_remote, [name]), name, :unknown)
         st === :unknown && break
         st === :unreachable && (note("the scheduler did not answer; asking again"); continue)
         note(st === :pending ? "queued as job $id" : "running as job $id")
     end
-    f = t.kind === :pbs ? "$logdir/$name.1.out" : "$logdir/$name.$(id)_1.out"
+    # Each launcher names its output files its own way, so it is asked for them rather than each
+    # name being spelled here. Newest first: an earlier test of the same environment left its own.
+    files = try; BatchLauncher.log_files(l, t.root_remote, [name]); catch; []; end
+    isempty(files) && return ("fail", "job $id left no output in $logdir")
+    f = first(files).path
     ok, out = Sweep.run_there(t.host, "cat " * Sweep.shq_path(f))
     ok || return ("fail", "job $id left no output at $f")
     return _test_result!(measured, out, "job $id")

@@ -2018,6 +2018,13 @@ slate-key-message,slate-caption,slate-admonition,slate-figure,slate-table{displa
 .exp-md .admonition>.admonition-title+*{margin-top:10px;}
 .exp-md .admonition>:last-child{margin-bottom:10px;}
 .exp-md .admonition code{background:color-mix(in srgb,var(--adm) 10%,var(--bg3));}
+.exp-md a.footnote{font-size:.75em;vertical-align:super;line-height:0;text-decoration:none;}
+.exp-md div.footnote{display:flex;gap:.6em;font-size:.88em;color:var(--dim);margin:.3em 0;}
+.exp-md :not(div.footnote)+div.footnote{border-top:1px solid var(--border);padding-top:.6em;margin-top:1em;}
+.exp-md div.footnote>*{margin:0;}
+.exp-md div.footnote>.footnote-title{font-weight:600;}
+.exp-md li:has(>input[type=checkbox]:first-child){list-style:none;margin-left:-1.3em;}
+.exp-md li>input[type=checkbox]:first-child{margin:0 .4em 0 0;vertical-align:middle;}
 .exp-md .admonition.note,.exp-md .admonition.info{--adm:var(--accent);}
 .exp-md .admonition.tip,.exp-md .admonition.hint,
 .exp-md .admonition.answer,.exp-md .admonition.solution{--adm:var(--green);}
@@ -3978,15 +3985,7 @@ $(app ? _run_app_help(apptitle, port > 0 ? port : _APP_DEFAULT_PORT) : "")
                 @info "Using a local \$name checkout" path = src
                 Pkg.develop(path = expanduser(String(src)))
             elseif registered
-                spec = Pkg.PackageSpec(name = name, uuid = uuid)
-                Pkg.add(spec)                                           # registered → latest release
-                # …but ENVDIR persists across runs, and `add` on a package the env already holds at an
-                # OLDER release is "already satisfied" — the same no-op documented above for `rev`. So a
-                # visitor who ran an earlier bundle keeps that first resolve forever, dependencies and
-                # all, long after the package has dropped or changed them. `update` advances it.
-                try; Pkg.update(spec); catch e
-                    @warn "Could not update \$name to the latest release — continuing with the installed version" exception = e
-                end
+                Pkg.add(Pkg.PackageSpec(name = name, uuid = uuid))     # registered → latest release
             else
                 Pkg.add(url = url, rev = "main")                        # unregistered → track the branch tip
             end
@@ -3999,8 +3998,19 @@ $(app ? _run_app_help(apptitle, port > 0 ? port : _APP_DEFAULT_PORT) : "")
         # Kaimon FIRST: it provides the compute gate the notebook's env reconstructs through (and the
         # agent). KaimonSlate second — both want HTTP 2, so they co-resolve into one env.
         _add_pkg("Kaimon", "d3856c55-31fd-4246-b7e8-380411123c01", "$KAIMON", "SLATE_KAIMON_PATH")
+        Pkg.compat("Kaimon", "2")    # any 2.x; the resolver never settles on a 1.x to satisfy something else
         _add_pkg("KaimonSlate", "f7b954f5-0334-4562-ac21-b005218ce1da", "$SLATE", "SLATE_KAIMONSLATE_PATH";
                  default_path = raw"$SLATEDEV")
+        # ENVDIR persists across runs, and `add` on a package the env already holds is "already
+        # satisfied", so the first resolve would stick. Update the whole env: a per-package update
+        # keeps every other entry at its locked version, which holds the package back as soon as its
+        # newer releases need a newer dependency. Nothing else lives in this env, so there is nothing
+        # to preserve.
+        Base.CoreLogging.with_logger(_QuietGit(Base.CoreLogging.current_logger())) do
+            try; Pkg.update(); catch e
+                @warn "Could not update to the latest releases — continuing with the installed versions" exception = e
+            end
+        end
     end
 
     # Prefer the bundle shipped NEXT TO this script (extracted site tarball, or downloaded alongside
@@ -4280,7 +4290,7 @@ function _run_ps1()
         Write-Host "Install it from https://julialang.org/downloads/  (or run:  winget install julia )"
         Hold; exit 1
     }
-    julia (Join-Path \$PSScriptRoot "$(_SITE_RUNJL)") @args   # forward --host/--port through
+    julia --startup-file=no (Join-Path \$PSScriptRoot "$(_SITE_RUNJL)") @args   # forward --host/--port through
     Hold
     """
 end
@@ -4378,7 +4388,8 @@ function _run_sh(title::AbstractString = "")
       printf '  %swhich can take several minutes. Later starts are fast.%s\\n\\n' "\$D" "\$R"
     fi
 
-    exec julia "$(_SITE_RUNJL)" "\$@"
+    # No startup file: packages it loads (Revise, say) come from the default env, ahead of the app's.
+    exec julia --startup-file=no "$(_SITE_RUNJL)" "\$@"
     """
 end
 
@@ -5840,9 +5851,9 @@ function _md_table(spec)
     return String(take!(io))
 end
 
-# Markdown citation context: `citekeys`, a plain-text `emit` that renders each `[@key]` in the
-# notebook's bibstyle (numeric `[2]` / author-date `(Knuth, 1984)`, honouring a `, p. 7` locator), and
-# the data for a References section. `nothing` when the notebook has no bibliography.
+# Markdown citation context: `citekeys`, a plain-text `emit` that renders each citation group in the
+# notebook's bibstyle (`_cite_text`: numeric `[2]` / author-date `(Knuth, 1984)`, honouring a `, p. 7`
+# locator), and the data for a References section. `nothing` when the notebook has no bibliography.
 function _md_cite_ctx(nb::LiveNotebook)
     bi = bibliography_index(nb.report, dirname(abspath(nb.path)))
     isempty(bi) && return nothing
@@ -5850,18 +5861,14 @@ function _md_cite_ctx(nb::LiveNotebook)
     numeric = _is_numeric_style(style)
     citekeys = Set(e.key for e in bi)
     numbers = citation_numbers(nb.report, citekeys)         # first-citation order (numeric labels + ordering)
-    (; open, close) = labels = _cite_labels(style, bi, numbers)
-    label = labels.labels
-    intext = (key, sup) -> begin
-        lab = get(label, String(key), String(key))
-        inner = isempty(strip(sup)) ? lab : string(lab, ", ", strip(sup))
-        string(open, inner, close)
-    end
-    emit = (key, sup, _form) -> intext(key, sup)                       # plain text (markdown / meta desc)
+    fmt = _cite_labels(style, bi, numbers)
+    (; open, close) = fmt
+    label = fmt.labels
+    emit = (cites, form) -> _cite_text(fmt, cites, form)                # plain text (markdown / meta desc)
     # HTML in-text citation that LINKS to its References entry (`#ref-<key>`) — used by the HTML export
     # so a rendered `[N]` / `(Author, Year)` jumps to the bibliography, matching the live view.
-    emit_html = (key, sup, _form) ->
-        string("<a class=\"cite\" href=\"#ref-", _cite_anchor(String(key)), "\">", _esc(intext(key, sup)), "</a>")
+    link(key, text) = string("<a class=\"cite\" href=\"#ref-", _cite_anchor(key), "\">", _esc(text), "</a>")
+    emit_html = (cites, form) -> _cite_text(fmt, cites, form; wrap = link)
     bracketed = _is_bracket_style(style)
     return (; citekeys, emit, emit_html, bi, numeric, bracketed, numbers, label, open, close, cited = cited_citation_keys(nb.report))
 end

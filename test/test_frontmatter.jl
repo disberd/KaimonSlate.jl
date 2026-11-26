@@ -136,7 +136,7 @@ x = 1
         cnb = _mknb("#%% md id=body\nSee [@knuth1984, p. 7].\n\n" *
                     "#%% md id=refs bibliography\n@book{knuth1984, author={Knuth}, title={TeX}, year={1984}}\n")
         h = NS.export_html(cnb)
-        @test occursin("[1, p. 7]", h)                       # citation rendered (ieee default), not raw
+        @test occursin(">1, p. 7</a>]", h)                   # citation rendered (ieee default), not raw
         @test !occursin("[@knuth1984", h)                    # no raw citation marker
         @test occursin("exp-refs", h) && occursin("References", h) && occursin("TeX", h)
         # The inline citation LINKS to its References entry, and that entry carries the matching anchor.
@@ -663,6 +663,8 @@ x = 1
         @test rw("[@knuth1984]") == "§c§n§knuth1984§§"                       # plain
         @test rw("[@knuth1984, p. 7]") == "§c§n§knuth1984§p. 7§"            # page locator → supplement
         @test rw("[@knuth1984; @lamport1994]") == "§c§n§knuth1984§§§c§n§lamport1994§§"  # multiple
+        # The PDF prints a key the bibliography lacks as text, which Typst would refuse as a cite.
+        @test NS._rewrite_citations("[@knuth1984; @nope, p. 2]", keys; unknown = NS._cite_missing) == "§c§n§knuth1984§§(nope, p. 2?)"
         @test rw("@knuth1984 rocks") == "§c§p§knuth1984§§ rocks"            # bare key → prose form
         @test rw("see @knuth1984.") == "see §c§p§knuth1984§§."              # trailing punctuation kept literal
         @test rw("email me@host.com") == "email me@host.com"               # unknown @ left literal
@@ -679,14 +681,36 @@ x = 1
         r = RE.parse_report("#%% md id=a\nSee [@fig:flow], [@nope] and [@a].\n\n#%% md id=refs bibliography\n@book{a,title={A}}\n")
         @test NS.citation_numbers(r, Set(["a"])) == Dict("a" => 1)
         # live HTML-link emit tracks the bibstyle: numeric → [3, p. 7], author-date → (Knuth, 1984)
-        numctx = (anchor = "refs", tips = Dict("k" => "Knuth · TeX"), labels = Dict("k" => "3"),
-                  numeric = true, numbers = Dict("k" => 3), open = "[", close = "]")
-        num = NS._rewrite_citations("[@k, p. 7]", Set(["k"]); emit = NS._cite_link_emit(numctx))
-        @test occursin("<a class=\"cite\" href=\"#cell-refs\"", num) && occursin(">[3, p. 7]</a>", num)
-        adctx = (anchor = "refs", tips = Dict("k" => "x"), labels = Dict("k" => "Knuth, 1984"),
-                 numeric = false, numbers = Dict{String,Int}(), open = "(", close = ")")
-        ad = NS._rewrite_citations("[@k]", Set(["k"]); emit = NS._cite_link_emit(adctx))
-        @test occursin(">(Knuth, 1984)</a>", ad)
+        knuth = [(key = "k", title = "TeX", author = "Donald E. Knuth", year = "1984", surname = "Knuth")]
+        livectx(style) = (anchor = "refs", tips = Dict("k" => "Knuth · TeX"), numbers = Dict("k" => 3),
+                          numeric = NS._is_numeric_style(style), fmt = NS._cite_labels(style, knuth, Dict("k" => 3)))
+        num = NS._rewrite_citations("[@k, p. 7]", Set(["k"]); emit = NS._cite_link_emit(livectx("ieee")))
+        @test occursin("<a class=\"cite\" href=\"#cell-refs\"", num) && occursin("[<a", num) && occursin(">3, p. 7</a>]", num)
+        ad = NS._rewrite_citations("[@k]", Set(["k"]); emit = NS._cite_link_emit(livectx("apa")))
+        @test occursin("(<a", ad) && occursin(">Knuth, 1984</a>)", ad)
+        # the prose form names the author in the sentence, the whole of it one link
+        @test occursin(">Knuth (1984)</a> wrote", NS._rewrite_citations("@k wrote", Set(["k"]); emit = NS._cite_link_emit(livectx("apa"))))
+        @test occursin(">Knuth [3]</a>", NS._rewrite_citations("@k", Set(["k"]); emit = NS._cite_link_emit(livectx("ieee"))))
+        # a group is one citation; an author's works in a row are named once (author-date)
+        works = [(key = "n24", title = "A", author = "Ning, Ding and Koh, Yun", year = "2024", surname = "Ning"),
+                 (key = "n25", title = "B", author = "Ning, Ding and Bryan, Karin", year = "2025", surname = "Ning"),
+                 (key = "g22", title = "C", author = "Gysbers, Dan", year = "2022", surname = "Gysbers")]
+        apa = NS._cite_labels("apa", works, Dict{String,Int}())
+        grp(s) = NS._rewrite_citations(s, Set(["n24", "n25", "g22"]); emit = (c, f) -> NS._cite_text(apa, c, f))
+        @test grp("[@n24; @n25]") == "(Ning et al., 2024, 2025)"
+        @test grp("[@n24; @g22; @n25]") == "(Ning et al., 2024; Gysbers, 2022; Ning et al., 2025)"
+        @test grp("[@n24, p. 3; @n25]") == "(Ning et al., 2024, p. 3; Ning et al., 2025)"
+        @test grp("@g22 found") == "Gysbers (2022) found"
+        # A work with no author (a note, a record) is named by its title, a long one by its first words.
+        notes = [(key = "wl", title = "Water levels", author = "", year = "2026", surname = ""),
+                 (key = "hm", title = "Heron migration at the north marsh this autumn", author = "", year = "2026", surname = "")]
+        nf = NS._cite_labels("apa", notes, Dict{String,Int}())
+        @test NS._rewrite_citations("[@wl; @hm]", Set(["wl", "hm"]); emit = (c, f) -> NS._cite_text(nf, c, f)) ==
+              "(Water levels, 2026; Heron migration at the …, 2026)"
+        @test NS._rewrite_citations("@wl", Set(["wl"]); emit = (c, f) -> NS._cite_text(nf, c, f)) == "Water levels (2026)"
+        @test NS._cite_labels("author-year-brackets", notes, Dict("wl" => 1)).labels["wl"] == "Water levels 2026"
+        # without a bibliography a citation shows as written
+        @test NS._rewrite_citations("[@a; @b, p. 2] and @a", Set(["a"]); emit = NS._cite_literal) == "[@a; @b, p. 2] and @a"
         @test NS._is_numeric_style("ieee") && !NS._is_numeric_style("apa")
         @test NS._author_year_label("Donald E. Knuth", "1984") == "Knuth, 1984"
         @test NS._author_year_label("Cormen and Leiserson", "2009") == "Cormen et al., 2009"
@@ -716,7 +740,9 @@ x = 1
         # The live view groups them the same way.
         ctx = NS._bib_link_ctx(nb)
         live = NS._rewrite_citations("[@sunA; @w7x]", Set(e.key for e in bi); emit = NS._cite_link_emit(ctx))
-        @test occursin(">[Sun 2026b]</a>", live) && occursin(">[W7-X Team 2024]</a>", live)
+        @test startswith(live, "[<a") && endswith(live, "</a>]")                 # one bracket for the group
+        @test occursin(">Sun 2026b</a>; <a", live) && occursin(">W7-X Team 2024</a>", live)
+        @test occursin(">Sun [2026a]</a>", NS._rewrite_citations("@sunB", Set(e.key for e in bi); emit = NS._cite_link_emit(ctx)))
         card = first(c for c in NS.state_json(nb)["cells"] if get(c, "roleBib", false))["output"]
         @test occursin("<span class=\"bibcard-num\">[Sun 2026a]</span>", card)   # the card shows the in-text label
         refs = NS._html_references(NS._md_cite_ctx(nb))
@@ -842,6 +868,79 @@ x = 1
                 rm(d; recursive = true, force = true)
             finally
                 NS._BIB_GET[] = old
+            end
+        end
+        rm(cfg; recursive = true, force = true); rm(cache; recursive = true, force = true)
+    end
+
+    @testset "signing in to a bibliography's site" begin
+        # A site that offers signing in, as a Zemi site does: discovery, registration, a code for the
+        # verifier it was asked with, and tokens renewed by their refresh token until that is refused.
+        lib = "@article{arXiv:2401.00001, author={Lovelace, Ada}, title={Engines}, year={2024}}\n"
+        meta = Dict("issuer" => "https://kb.example.org", "authorization_endpoint" => "https://kb.example.org/oauth/authorize",
+                    "token_endpoint" => "https://kb.example.org/oauth/token", "registration_endpoint" => "https://kb.example.org/oauth/register",
+                    "scopes_supported" => ["library", "read"])
+        valid = Set(["acc1", "acc2"])
+        challenge = Ref("")
+        renewable = Ref(true)
+        registered = Ref(0)
+        get_(url, headers) = endswith(url, "/.well-known/oauth-authorization-server") ? NS.HTTP.Response(200, NS.JSON.json(meta)) :
+            replace(get(Dict(headers), "Authorization", ""), "Bearer " => "") in valid ? NS.HTTP.Response(200, lib) :
+            NS.HTTP.Response(401, "{\"error\": \"Sign in.\"}")
+        function post_(url, headers, body)
+            if endswith(url, "/oauth/register")
+                registered[] += 1
+                return NS.HTTP.Response(201, NS.JSON.json(Dict("client_id" => "c1")))
+            end
+            f = NS.HTTP.queryparams(body)
+            f["client_id"] == "c1" || return NS.HTTP.Response(400, "{}")
+            if f["grant_type"] == "authorization_code"
+                (f["code"] == "code1" && NS._b64url(NS.SHA.sha256(f["code_verifier"])) == challenge[]) || return NS.HTTP.Response(400, "{}")
+                return NS.HTTP.Response(200, NS.JSON.json(Dict("access_token" => "acc1", "refresh_token" => "ref1", "expires_in" => 3600)))
+            end
+            (f["refresh_token"] == "ref1" && renewable[]) || return NS.HTTP.Response(400, "{\"error\": \"invalid_grant\"}")
+            return NS.HTTP.Response(200, NS.JSON.json(Dict("access_token" => "acc2", "refresh_token" => "ref2", "expires_in" => 3600)))
+        end
+        cfg, cache = mktempdir(), mktempdir()
+        oldget, oldpost = NS._BIB_GET[], NS._BIB_POST[]
+        withenv("KAIMONSLATE_CONFIG_HOME" => cfg, "KAIMONSLATE_CACHE_HOME" => cache) do
+            NS._BIB_GET[], NS._BIB_POST[] = get_, post_
+            try
+                url = NS.bib_endpoint("https://kb.example.org")
+                lock(NS._BIB_REMOTE_LOCK) do; delete!(NS._BIB_REMOTES, url); end
+                r = NS._bib_load_cached(url)
+                NS._bib_refresh!(r)
+                @test r.status == :signin && r.oauth && r.message == "Not signed in"
+                # The card offers signing in, not a token to paste.
+                src = "#%% md id=refs bibliography\nhttps://kb.example.org\n"
+                lock(NS._BIB_REMOTE_LOCK) do; NS._BIB_REMOTES[url] = r; r.checked = time(); end
+                rep = RE.parse_report(src)
+                html = sprint(io -> NS._bib_source_html(io, NS.bib_sources(rep.cells[1], "/tmp")[1], "nb"))
+                @test occursin("bibSignin(this)", html) && !occursin("Add token", html)
+
+                # Signing in: the approval page's address, for the hub's callback, asking to read.
+                callback = "http://127.0.0.1:8765/bib/signin/callback"
+                to = NS.bib_signin_start(url, callback)
+                q = NS.HTTP.queryparams(NS.HTTP.URI(to))
+                @test startswith(to, "https://kb.example.org/oauth/authorize?") && q["client_id"] == "c1" &&
+                      q["redirect_uri"] == callback && q["scope"] == "read" && q["code_challenge_method"] == "S256"
+                challenge[] = q["code_challenge"]
+                @test NS.bib_signin_finish(q["state"], "code1") == url
+                @test_throws ErrorException NS.bib_signin_finish(q["state"], "code1")      # a sign-in is finished once
+                NS._bib_refresh!(r)
+                @test r.status == :ok && [e.key for e in r.entries] == ["arXiv:2401.00001"]
+                NS.bib_signin_start(url, callback)
+                @test registered[] == 1                                   # registered once for this callback
+
+                # An hour on, the token is renewed; a renewal refused (revoked) asks to sign in again.
+                saved = NS._bib_oauth_saved(url); saved["expires"] = 0.0; NS._bib_oauth_save!(url, saved)
+                @test NS.bib_access_token(url) == "acc2"
+                renewable[] = false
+                delete!(valid, "acc2")
+                NS._bib_refresh!(r)
+                @test r.status == :signin && NS._bib_oauth_saved(url) === nothing
+            finally
+                NS._BIB_GET[], NS._BIB_POST[] = oldget, oldpost
             end
         end
         rm(cfg; recursive = true, force = true); rm(cache; recursive = true, force = true)

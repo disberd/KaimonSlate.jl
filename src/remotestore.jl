@@ -323,6 +323,7 @@ function run_io(host::AbstractString, script::AbstractString, input::Union{Vecto
         catch; false; end
         return (ok, take!(out))
     end
+    has_delegate() || note_sched_calls!(host, script)
     has_delegate() && return _via(() -> (false, UInt8[]), :io,
                                   (; host = String(host), script = String(script), input = input))
     connect!(host) || return (false, UInt8[])
@@ -1185,6 +1186,8 @@ const _LOCK_STALE_S = 900.0
 # survivable (a pull merges, an archive tolerates a file that vanishes), whereas a hung sync stalls
 # the notebook that asked for it.
 const _LOCK_WAIT_S = 60.0
+# A wait for the lock longer than this is logged, with who held it; a hold twice as long, by the holder.
+const _LOCK_SLOW_S = 5.0
 
 _lock_alive(pid::Int, host::AbstractString) =
     host != gethostname() ? true :                       # another machine: cannot tell, assume alive
@@ -1214,15 +1217,21 @@ process on this machine. Falls through to running `f` anyway if the lock cannot 
 `_LOCK_WAIT_S`, having said so: a sync that never runs is a worse failure than one that overlaps.
 """
 function with_store_lock(f, mirror::AbstractString)
+    t_ask = time()
     lock(_sync_lock(mirror)) do
         m = String(mirror)
+        time() - t_ask > _LOCK_SLOW_S &&
+            @info "slate: waited $(round(time() - t_ask; digits = 1)) s for a mirror's lock in this process" mirror = m
         depth = get(_LOCK_DEPTH, m, 0)
         _LOCK_DEPTH[m] = depth + 1
         held = false
+        t_held = 0.0
         try
             if depth == 0
                 d = _lock_dir(m)
-                deadline = time() + _LOCK_WAIT_S
+                t0 = time()
+                deadline = t0 + _LOCK_WAIT_S
+                owner = ""
                 while true
                     try
                         mkdir(d)
@@ -1230,6 +1239,7 @@ function with_store_lock(f, mirror::AbstractString)
                         held = true
                         break
                     catch
+                        isempty(owner) && (owner = try; read(joinpath(d, "owner"), String); catch; ""; end)
                         isdir(d) && _lock_stale(d) && (try; rm(d; recursive = true, force = true); catch; end; continue)
                         if time() > deadline
                             @warn "slate: sync lock busy, proceeding without it" mirror = m
@@ -1238,9 +1248,14 @@ function with_store_lock(f, mirror::AbstractString)
                         sleep(0.05)
                     end
                 end
+                t_held = time()
+                t_held - t0 > _LOCK_SLOW_S &&
+                    @info "slate: waited $(round(t_held - t0; digits = 1)) s for a mirror's lock" mirror = m owner = strip(owner)
             end
             return f()
         finally
+            held && time() - t_held > 2 * _LOCK_SLOW_S &&
+                @info "slate: held a mirror's lock $(round(time() - t_held; digits = 1)) s" mirror = m pid = getpid()
             held && (try; rm(_lock_dir(m); recursive = true, force = true); catch; end)
             _LOCK_DEPTH[m] = depth
             depth == 0 && delete!(_LOCK_DEPTH, m)
@@ -1248,38 +1263,66 @@ function with_store_lock(f, mirror::AbstractString)
     end
 end
 
+# Where an incremental pull starts: the store's clock when the last finished pull began, less this.
+# What was written while a pull ran, or on a node whose clock trails the store's, is sent again
+# rather than missed; extracting a file twice changes nothing.
+const PULL_OVERLAP_S = 30
+
+# The mirror's own record of that point, written only once a pull's files are in the mirror.
+_pulled_file(s) = joinpath(s.mirror, ".pulled")
+_pulled_at(s) = (p = _pulled_file(s); isfile(p) ? tryparse(Int, strip(read(p, String))) : nothing)
+function _pulled!(s, at::Integer)
+    p = _pulled_file(s); tmp = p * ".tmp"
+    write(tmp, string(at)); mv(tmp, p; force = true)
+    return nothing
+end
+
 "Bring the local mirror up to date with the store's metadata. One round trip."
 function pull_meta!(s::RemoteStore; dirs = META_DIRS)
     isempty(s.host) && return true          # same machine: the mirror IS the store
     connected(s.host) || return false
+    script, read = pull_query(s; dirs)
+    return with_store_lock(() -> read(run_io(String(s.host), script, nothing)...), s.mirror)
+end
+
+"""
+    pull_query(s; dirs) -> (script, read)
+
+`pull_meta!` as a script for the store's host and the function `(ok, output) -> Bool` that brings
+what it printed into the mirror. The caller holds the mirror's lock across both. The script prints
+nothing on stderr, so it can be a part of a `framed` one.
+"""
+function pull_query(s::RemoteStore; dirs = META_DIRS)
     names = _dirlist(dirs)
     # INCREMENTAL. A sweep's `manifests/` holds one file per UNIT, so a poll that tars the whole
     # tree moves tens of megabytes to learn that a handful of results landed — which is what put the
     # card's poll past its deadline on a sweep of a few thousand units.
     #
-    # The watermark is the STORE's own clock, never this machine's: a stamp file over there, and
-    # `find -newer` against it. The new stamp is laid down BEFORE the walk and promoted after, so a
-    # file written during the transfer is newer than the stamp it will be compared to next time and
-    # cannot fall through the gap. No stamp yet means take everything, which is also the recovery
-    # path for a mirror that has lost its copy.
-    # The HUB decides whether it needs everything. The stamp lives on the store, so a mirror that
-    # has been wiped while the stamp survived would otherwise ask for "what changed" and be told
-    # nothing, leaving it empty for good.
+    # The watermark is the STORE's own clock, never this machine's, and it is the MIRROR's to keep:
+    # the store prints its time before it lists, and the mirror records it once the files are in. A
+    # pull that fails records nothing, and pulls into one mirror at once each record only a time their
+    # own listing covered, so neither can skip a file. A mirror with no record, or with an empty
+    # directory, takes everything.
     full = any(d -> (p = joinpath(s.mirror, String(d)); !isdir(p) || isempty(readdir(p))), dirs)
-    tarpart = full ? "tar cf - " * names * "; " :
-              "if [ -f .pullstamp ]; then " *
-                  "find " * names * " -type f -newer .pullstamp > .pulllist 2>/dev/null || true; " *
-                  "if [ -s .pulllist ]; then tar cf - -T .pulllist; fi; rm -f .pulllist; " *
-              "else tar cf - " * names * "; fi; "
+    since = full ? nothing : _pulled_at(s)
+    # Listed against a file stamped with that time: GNU `touch -d @N`, else BSD `date -r N`. A far side
+    # where neither works lists everything. `COPYFILE_DISABLE` keeps a macOS tar from adding `._` files.
+    t = string(since === nothing ? 0 : since - PULL_OVERLAP_S)
+    tarpart = since === nothing ? "COPYFILE_DISABLE=1 tar cf - " * names * "; " :
+              "L=\$(mktemp) && R=\$(mktemp) && " *
+              "{ { touch -d @" * t * " \"\$R\" 2>/dev/null || touch -t \"\$(date -r " * t * " +%Y%m%d%H%M.%S)\" \"\$R\"; } && " *
+              "find " * names * " -type f -newer \"\$R\" > \"\$L\" 2>/dev/null || find " * names * " -type f > \"\$L\"; }; " *
+              "if [ -s \"\$L\" ]; then COPYFILE_DISABLE=1 tar cf - -T \"\$L\"; fi; rm -f \"\$L\" \"\$R\"; "
     # Compressed over there when this side can inflate it, and when the far side has `gzip`.
     _zlib() === nothing ||
         (tarpart = "{ " * tarpart * "} | if command -v gzip >/dev/null 2>&1; then gzip -c; else cat; fi; ")
-    script = "cd " * shq_path(s.root) * " 2>/dev/null || exit 0; mkdir -p " * names * "; " *
-             "touch .pullstamp.new; " * tarpart * "mv .pullstamp.new .pullstamp"
-    with_store_lock(s.mirror) do
-        ok, data = run_io(String(s.host), script, nothing)
+    script = "{ cd " * shq_path(s.root) * " || exit 0; mkdir -p " * names * "; date +%s; " * tarpart * "} 2>/dev/null"
+    return (script, function (ok, out)
         ok || return false
-        data = _gunzip_if(data)
+        # The store's time on the first line, the archive after it.
+        nl = findfirst(==(UInt8('\n')), out)
+        at = nl === nothing ? nothing : tryparse(Int, String(out[1:nl-1]))
+        data = _gunzip_if(at === nothing ? out : out[nl+1:end])
         # Merged, never replaced. `_unarchive` copies over the top, so what the store has wins
         # per file and what only exists here survives to be pushed.
         #
@@ -1291,8 +1334,10 @@ function pull_meta!(s::RemoteStore; dirs = META_DIRS)
         for d in dirs
             mkpath(joinpath(s.mirror, String(d)))
         end
-        return _unarchive(data, s.mirror; skip = fresh ? (_ -> false) : hub_owned)
-    end
+        _unarchive(data, s.mirror; skip = fresh ? (_ -> false) : hub_owned) || return false
+        at === nothing || _pulled!(s, at)
+        return true
+    end)
 end
 
 """
@@ -1304,6 +1349,33 @@ store. What may be DELETED there is `sync_flags`' decision, not this function's.
 function push_meta!(s::RemoteStore; dirs = (META_DIRS..., "blobs"))
     isempty(s.host) && return true
     connected(s.host) || return false
+    q = _push_parts(s, dirs)
+    q === nothing && return true
+    ok = _send_archive(String(s.host), q.prefix, q.data, _gzip_bytes(q.data))
+    # Say what the far side said. Callers get a Bool, and a push that fails silently here surfaces
+    # much later as a job that cannot find its own descriptors.
+    ok || @warn "slate: could not push to $(s.host):$(s.root)" dirs = q.present
+    return ok
+end
+
+"""
+    push_query(s; dirs) -> Union{Nothing,NamedTuple}
+
+`push_meta!` as `(; script, input)`, the script to run on the store's host with `input` on its stdin,
+for a caller sending it with other work. `nothing` when there is nothing to send. The archive is
+gzipped when this side can make it, and a far side without `gzip` fails the script.
+"""
+function push_query(s::RemoteStore; dirs = (META_DIRS..., "blobs"))
+    q = _push_parts(s, dirs)
+    q === nothing && return nothing
+    gz = _gzip_bytes(q.data)
+    gz === nothing && return (; script = q.prefix * "tar xf -", input = q.data)
+    return (; script = q.prefix * "t=\$(mktemp) && gzip -dc > \"\$t\" && tar xf \"\$t\"; r=\$?; rm -f \"\$t\"; exit \$r",
+              input = gz)
+end
+
+# The archive of what to send and the shell that unpacks it, which ends ready for the unpack command.
+function _push_parts(s::RemoteStore, dirs)
     # Under the same lock as `pull_meta!`: this READS the mirror to build the archive, and a pull
     # rewriting those directories underneath it would ship a half-replaced tree.
     present, data = with_store_lock(s.mirror) do
@@ -1312,25 +1384,22 @@ function push_meta!(s::RemoteStore; dirs = (META_DIRS..., "blobs"))
         keep = Set(pres)
         # Under `jobs/`, send only what this hub owns. The launcher's index and batch script live on
         # the far side; the mirror holds them only because a pull brought them over, and re-sending
-        # that copy would overwrite a newer one with a stale one.
+        # that copy would overwrite a newer one with a stale one. The directory itself is kept, or
+        # the walk would not go into it.
         (pres, _archive(s.mirror, p -> (t = first(split(String(p), '/'; keepempty = false));
-                                        t in keep && (t != "jobs" || hub_owned(p)))))
+                                        t in keep && (t != "jobs" || p == "jobs" || hub_owned(p)))))
     end
-    isempty(present) && return true
+    isempty(present) && return nothing
     # Delete only the hub's own files, by name. `rm -rf jobs/` took the launcher's files with it,
     # which then had to survive by round-tripping through the mirror.
     wipe = String[g for d in present if sync_flags(d, :out)
                     for g in _hub_owned_globs(shq_path(joinpath(s.root, d)))]
     # `tar x` creates with the ambient umask, so it is set for this shell rather than fixed up after.
-    script = (isempty(s.umask) ? "" : "umask " * s.umask * "; ") *
+    prefix = (isempty(s.umask) ? "" : "umask " * s.umask * "; ") *
              "mkdir -p " * shq_path(s.root) *
              (isempty(wipe) ? "" : "; rm -f " * join(wipe, " ")) *
              "; cd " * shq_path(s.root) * " && "
-    ok = _send_archive(String(s.host), script, data, _gzip_bytes(data))
-    # Say what the far side said. Callers get a Bool, and a push that fails silently here surfaces
-    # much later as a job that cannot find its own descriptors.
-    ok || @warn "slate: could not push to $(s.host):$(s.root)" dirs = present
-    return ok
+    return (; prefix, data, present)
 end
 
 """

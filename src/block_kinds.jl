@@ -32,13 +32,16 @@ const _SLATE_TAG_RE = Regex("<(/?)slate-(" * join((_WRAPPED_KINDS..., _REGION_EL
 const _CAPTION_TAIL_RE = r"^(?:\s*(?:\[[^\]]*@[^\]]*\]|<a class=\"(?:cite|figref)\"[^>]*>.*?</a>|§c§[^§]*§[^§]+§[^§]*§|@[\w:.\-]+)[,;.]?)*\s*$"s
 const _INTERP_ONLY_RE = r"^xslateinterpx(\d+)x$"
 
-# The parser of every markdown renderer of Slate: GFM tables, `!!! category "Title"` admonitions and
-# Pandoc `:::` fenced divs.
+# The parser of every markdown renderer of Slate: GFM tables, `!!! category "Title"` admonitions,
+# Pandoc `:::` fenced divs, GitHub's `~~struck~~` and `- [x]` task items, and `[^1]` footnotes.
 function _md_parser()
     p = CommonMark.Parser()
     enable!(p, CommonMark.TableRule())
     enable!(p, CommonMark.AdmonitionRule())
     enable!(p, CommonMark.FencedDivRule())
+    enable!(p, CommonMark.StrikethroughRule())
+    enable!(p, CommonMark.TaskListRule())
+    enable!(p, CommonMark.FootnoteRule())
     return p
 end
 

@@ -157,17 +157,20 @@ function task_env!(root::AbstractString, parent::AbstractString, env)
     pname = seed_env_project!(envdir, parent)
     add = isempty(extras) ? "" :
           "Pkg.add([" * join(("\"$e\"" for e in extras), ", ") * "]);"
-    dev = isempty(pname) ? "" : "Pkg.develop(Pkg.PackageSpec(path=raw\"$(parent)\"));"
+    # The develop resolves the env. Without a parent package the resolve is explicit: the seed lists
+    # packages the copied manifest does not have (SlateExtensionsBase).
+    dev = isempty(pname) ? "Pkg.resolve();" : "Pkg.develop(Pkg.PackageSpec(path=raw\"$(parent)\"));"
     # A subprocess: `Pkg.instantiate`/`precompile` inside a live worker is not safe.
     code = "using Pkg; Pkg.activate(raw\"$(envdir)\"); $dev $add Pkg.instantiate(); Pkg.precompile()"
+    out = IOBuffer()
     ok = try
-        run(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $code`;
-                     stdout = devnull, stderr = devnull))
+        run(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $code`; stdout = out, stderr = out))
         true
     catch
         false
     end
-    ok || error("could not prepare the task environment at $envdir from parent $parent")
+    ok || error("could not prepare the task environment at $envdir from parent $parent: " *
+                pkg_error(split(String(take!(out)), '\n')))
     write(_env_stamp_file(envdir), fp)
     return envdir
 end
@@ -200,10 +203,17 @@ function provision_payload!(host::AbstractString, root_remote::AbstractString)
     dst = "$(root_remote)/src"                 # `put_files` makes it
     src = dirname(String(first(methods(paramgrid)).file))
     files = [joinpath(src, f) for f in SlateTask.PAYLOAD_FILES]
+    # Once per version of the runner and destination in this process: a campaign launches a round
+    # every few seconds, and the runner changes only with Slate.
+    k = (String(host), dst, _hex(join(read.(files, String), '\0')))
+    lock(() -> k in _PAYLOAD_SENT, _PAYLOAD_LOCK) && return "$(dst)/slatetask.jl"
     put_files(host, files, dst) ||
         error("could not ship the task runner to $(host):$(dst)")
+    lock(() -> push!(_PAYLOAD_SENT, k), _PAYLOAD_LOCK)
     return "$(dst)/slatetask.jl"
 end
+const _PAYLOAD_SENT = Set{Tuple{String,String,String}}()
+const _PAYLOAD_LOCK = ReentrantLock()
 
 """
     provision_remote_env!(host, root_remote, parent; setup = "", depot = "", online = nothing) -> envdir
@@ -284,10 +294,113 @@ _env_twin_sh(root::AbstractString, envfp::AbstractString) =
 # Removes old task environment versions, for disk space only: the newest eight are always kept, and so
 # is any version used in the last 14 days (`provision_remote_env!` touches the one it hands out), and
 # never `keep`.
-_env_prune_sh(root::AbstractString, keep::AbstractString) =
-    "cd " * shq_path(root) * "/env 2>/dev/null && ls -1dt -- */ 2>/dev/null | tail -n +9 | " *
+_env_prune_sh(root::AbstractString, keep::AbstractString) = _versions_prune_sh(String(root) * "/env", keep)
+_versions_prune_sh(dir::AbstractString, keep::AbstractString) =
+    "cd " * shq_path(dir) * " 2>/dev/null && ls -1dt -- */ 2>/dev/null | tail -n +9 | " *
     "while IFS= read -r d; do d=\${d%/}; [ \"\$d\" = " * shq(keep) * " ] && continue; " *
     "[ -n \"\$(find \"\$d\" -maxdepth 0 -mtime +14)\" ] && rm -rf -- \"\$d\"; done; true"
+
+# ── A hub-resolved sweep's environment ───────────────────────────────────────────────────────
+# A target the hub resolved runs in the environment a region's worker uses for the same project
+# (`shared_env`): its packages are in the machine's depot and a test task has loaded it there. Its
+# developed packages, though, point at the host's one copy of each checkout, which a region's worker
+# keeps in step with local edits while it runs. A sweep cannot run from that copy: with no region
+# running an edit never reaches it, and with one running an edit lands under units already queued,
+# whose sweep key names the code as it was.
+#
+# So each version of the sources gets a snapshot beside the shared environment: its Project and
+# Manifest, the developed packages copied from their local checkouts, and the paths pointed at the
+# copies. Named like `env_key`, so a sweep's key names the snapshot it runs in. The registered packages
+# are the shared environment's, already installed; only the developed ones compile again, on the node.
+
+# Slate's own packages, which the shared environment loads from the worker's copy of its code rather
+# than from any checkout the notebook develops them from.
+const _WORKER_PKGS = ("SlateExtensionsBase", "SlateWorker")
+
+"""
+    batch_env!(host, parent; setup = "") -> String
+
+The snapshot of `parent`'s shared environment on `host` for the current version of its sources, as a
+path relative to the home directory. Built when this version has none; the shared environment itself
+must exist (a prepare builds it).
+"""
+function batch_env!(host::AbstractString, parent::AbstractString; setup::AbstractString = "")
+    fp = env_source_fingerprint(parent)
+    key = first(fp, 12)
+    base = shared_env(parent)
+    rel = "$(base).batch/$(key)"
+    lk = lock(() -> get!(ReentrantLock, _BATCH_ENVS, (String(host), rel)), _BATCH_ENVS_LOCK)
+    lock(lk) do
+        # A version found built is not asked about again for a while. The check is a round trip per
+        # launch, and its `touch` only has to keep the version clear of a prune counted in days.
+        vk = (String(host), rel, fp)
+        time() - lock(() -> get(_BATCH_ENV_SEEN, vk, 0.0), _BATCH_ENVS_LOCK) < _BATCH_ENV_RECHECK_S && return rel
+        stamp = rel * "/.slate-fp"
+        ok, had = _ssh_run(host, "cat " * shq_path(stamp) * " 2>/dev/null; touch -c " * shq_path(rel) * " 2>/dev/null; true")
+        if ok && strip(had) == fp
+            lock(() -> (_BATCH_ENV_SEEN[vk] = time()), _BATCH_ENVS_LOCK)
+            return rel
+        end
+        q, qb = shq_path(rel), shq_path(base)
+        ok, out = _ssh_run(host, "[ -f $qb/Project.toml ] || { echo missing; exit 0; }; rm -rf -- $q && " *
+            "mkdir -p $q/devsrc && cp $qb/Project.toml $q/ && { [ ! -f $qb/Manifest.toml ] || cp $qb/Manifest.toml $q/; } && " *
+            "for f in LocalPreferences.toml JuliaLocalPreferences.toml; do [ ! -f $qb/\$f ] || cp $qb/\$f $q/; done && echo ok")
+        ok && strip(out) == "missing" &&
+            error("$(basename(parent))'s environment is not on $(host) yet: prepare the machine for batch work first")
+        (ok && strip(out) == "ok") || error("could not start a task environment at $(host):$(rel)\n$(first(strip(out), 600))")
+        src = joinpath(parent, "src")
+        isdir(src) && (put_dir(host, src, "$(rel)/src"; delete = true, filter = true, excludes = [".git", "*.cov"]) ||
+                       error("could not copy $(src) to $(host):$(rel)/src"))
+        rewrites = Tuple{String,String}[]
+        for (name, dir) in local_dev_deps(parent)
+            (name in _WORKER_PKGS || !isdir(dir)) && continue
+            rp = "$(rel)/devsrc/$(name)"
+            put_dir(host, dir, rp; delete = true, filter = true,
+                    excludes = [".git", "test", "docs", "Manifest.toml", "*.cov"]) ||
+                error("could not copy $(dir) to $(host):$(rp)")
+            push!(rewrites, (name, rp))
+        end
+        code = devpaths_script(rel, rewrites) * _batch_devsources_script(rel, [r for (_, r) in rewrites]) *
+            "\nimport Pkg\nENV[\"JULIA_PKG_PRECOMPILE_AUTO\"] = \"0\"\n" *
+            "Pkg.activate(joinpath(homedir(), raw\"$(rel)\"))\n" *
+            # A developed package that gained a dependency needs a resolve; the rest only instantiate.
+            "try\n    Pkg.instantiate()\ncatch\n    Pkg.resolve(); Pkg.instantiate()\nend\n"
+        ok, out = run_julia_there(host, code; setup, what = "the task environment")
+        ok || error("could not build the task environment at $(host):$(rel):\n$(first(strip(out), 2000))")
+        put_file(String(host), Vector{UInt8}(codeunits(fp)), stamp) ||
+            error("could not record the task environment at $(host):$(rel)")
+        _ssh_run(host, _versions_prune_sh("$(base).batch", key))
+        lock(() -> (_BATCH_ENV_SEEN[vk] = time()), _BATCH_ENVS_LOCK)
+        return rel
+    end
+end
+const _BATCH_ENVS = Dict{Tuple{String,String},ReentrantLock}()
+const _BATCH_ENVS_LOCK = ReentrantLock()
+const _BATCH_ENV_SEEN = Dict{Tuple{String,String,String},Float64}()   # (host, rel, fp) → when found built
+const _BATCH_ENV_RECHECK_S = 600.0
+
+# Points each copied package's own `[sources]` at the copies, and at the shared environment's paths
+# for what was not copied (Slate's own packages): every path the environment's Manifest records.
+function _batch_devsources_script(rel::AbstractString, copies::Vector{String})
+    isempty(copies) && return ""
+    io = IOBuffer()
+    println(io, "import TOML")
+    println(io, "let mf = joinpath(homedir(), raw\"$(rel)\", \"Manifest.toml\"), at = Dict{String,String}()")
+    println(io, "  for (n, es) in (isfile(mf) ? get(TOML.parsefile(mf), \"deps\", Dict()) : Dict()), e in es")
+    println(io, "    e isa AbstractDict && haskey(e, \"path\") && (at[n] = e[\"path\"])")
+    println(io, "  end")
+    print(io, "  for pf in [")
+    print(io, join(("joinpath(homedir(), raw\"$p\", \"Project.toml\")" for p in copies), ", "))
+    println(io, "]")
+    println(io, "    isfile(pf) || continue")
+    println(io, "    d = TOML.parsefile(pf); s = get(d, \"sources\", nothing)")
+    println(io, "    s isa AbstractDict || continue")
+    println(io, "    for (k, e) in s; e isa AbstractDict && haskey(e, \"path\") && haskey(at, k) && (e[\"path\"] = at[k]); end")
+    println(io, "    open(io -> TOML.print(io, d), pf, \"w\")")
+    println(io, "  end")
+    println(io, "end")
+    return String(take!(io))
+end
 
 # ── Targets ──────────────────────────────────────────────────────────────────────────────────
 # A target says WHERE shards run and HOW the two sides see the store. Everything a notebook needs
@@ -459,11 +572,13 @@ _prefix(t::ClusterTarget) = !isempty(t.setup) ? t.setup :
 _as_line(prefix::AbstractString) = endswith(prefix, "&& ") ? prefix * "true" : rstrip(prefix, [' ', ';'])
 
 function provision!(t::ClusterTarget)
-    # A target the hub resolved runs in the environment a region's worker uses for the same project
-    # (`shared_env`): built and tested by whatever prepared it, never a second copy. A sweep goes
-    # out only once that has happened (`_untested`), so there is nothing to build here.
+    # A target the hub resolved runs in a snapshot of the environment a region's worker uses for the
+    # same project (`batch_env!`), with the developed packages' sources as they are now. The shared
+    # environment was built and tested by whatever prepared it, and a sweep goes out only once that
+    # has happened (`_untested`), so only the sources travel here.
     proj = !isempty(t.project) ? t.project :
-           !isempty(t.setup) ? "\$HOME/" * shared_env(t.parent) :
+           !isempty(t.setup) ? "\$HOME/" * (isempty(t.parent) ? shared_env(t.parent) :
+                                             batch_env!(t.host, t.parent; setup = t.setup)) :
            provision_remote_env!(t.host, t.root_remote, t.parent; setup = _prefix(t), depot = t.depot)
     # The runner is Slate's own code and its location on the cluster is Slate's business, so it is
     # shipped rather than configured. Naming one is still allowed, for a site that stages it itself.
@@ -909,6 +1024,79 @@ function sweep_key(body_src, setup_src, captures, envkey = "", summary_src = "")
     caps = join(sort(["$k=$(_digest_of(v))" for (k, v) in captures]), ";")
     return "sw" * first(_hex(string(body_src, "\0", setup_src, "\0", caps, "\0", envkey,
                                     "\0", summary_src)), 16)
+end
+
+# What a key was made of, kept with each run: the key itself is one digest, and when a cell re-runs
+# under a new one nothing else could say which of its inputs moved. The environment is broken down
+# into its packages (the Project and Manifest) and each source tree `env_key` digests, by package,
+# since an edit in a developed package is the change least visible from the cell.
+function key_parts(target::SweepTarget, body_src, setup_src, captures, summary_src = "")
+    d = Dict{String,Any}("body" => first(_hex(body_src), 16), "setup" => first(_hex(setup_src), 16),
+                         "summary" => first(_hex(summary_src), 16), "env" => env_key(target),
+                         "captures" => Dict{String,Any}(String(k) => first(_digest_of(v), 16) for (k, v) in captures))
+    parent = target isa ClusterTarget ? target.parent : ""
+    if !isempty(parent)
+        d["packages"] = env_parent_fingerprint(parent)
+        d["sources"] = Dict{String,Any}(name => string(src_tree_digest([joinpath(dir, "src")]); base = 16)
+                                        for (name, dir) in [basename(rstrip(parent, '/')) => parent; env_path_deps(parent)])
+    end
+    return d
+end
+
+"""
+    key_change(before, now) -> Vector{String}
+
+What differs between two runs' `key_parts`, as short phrases: "the body", "`x`", "Pkg's source".
+"""
+function key_change(before::AbstractDict, now::AbstractDict)
+    out = String[]
+    for (k, what) in (("body", "the body"), ("setup", "the setup"), ("summary", "the summary"))
+        get(before, k, "") == get(now, k, "") || push!(out, what)
+    end
+    cb, cn = get(before, "captures", Dict()), get(now, "captures", Dict())
+    for k in sort!(collect(union(keys(cb), keys(cn))))
+        get(cb, k, "") == get(cn, k, "") || push!(out, "`$k`")
+    end
+    get(before, "packages", "") == get(now, "packages", "") || push!(out, "the packages")
+    sb, sn = get(before, "sources", Dict()), get(now, "sources", Dict())
+    for k in sort!(collect(union(keys(sb), keys(sn))))
+        get(sb, k, "") == get(sn, k, "") || push!(out, "$(k)'s source")
+    end
+    (isempty(out) && get(before, "env", "") != get(now, "env", "")) && push!(out, "the environment")
+    return out
+end
+
+"""
+    rekeyed(root, run) -> Union{Nothing,NamedTuple}
+
+For a run whose cell ran before under another key: `(; previous, what)`, the newest such run of the
+same cell and notebook, and what changed since (`key_change`). `nothing` for a cell's first run, or
+when either run predates recording its key's parts.
+"""
+function rekeyed(root::AbstractString, run::AbstractString)
+    m = MemoStore.read_manifest(root, run)
+    m === nothing && return nothing
+    now, cell, doc = get(m, "key_parts", nothing), String(get(m, "cell", "")), get(m, "notebook", "")
+    (now isa AbstractDict && !isempty(cell)) || return nothing
+    best = nothing
+    for r in BatchSweep.cell_runs(root, cell)
+        (r == run || _sweep_of(r) == _sweep_of(run)) && continue
+        o = MemoStore.read_manifest(root, r)
+        (o === nothing || get(o, "notebook", "") != doc || !(get(o, "key_parts", nothing) isa AbstractDict)) && continue
+        (best === nothing || get(o, "created", 0) > get(best[2], "created", 0)) && (best = (r, o))
+    end
+    best === nothing && return nothing
+    return (; previous = best[1], what = key_change(best[2]["key_parts"], now))
+end
+
+# The card's line for a re-keyed run nobody has started: what changed, and the run it replaces, by
+# the id `Sweep.reopen` takes.
+function _rekey_html(root::AbstractString, run::AbstractString)
+    rk = try; rekeyed(root, run); catch; nothing; end
+    rk === nothing && return ""
+    what = isempty(rk.what) ? "" : _esc(join(rk.what, ", ")) * " changed · "
+    return "<div style='margin-top:6px;font-size:11px;opacity:.7'>" * what *
+           "previous run <code style='user-select:all'>" * _esc(rk.previous) * "</code></div>"
 end
 
 shard_key(sweep, param) = string(sweep, "_s", first(_digest_of(param), 12))
@@ -1569,10 +1757,11 @@ _store_stamp(root::AbstractString) =
     (mtime(joinpath(root, "events")), mtime(BatchSweep.jobs_dir(String(root))))
 
 """
-    advance_started!(; every = 30.0) -> Int
+    advance_started!(; every = 30.0, wait = true) -> Int
 
 Release the next wave of every started, unsettled sweep this machine knows about, and return how
-many were advanced.
+many were advanced. Each cluster is advanced on a task of its own; with `wait = false` they are left
+running and the count is of the clusters started.
 
 A sweep goes out in waves: one chunk, then the rest once a unit has landed and the body is known to
 work. Something has to release that second wave, and until now the only thing that did was an open
@@ -1590,11 +1779,11 @@ _hub_log(msg::AbstractString) = (isdefined(P, :_rlog) && P._rlog(msg); nothing)
 
 _cluster_from(c) = cluster(Dict{String,String}(String(k) => String(v) for (k, v) in c))
 
-function advance_started!(; every::Real = 30.0)
-    n = 0
+function advance_started!(; every::Real = 30.0, wait::Bool = true)
+    tasks = Task[]
     # Without `_tested` while looking for started runs: almost every tick finds none, and readiness is a
     # check of every environment tested on the machine. The cluster that has some is resolved again
-    # below, with it.
+    # with it, on its own task.
     for c in _hub_clusters(; tested = false)
         name = String(get(c, "name", ""))
         isempty(name) && continue
@@ -1602,50 +1791,186 @@ function advance_started!(; every::Real = 30.0)
         root = store_root(t)
         runs = started_runs(root)
         stamp = _store_stamp(root)
-        filter!(r -> get(_SETTLED, (root, r), nothing) != stamp, runs)   # settled, and nothing since
+        lock(_SETTLED_LOCK) do
+            filter!(r -> get(_SETTLED, (root, r), nothing) != stamp, runs)   # settled, and nothing since
+        end
         isempty(runs) && continue
         time() - get(_ADVANCE_AT, name, 0.0) < every && continue
-        _ADVANCE_AT[name] = time()
         # A cluster nobody has signed in to WAITS, exactly as the card's poll does — submitting is
         # the only thing a sign-in gates, and it goes out on the next tick after one lands.
         _reachable(t) || continue
-        try; sync_in!(t); catch; continue; end
-        full = _hub_clusters(; only = name)
-        isempty(full) || (t = try; _cluster_from(first(full)); catch; t; end)
-        # Fold the MIRROR's log. A pull merges and never deletes, so a store compacted over there
-        # leaves this side holding the originals; folding here is what keeps the mirror from growing
-        # for the life of the store. Local files only, and never required for correctness.
-        try; SlateTask.compact_events!(root); BatchSweep.forget_fold!(root); catch; end
-        stamp = _store_stamp(root)          # after the sync and the fold, which write to the mirror
-        for run in runs
-            # Clear markers with no run behind them; the store was synced in above.
-            if MemoStore.read_manifest(root, run) === nothing
-                BatchSweep.stop!(root, run)
-                _hub_log("supervisor: $(name)/$(run) has no descriptor — dropped its started marker")
-                continue
+        # Each cluster on a task of its own: a host that has gone away holds its own sweeps until its
+        # session times out, and no other cluster's. One still running from an earlier tick is left to it.
+        _busy(name)[] && continue
+        _ADVANCE_AT[name] = time()
+        push!(tasks, Threads.@spawn try
+            k = Ref(0)
+            _with_pass(name; block = false) do
+                t0 = time()
+                k[] = _advance_cluster!(name, t, root, runs)
+                time() - t0 > 5.0 && _hub_log("supervisor: advancing sweeps on $(name) took $(round(time() - t0; digits = 1))s")
             end
-            # Submitted, but its environment has never run on these nodes: testing it is part of
-            # running it, so the hub starts the test, and the next pass submits once it has passed.
-            tr = _as_run(t, run)
-            if _untested(tr)
-                isdefined(P, :auto_prepare_batch!) && P.auto_prepare_batch!(name, tr.parent, tr.resources)
-                continue
-            end
-            try
-                # The run's launcher, not the registry's: a region's queue names the environment its
-                # task workers start in, and that is the notebook's, which only the run records.
-                p = reconcile_and_sync!(t, run, launcher_for(tr); submit = true, failure_policy = sweep_policy(t))
-                if BatchSweep.is_settled(p)
-                    _SETTLED[(root, run)] = stamp
-                else
-                    n += 1
-                    delete!(_SETTLED, (root, run))
-                end
-            catch e
-                _hub_log("supervisor: advancing $(name)/$(run) failed: " * first(sprint(showerror, e), 160))
-            end
-        end
+            k[]
+        catch e
+            _hub_log("supervisor: advancing sweeps on $(name) failed: " * first(sprint(showerror, e), 160))
+            0
+        end)
     end
+    return wait ? sum(Base.fetch, tasks; init = 0) : length(tasks)
+end
+const _ADVANCING = Dict{String,Threads.Atomic{Bool}}()
+const _SETTLED_LOCK = ReentrantLock()
+
+# ── One pass at a time per cluster ──
+# A cluster's started runs are advanced by this process alone, whoever asks: the supervisor on its
+# timer, or a notebook worker waiting on a round (`advance_now!`). A request is served by the first
+# pass that starts after it was made, so callers arriving together share one pull and one question to
+# the scheduler, instead of each taking the store's lock in turn to make their own.
+mutable struct _ClusterPass
+    cond::Threads.Condition
+    last_start::Float64          # when the last finished pass started
+end
+const _PASSES = Dict{String,_ClusterPass}()
+
+_busy(name) = lock(() -> get!(() -> Threads.Atomic{Bool}(false), _ADVANCING, String(name)), _SETTLED_LOCK)
+_cluster_pass(name) = lock(() -> get!(() -> _ClusterPass(Threads.Condition(), 0.0), _PASSES, String(name)), _SETTLED_LOCK)
+
+# Run `f` as `name`'s pass, or wait for a pass that started at or after `since` to finish. With
+# `block = false`, a pass already running is left to it and this returns false.
+function _with_pass(f, name::AbstractString; since::Real = time(), block::Bool = true)
+    busy, p = _busy(name), _cluster_pass(name)
+    lock(p.cond)
+    try
+        while true
+            p.last_start >= since && return true
+            if !Threads.atomic_cas!(busy, false, true)
+                t0 = time()
+                unlock(p.cond)
+                try
+                    f()
+                finally
+                    lock(p.cond)
+                    busy[] = false
+                    p.last_start = t0
+                    notify(p.cond)
+                end
+                return true
+            end
+            block || return false
+            wait(p.cond)
+        end
+    finally
+        unlock(p.cond)
+    end
+end
+
+"""
+    advance_now!(root; since = time()) -> Bool
+
+Advance the started runs of the cluster whose store is `root`, in a pass that starts no earlier than
+`since`, and return once it has finished. False when no cluster here keeps that store or its host is
+not signed in, which leaves the caller to advance the run itself.
+"""
+function advance_now!(root::AbstractString; since::Real = time())
+    for c in _hub_clusters(; tested = false)
+        name = String(get(c, "name", ""))
+        isempty(name) && continue
+        t = try; _cluster_from(c); catch; continue; end
+        store_root(t) == root || continue
+        _reachable(t) || return false
+        _with_pass(name; since) do
+            runs = started_runs(root)
+            stamp = _store_stamp(root)
+            lock(_SETTLED_LOCK) do
+                filter!(r -> get(_SETTLED, (root, r), nothing) != stamp, runs)
+            end
+            isempty(runs) || _advance_cluster!(name, t, root, runs)
+        end
+        return true
+    end
+    return false
+end
+
+# A worker on the hub's machine shares the hub's mirror of a cluster's store, so it asks the hub to
+# advance the store rather than pulling and asking the scheduler for itself. False where there is no
+# hub to ask, or the hub keeps no cluster with this store; the caller then advances the run here.
+# The hub's pass has to start at or after `since`: now, for a caller that has just written to the
+# store, and the end of its previous read for one that only reads, so a pass already under way since
+# then serves it.
+_hub_advances(t::SweepTarget) = has_delegate() && t isa ClusterTarget && !isempty(t.host)
+function _hub_advance!(t::SweepTarget; since::Real = time())
+    _hub_advances(t) || return false
+    r = try
+        _DELEGATE[](:advance, (; root = store_root(t), since = Float64(since), machine = gethostname()))
+    catch e
+        @debug "slate: the hub could not advance a store" exception = e
+        nothing
+    end
+    return r === true
+end
+
+function _advance_cluster!(name::AbstractString, t, root::AbstractString, runs)
+    n = 0
+    # Where a slow pass spent its time, step by step, for the log.
+    t0 = time(); steps = Pair{String,Float64}[]
+    step!(what) = (push!(steps, what => time() - t0); t0 = time())
+    # One pull and one question to the scheduler for the whole pass, which every run below decides
+    # from. Each run asking for itself held the store's lock for a pull and a poll per run, and a
+    # store with many settled runs kept it held for most of every pass.
+    remote = t isa ClusterTarget && !isempty(t.host)
+    try
+        remote ? collect_pull_and_jobs!(t) : sync_in!(t; force = true)
+    catch
+        return n
+    end
+    asked = remote ? (; pulled = true, polled_first = true, job_state = collect_jobs(t),
+                        job_state_at = collected_at(t), lost = collected_lost(t)) : (;)
+    step!("pull and jobs")
+    full = _hub_clusters(; only = name)
+    isempty(full) || (t = try; _cluster_from(first(full)); catch; t; end)
+    step!("resolve")
+    # Fold the MIRROR's log. A pull merges and never deletes, so a store compacted over there
+    # leaves this side holding the originals; folding here is what keeps the mirror from growing
+    # for the life of the store. Local files only, and never required for correctness.
+    try; SlateTask.compact_events!(root); BatchSweep.forget_fold!(root); catch; end
+    step!("fold")
+    stamp = _store_stamp(root)          # after the sync and the fold, which write to the mirror
+    for run in runs
+        # Clear markers with no run behind them; the store was synced in above.
+        if MemoStore.read_manifest(root, run) === nothing
+            BatchSweep.stop!(root, run)
+            _hub_log("supervisor: $(name)/$(run) has no descriptor — dropped its started marker")
+            continue
+        end
+        # Submitted, but its environment has never run on these nodes: testing it is part of
+        # running it, so the hub starts the test, and the next pass submits once it has passed.
+        tr = _as_run(t, run)
+        if _untested(tr)
+            isdefined(P, :auto_prepare_batch!) && P.auto_prepare_batch!(name, tr.parent, tr.resources)
+            continue
+        end
+        try
+            # The run's launcher, not the registry's: a region's queue names the environment its
+            # task workers start in, and that is the notebook's, which only the run records.
+            lr = launcher_for(tr)
+            # Every unit landed in the mirror just pulled: nothing to submit or to ask about, so the
+            # run is not reconciled, which would take the store's lock for it.
+            p = BatchSweep.plan(root, run; launcher = lr)
+            BatchSweep.is_settled(p) ||
+                (p = reconcile_and_sync!(t, run, lr; submit = true, failure_policy = sweep_policy(t), asked...))
+            settled = BatchSweep.is_settled(p)
+            lock(_SETTLED_LOCK) do
+                settled ? (_SETTLED[(root, run)] = stamp) : delete!(_SETTLED, (root, run))
+            end
+            settled || (n += 1)
+        catch e
+            _hub_log("supervisor: advancing $(name)/$(run) failed: " * first(sprint(showerror, e), 160))
+        end
+        step!(run)
+    end
+    total = sum(last, steps; init = 0.0)
+    total > 5.0 && _hub_log("supervisor: a pass on $(name) took $(round(total; digits = 1)) s (" *
+        join(("$(k) $(round(v; digits = 1)) s" for (k, v) in steps if v >= 0.3), ", ") * ")")
     return n
 end
 
@@ -1696,43 +2021,133 @@ const _DESC_LOCK = ReentrantLock()
 # Idempotent and content-addressed, so the repeat costs a manifest rewrite and no blob movement.
 function _ensure_descriptors!(t::SweepTarget, run::AbstractString)
     isempty(target_host(t)) && return true
-    k = (store_root(t), String(run))
-    lock(_DESC_LOCK) do; k in _DESC_SENT; end && return true
+    _descriptors_were_sent(t, run) && return true
     sync_out!(t) || return false
-    lock(_DESC_LOCK) do; push!(_DESC_SENT, k); end
+    _descriptors_sent!(t, run)
     return true
 end
 
-_descriptors_sent!(t::SweepTarget, run::AbstractString) =
+# Also recorded in the mirror, which every process on this machine shares: a worker sends a run's
+# descriptors before it asks the hub to launch the run, and the hub need not send them again.
+_sent_marker(root::AbstractString, run::AbstractString) = joinpath(root, ".sent", String(run))
+_descriptors_were_sent(t::SweepTarget, run::AbstractString) =
+    lock(() -> (store_root(t), String(run)) in _DESC_SENT, _DESC_LOCK) || isfile(_sent_marker(store_root(t), run))
+function _descriptors_sent!(t::SweepTarget, run::AbstractString)
     lock(_DESC_LOCK) do; push!(_DESC_SENT, (store_root(t), String(run))); end
+    isempty(target_host(t)) || try
+        mkpath(dirname(_sent_marker(store_root(t), run))); touch(_sent_marker(store_root(t), run))
+    catch
+    end
+    return nothing
+end
 
-function reconcile_and_sync!(target::SweepTarget, run::AbstractString, launcher;
-                             submit::Bool = false, kw...)
+# A submitting reconcile holds the store's lock from its read to its push. A card's poll and the hub's
+# supervisor both submit for a started run, from different processes, and each decides from what the
+# store holds: two that overlap both find a chunk not yet out and both launch it.
+reconcile_and_sync!(target::SweepTarget, run::AbstractString, launcher; submit::Bool = false, kw...) =
+    submit ? _with_store_lock(() -> _reconcile_and_sync!(target, run, launcher; submit, kw...), target) :
+             _reconcile_and_sync!(target, run, launcher; submit, kw...)
+
+function _reconcile_and_sync!(target::SweepTarget, run::AbstractString, launcher;
+                              submit::Bool = false, pulled::Bool = false, polled_first::Bool = false, kw...)
+    remote = target isa ClusterTarget && !isempty(target.host)
     # About to decide what to submit, so the mirror is read fresh rather than shared: a cached copy
     # taken on a reader's behalf a moment ago could miss a chunk that has since landed, and the
-    # decision this makes is the one that must not be taken twice.
-    submit && sync_in!(target; force = true)
+    # decision this makes is the one that must not be taken twice. `pulled` says the caller has just
+    # pulled for this decision (the supervisor, once for every run it advances), and `polled_first`
+    # that it asked the scheduler before it pulled.
+    if submit && remote && !pulled && !haskey(kw, :job_state)
+        collect_pull_and_jobs!(target)
+        kw = (; kw..., job_state = collect_jobs(target), job_state_at = collected_at(target),
+                lost = collected_lost(target))
+        pulled = polled_first = true
+    end
+    submit && !pulled && sync_in!(target; force = true)
     target = _as_run(target, run)
     # An environment never tested on this machine's nodes is not sent to them as an array: the card
     # offers Prepare, which runs one task first (`_untested`).
     submit && _untested(target) && (submit = false)
-    if submit && !_ensure_descriptors!(target, run)
-        error("could not send sweep $(run)'s descriptors to " *
-              "$(target_host(target)):$(job_root(target)) — nothing was submitted")
-    end
     root = store_root(target)
+    # A chunk submitted again is one whose job has gone without its results in the mirror. The job
+    # writes them before it exits, so a scheduler asked before the pull answers for what the pull
+    # holds. Asked after it, the job may have written them since: a chunk it shows gone is pulled for
+    # again, and the submission is decided on that same answer, so a job that ends between two
+    # questions cannot be launched twice.
+    if submit && remote
+        if !haskey(kw, :job_state)
+            js = collect_jobs(target; force = true)
+            kw = (; kw..., job_state = js, job_state_at = collected_at(target), lost = collected_lost(target))
+        end
+        if !polled_first
+            pk = (; (k => v for (k, v) in pairs(kw) if k in (:job_state, :job_state_at, :lost, :failure_policy))...)
+            p0 = BatchSweep.plan(root, run; launcher, pk...)
+            any(c -> get(p0.chunk_attempts, c, 0) > 0, p0.to_submit) && sync_in!(target; force = true)
+        end
+    end
     before = BatchSweep.read_attempts(root)
-    p = BatchSweep.reconcile!(root, run, launcher, specfn_for(target); submit, kw...)
-    BatchSweep.read_attempts(root) == before || sync_out!(target; dirs = ("jobs",))
+    # A launch on a cluster takes what it needs from the store with it: the run's descriptors if they
+    # have not gone yet, and the new attempt counts.
+    sent = Ref(false)
+    launch = remote ? ((l, spec) -> _launch_with_store!(target, run, l, spec, sent)) : BatchLauncher.submit!
+    t0 = time()
+    p = try
+        BatchSweep.reconcile!(root, run, launcher, specfn_for(target); submit, launch, kw...)
+    catch
+        # The launch failed after its counts went out, and `reconcile!` has put them back.
+        sent[] && sync_out!(target; dirs = ("jobs",))
+        rethrow()
+    end
+    t1 = time()
+    (sent[] || BatchSweep.read_attempts(root) == before) || sync_out!(target; dirs = ("jobs",))
+    t2 = time()
+    t2 - t0 > 2.0 && _hub_log("supervisor: $(run): reconcile $(round(t1 - t0; digits = 1)) s, " *
+                              "pushing jobs $(round(t2 - t1; digits = 1)) s")
     return p
+end
+
+# Send what the launch needs from the mirror and start it, in one round trip where the launcher can
+# say its launch as a script. Otherwise, or when that send fails, each goes on its own. `sent` is set
+# once the store holds this launch's attempt counts.
+function _launch_with_store!(t::ClusterTarget, run::AbstractString, l, spec, sent::Ref{Bool})
+    full = !_descriptors_were_sent(t, run)
+    q = BatchLauncher.launch_query(l, spec)
+    pq = q === nothing ? nothing :
+         push_query(remote_store(t); dirs = full ? (META_DIRS..., "blobs") : ("jobs",))
+    if pq !== nothing
+        ok, out = run_io(String(t.host), BatchLauncher.framed([pq.script, q[1]]; stop = true), pq.input)
+        (pushed, _), (launched, lout) = BatchLauncher.unframe(out, 2)
+        if pushed
+            full && _descriptors_sent!(t, run)
+            sent[] = true
+            return q[2](launched, String(lout))
+        end
+        # Cut off before the push reported: whether the launch ran is not known, so it is not tried
+        # again here. The caller puts the counts back and a later pass decides.
+        ok || error("lost $(t.host) while launching $(spec.name)")
+    end
+    _ensure_descriptors!(t, run) ||
+        error("could not send sweep $(run)'s descriptors to $(target_host(t)):$(job_root(t)) — nothing was submitted")
+    id = BatchLauncher.submit!(l, spec)
+    sent[] = sync_out!(t; dirs = ("jobs",))
+    return id
 end
 
 # A change to `jobs/` is only real once it has been pushed. `sync_in!` REPLACES the mirror's copy
 # from the store, so a poll landing between the change and the push restores what was just removed,
 # and the push then sends it back. Holding the store's sync lock across both keeps them together.
-_with_store_lock(f, ::LocalTarget) = f()
+#
+# A remote mirror has a second lock, the collector's, which a pull holds and then takes the store's
+# inside (`collect_pull!`). Whatever holds both takes them in that order: a submitting reconcile that
+# held the store's lock and then pulled would wait on a reader holding the collector's, and that
+# reader on it, for good.
+_with_store_lock(f, t::LocalTarget) = with_store_lock(f, store_root(t))
 _with_store_lock(f, t::ClusterTarget) =
-    isempty(t.host) ? f() : with_store_lock(f, remote_store(t).mirror)
+    isempty(t.host) ? with_store_lock(f, store_root(t)) :
+    (t0 = time(); lock(collector(t).pull_lk) do
+        time() - t0 > _LOCK_SLOW_S &&
+            @info "slate: waited $(round(time() - t0; digits = 1)) s for $(t.host)'s pull" pid = getpid()
+        with_store_lock(f, remote_store(t).mirror)
+    end)
 
 "Send what the hub has written — descriptors, their blobs, markers — to the store. `dirs` narrows
 it to part of that, for the callers that have just touched one thing."
@@ -3689,11 +4104,18 @@ log_files(r::ShardedResult) = log_files(getfield(r, :target), getfield(r, :run))
 # position of its chunk in the job's index. That is the only link between a FILE and the work that
 # wrote it, and it is what lets the listing say where a file ran and how it ended rather than
 # offering a column of identical names.
-# SLURM names a file `<job>.<jobid>_<index>.out`, PBS and the local launcher `<job>.<index>.<ext>`.
+# SLURM names a file `<job>.<jobid>_<index>.out`, the local launcher `<job>.<launch>_<index>.log`,
+# PBS `<job>.<index>.out`.
 # The array INDEX is what maps to a chunk, so the job id in front of it is optional here.
 function _log_step(path::AbstractString)
     m = match(r"\.(?:\d+_)?(\d+)\.(?:log|out|err)$", basename(String(path)))
     return m === nothing ? 0 : parse(Int, m.captures[1])
+end
+# The number in front of the index: the scheduler's job id, or the local launcher's launch. Larger is
+# later; `0` for a name with none, which is an older one.
+function _log_launch(path::AbstractString)
+    m = match(r"\.(\d+)_\d+\.(?:log|out|err)$", basename(String(path)))
+    return m === nothing ? 0 : something(tryparse(Int, m.captures[1]), 0)
 end
 
 # What the chunk last reported about itself, from the newest event it wrote. One read, and nothing
@@ -3744,6 +4166,14 @@ function log_files(t::SweepTarget, run::AbstractString)
     # These two are guarded, because the listing is worth having without them.
     pids = Dict(nm => (try; BatchLauncher.job_pids(l, root, nm); catch; Int[]; end) for nm in names)
     out = NamedTuple[]
+    # A retried submission writes a file per launch for the same task: each is an attempt, numbered
+    # by launch. Only the newest belongs to the process the pid file and the scheduler describe.
+    launches = Dict{Tuple{String,Int},Vector{Int}}()
+    for e in files
+        nm = _log_job(e.path, names)
+        isempty(nm) || push!(get!(Vector{Int}, launches, (nm, _log_step(e.path))), _log_launch(e.path))
+    end
+    foreach(sort!, values(launches))
     for e in files
         # `<job>.<step>.<ext>`, which is how a path finds the submission that wrote it now that
         # they are not listed one submission at a time.
@@ -3753,10 +4183,13 @@ function log_files(t::SweepTarget, run::AbstractString)
         step = _log_step(e.path)
         at(v) = (1 <= step <= length(v)) ? v[step] : nothing
         chunk = something(at(chunks), "")
-        f = _chunk_facts(store, chunk)
-        push!(out, (; job = nm, e.path, e.bytes, e.modified, step, chunk,
-                      pid = something(at(get(pids, nm, Int[])), 0),
-                      running = get(live, nm, :unknown) === :running,
+        ls = launches[(nm, step)]
+        attempt = findfirst(==(_log_launch(e.path)), ls)
+        current = attempt == length(ls)
+        f = current ? _chunk_facts(store, chunk) : (; node = "", ran = 0, failed = 0, done = 0, total = 0)
+        push!(out, (; job = nm, e.path, e.bytes, e.modified, step, chunk, attempt, current,
+                      pid = current ? something(at(get(pids, nm, Int[])), 0) : 0,
+                      running = current && get(live, nm, :unknown) === :running,
                       f.node, f.ran, f.failed, f.done, f.total))
     end
     sort!(out; by = e -> (-e.modified, e.path))
@@ -3771,7 +4204,7 @@ const LOG_TAIL_CHARS = 200_000
 """
     log_tail(r, path; lines = LOG_TAIL_LINES) -> String
 
-One output file's last lines. `path` must be one `log_files` reported.
+One output file's last lines, without colour codes. `path` must be one `log_files` reported.
 
 That check is the point, not a formality: the path arrives from a browser and ends up inside a
 command on a login node. Anything not in the listing is refused rather than quoted and hoped for.
@@ -3822,20 +4255,25 @@ even when `hits` stops at `limit` — "3 of 412" is the number a reader needs, a
 silently meant "3 of the first 1000" would be a lie about the file.
 
 The offsets are what a viewer seeks to, so a match is reachable without reading what precedes it.
+A literal pattern matches across the logger's colour codes, and each hit's text comes back without
+them.
 """
 log_search(r::ShardedResult, path::AbstractString, pattern::AbstractString; kw...) =
     log_search(getfield(r, :target), getfield(r, :run), path, pattern; kw...)
-log_search(t::SweepTarget, run::AbstractString, path::AbstractString, pattern::AbstractString;
-           ignorecase::Bool = false, regex::Bool = false, limit::Integer = 1000) =
-    BatchLauncher.log_search(launcher_for(t), _known_log(t, run, path), String(pattern);
-                             ignorecase, regex, limit)
+function log_search(t::SweepTarget, run::AbstractString, path::AbstractString,
+                    pattern::AbstractString; ignorecase::Bool = false, regex::Bool = false,
+                    limit::Integer = 1000)
+    r = BatchLauncher.log_search(launcher_for(t), _known_log(t, run, path), String(pattern);
+                                 ignorecase, regex, limit)
+    return (; r.total, hits = [(; h.offset, h.line, text = _uncolour(h.text)) for h in r.hits], r.capped)
+end
 
 function log_tail(t::SweepTarget, run::AbstractString, path::AbstractString;
                   lines::Integer = LOG_TAIL_LINES)
     known = log_paths(t, run)
     String(path) in known ||
         error("no such log for this sweep: $(path)")
-    txt = BatchLauncher.log_tail(launcher_for(t), String(path); lines = Int(lines))
+    txt = _uncolour(BatchLauncher.log_tail(launcher_for(t), String(path); lines = Int(lines)))
     return length(txt) > LOG_TAIL_CHARS ?
            "… truncated to the last $(LOG_TAIL_CHARS) characters …\n" *
            String(last(txt, LOG_TAIL_CHARS)) : String(txt)
@@ -3844,8 +4282,9 @@ end
 """
     logs(r::ShardedResult; lines = 200, job = "") -> String
 
-Every job behind this sweep, tailed and concatenated. `log_files` + `log_tail` are the finer form
-and what the card uses; this is the one-call version for a terminal.
+Every output file behind this sweep, tailed and concatenated, with colour codes removed. A task
+launched more than once has a file per attempt, each headed `try N of M`. `log_files` +
+`log_tail` are the finer form; this is the one-call version for a terminal.
 
 A deliberate fetch, not a property: for a cluster it is a round trip to the login node, so it
 happens when asked and never on the card's poll. `job =` narrows to one submission (`run_jobs(r)`
@@ -3861,18 +4300,43 @@ function logs(t::SweepTarget, run::AbstractString; lines::Integer = 200,
     names = isempty(job) ? run_jobs(t, run) : String[String(job)]
     isempty(names) && return ""
     l = launcher_for(t)
-    root = job_root(t)
+    files = try
+        BatchLauncher.log_files(l, job_root(t), names)
+    catch e
+        return "… could not list this sweep's job output: " * first(sprint(showerror, e), 160)
+    end
+    isempty(files) && return ""
+    # The same files the viewer lists, each with its attempt: a retried task wrote one per launch.
+    tasks = Dict{Tuple{String,Int},Vector{Int}}()
+    for e in files
+        nm = _log_job(e.path, names)
+        isempty(nm) || push!(get!(Vector{Int}, tasks, (nm, _log_step(e.path))), _log_launch(e.path))
+    end
+    foreach(sort!, values(tasks))
+    picked = NamedTuple{(:path, :job, :step, :attempt, :tries),Tuple{String,String,Int,Int,Int}}[]
+    for e in files
+        nm = _log_job(e.path, names)
+        isempty(nm) && continue
+        step = _log_step(e.path)
+        ls = tasks[(nm, step)]
+        push!(picked, (; path = String(e.path), job = nm, step,
+                         attempt = something(findfirst(==(_log_launch(e.path)), ls), 1),
+                         tries = length(ls)))
+    end
+    sort!(picked; by = p -> (p.job, p.step, p.attempt))
+    per = max(1, Int(lines) ÷ max(1, length(picked)))
+    txts = try
+        BatchLauncher.log_tails(l, [p.path for p in picked]; lines = per)
+    catch e
+        return "… could not read this sweep's job output: " * first(sprint(showerror, e), 160)
+    end
     io = IOBuffer()
-    for nm in names
-        txt = try
-            BatchLauncher.logs(l, root, nm; lines = Int(lines))
-        catch e
-            # One unreachable job must not hide the others: a partly-readable answer beats none.
-            "… could not read this job's output: " * first(sprint(showerror, e), 160)
-        end
-        isempty(strip(txt)) && continue
-        println(io, "── ", nm, " ──")
-        println(io, rstrip(txt))
+    for p in picked
+        txt = rstrip(_uncolour(get(txts, p.path, "")))
+        isempty(txt) && continue
+        try_ = p.tries > 1 ? " · try $(p.attempt) of $(p.tries)" : ""
+        println(io, "── ", basename(p.path), try_, " ──")
+        println(io, txt)
     end
     return String(take!(io))
 end
@@ -4026,6 +4490,7 @@ function handle_action(target::SweepTarget, run::AbstractString, params, keys,
                                                "bytes" => Int(f.bytes),
                                                "modified" => Int(f.modified),
                                                "step" => f.step, "chunk" => f.chunk, "pid" => f.pid,
+                                               "attempt" => f.attempt, "current" => f.current,
                                                "running" => f.running,
                                                "node" => f.node, "ran" => f.ran,
                                                "failed" => f.failed, "done" => f.done,
@@ -4226,7 +4691,8 @@ function status_payload(target::SweepTarget, run::AbstractString, params, keys;
         # Only while held: once a job is out, testing is over and the card says nothing about it.
         "prepare" => held ? _prepare_key(target) : "",
         "prepare_machine" => (held && target isa ClusterTarget) ? (isempty(target.machine) ? target.host : target.machine) : "",
-        "signed_in" => connected(target_host(target)))
+        "signed_in" => connected(target_host(target)),
+        "rekey" => started ? "" : _rekey_html(root, run))
     # The data line grows as units land, so it rides the poll too. Off the indices, so a sweep
     # writing terabytes still costs manifest reads to watch.
     #
@@ -5017,7 +5483,14 @@ function _fails_html(rows)
     return String(take!(io))
 end
 
+# A card shown inside another's (`IOContext(io, :sweep_hosted => true)`) is a section of its host: no
+# frame, no chart, and only the controls a host does not own (`_HOSTED_ACTIONS`). The host drives the
+# run, so the card's poll reads it without advancing it and does not report it settled.
+const _HOSTED_ACTIONS = ("logs",)
+_hosted(io::IO) = get(io, :sweep_hosted, false) === true
+
 function Base.show(io::IO, ::MIME"text/html", r::ShardedResult)
+    hosted = _hosted(io)
     p, t = r.plan, r.telemetry
     frac = BatchSweep.fraction(p)
     started = BatchSweep.is_started(store_root(r.target), r.run)
@@ -5028,13 +5501,13 @@ function Base.show(io::IO, ::MIME"text/html", r::ShardedResult)
     # `data-sw` hooks mark every part the live script patches; without them it would have to
     # rebuild the card, and the parts that come from Julia (failures, the blocked reason) cannot be
     # rebuilt in the browser.
-    print(io, "<div data-sweep='", r.run, "' ",
+    print(io, "<div data-sweep='", r.run, "' ", hosted ? "data-sw-hosted='1' " : "",
               # `inherit`, not a font stack: inside the notebook this picks up the page's own UI
               # font, and in a static export it picks up whatever that page uses. Naming a family
               # here would make the card the one element that ignores its surroundings.
               "style='font-family:inherit;color:var(--text,#d4d8e8);",
-              "border:1px solid var(--border,#2a2e40);border-radius:8px;padding:12px 14px;",
-              "background:var(--bg2,#141828)'>")
+              hosted ? "" : "border:1px solid var(--border,#2a2e40);border-radius:8px;padding:12px 14px;" *
+                            "background:var(--bg2,#141828)", "'>")
 
     # Header: what state it is in, and how far.
     print(io, "<div style='display:flex;align-items:center;gap:8px;margin-bottom:8px'>",
@@ -5085,7 +5558,7 @@ function Base.show(io::IO, ::MIME"text/html", r::ShardedResult)
     # at render time AND patched by the poll, so it is populated before the first round trip and
     # keeps filling after it. The host is emitted only when there is something to draw, so a sweep
     # with no plottable shape does not leave a hole in the card.
-    if r.plot !== false
+    if r.plot !== false && !hosted
         opt, perr, fields, f = _plot_option(r.plot, getfield(r, :rows))
         # Which of the record's numeric fields the automatic chart shows, when it has several.
         print(io, "<select data-sw='chartfield' title='the field the chart shows' style='",
@@ -5135,10 +5608,12 @@ function Base.show(io::IO, ::MIME"text/html", r::ShardedResult)
     println(io, "<div data-sw='testing' style='margin-top:8px;font-size:12px;opacity:.85;cursor:pointer'></div>")
     err = p.state === :exhausted ? exhausted_error(getfield(r, :target), getfield(r, :run)) : ""
     println(io, "<div data-sw='why'>", _why_html(p; err), "</div>")
+    # A run nobody has started, of a cell that ran before under another key: what changed.
+    println(io, "<div data-sw='rekey'>", started ? "" : _rekey_html(store_root(r.target), r.run), "</div>")
     println(io, "<div data-sw='fails'>", _fails_html(getfield(r, :rows)), "</div>")
 
-    _actions(io, r)
-    _live_script(io, r)
+    _actions(io, r; hosted)
+    _live_script(io, r; hosted)
     println(io, "</div>")
     return nothing
 end
@@ -5195,12 +5670,15 @@ const _BTN_STYLE = "font:inherit;font-size:11px;padding:3px 9px;border-radius:5p
                    "border:1px solid var(--border,#2a2e40);background:transparent;" *
                    "color:var(--text,#d4d8e8)"
 
-function _actions(io, r::ShardedResult)
+function _actions(io, r::ShardedResult; hosted::Bool = false)
     # The container is emitted even when empty: the live script repopulates it, and a card that
-    # rendered with nothing to offer must still be able to grow a Retry when a unit fails.
-    print(io, "<div data-sw='acts' style='display:flex;gap:6px;margin-top:10px'>")
+    # rendered with nothing to offer must still be able to grow a Retry when a unit fails. A hosted
+    # card names the actions it may show, so a poll cannot bring the others back.
+    print(io, "<div data-sw='acts'", hosted ? " data-sw-allow='" * join(_HOSTED_ACTIONS, ",") * "'" : "",
+              " style='display:flex;gap:6px;margin-top:10px'>")
     for (act, label) in action_list(r.plan, BatchSweep.is_started(store_root(r.target), r.run);
                                     jobs = !isempty(run_jobs(r)))
+        hosted && !(act in _HOSTED_ACTIONS) && continue
         print(io, "<button data-sw-do='", act, "' style='", _BTN_STYLE, "'>", _esc(label), "</button>")
     end
     println(io, "</div>")
@@ -5210,7 +5688,7 @@ end
 # a settled sweep renders static and starts no timer, so a notebook full of finished sweeps costs
 # nothing. The interval backs off as a run gets long, because a sweep of hours does not need
 # second-by-second updates and the poll is a round trip to the scheduler.
-function _live_script(io, r::ShardedResult)
+function _live_script(io, r::ShardedResult; hosted::Bool = false)
     ch = status_channel(r.run)
     doch = action_channel(r.run)
     # The buttons are wired whatever the state; only the POLL is conditional. A finished sweep still
@@ -5228,6 +5706,7 @@ function _live_script(io, r::ShardedResult)
       root.dataset.swLive = "1";
       var started = Date.now(), timer = null, chart = null, settled = false;
       var watching = $(poll ? "true" : "false");   // was there anything left to watch at render?
+      var hosted = $(hosted ? "true" : "false");   // a section of another card, which drives the run
       // The last state the card knows about, seeded from the render so the buttons can speak
       // accurately before the first poll lands.
       var last = { done: $(r.plan.shards_done), total: $(r.plan.shards_total),
@@ -5322,8 +5801,9 @@ function _live_script(io, r::ShardedResult)
       function paint(s){
         last = s;
         // Feed the notebook-level pill. The card is inside one cell's output; the pill is what
-        // answers "what is this notebook doing" when that cell is scrolled away or collapsed.
-        if (window.slateSweeps) {
+        // answers "what is this notebook doing" when that cell is scrolled away or collapsed. A hosted
+        // card's work is its host's to report, as part of what the host is doing.
+        if (window.slateSweeps && !hosted) {
           var cell = root.closest('[data-cid]');
           // The CHANNEL rides along so the log viewer can read any sweep in the notebook, not
           // only the card it was opened from.
@@ -5338,7 +5818,7 @@ function _live_script(io, r::ShardedResult)
         // Why it stopped, and which units failed. Rendered by Julia and swapped in whole, so the
         // browser holds no second copy of this markup to drift from the cell's own render. Only on
         // CHANGE, so an open <details> is not collapsed underneath the reader on every poll.
-      ["queue", "why", "fails", "data", "stall"].forEach(function(k){
+      ["queue", "why", "fails", "data", "stall", "rekey"].forEach(function(k){
           var el = root.querySelector('[data-sw="' + k + '"]');
           if (!el || s[k] === undefined) return;
           if (el.dataset.h !== s[k]) { el.dataset.h = s[k]; el.innerHTML = s[k]; }
@@ -5425,7 +5905,7 @@ function _live_script(io, r::ShardedResult)
           // Only for a settle we actually WATCHED: a card that rendered already-finished has
           // nothing to announce, and announcing anyway would restale the notebook's downstream
           // cells on every page load.
-          if (watching && !root.dataset.swSettledSent) {
+          if (watching && !hosted && !root.dataset.swSettledSent) {
             root.dataset.swSettledSent = "1";
             if (window.slateCall) window.slateCall("$(doch)", { action: "settled" }).catch(function(){});
           }
@@ -5462,7 +5942,7 @@ function _live_script(io, r::ShardedResult)
         if (!document.body.contains(root)) { clearInterval(timer); return; }
         if (!window.slateCall || polling) return;
         polling = true;
-        window.slateCall("$(ch)", { field: field }).then(paint).catch(function(e){
+        window.slateCall("$(ch)", hosted ? { field: field, advance: false } : { field: field }).then(paint).catch(function(e){
           if (/no slate_on handler/.test(String(e))) clearInterval(timer);   // the cell is gone
         }).then(function(){ polling = false; });
       }
@@ -5561,6 +6041,10 @@ function _live_script(io, r::ShardedResult)
       function syncActions(list, now){
         var host = root.querySelector('[data-sw="acts"]');
         if (!host || !list) return;
+        if (host.dataset.swAllow) {
+          var allow = host.dataset.swAllow.split(",");
+          list = list.filter(function(a){ return allow.indexOf(a[0]) >= 0; });
+        }
         if (acting && !now) { held = list; return; }
         var want = list.map(function(a){ return a[0] + "|" + a[1]; }).join(",");
         if (host.dataset.sig === want) return;
@@ -5826,8 +6310,13 @@ function run_sweep(target::SweepTarget, params::AbstractVector, body_src::Abstra
     # cannot be sliced; the dataset says how many, rather than quietly omitting them.
     lazy = lazy || attr_lazy(attrs)
     # What has landed since last time. For a remote cluster this is the one round trip that makes
-    # every manifest read below local; for a local target it is a no-op.
-    sync_in!(target)
+    # every manifest read below local; for a local target it is a no-op. A run about to be submitted
+    # reads the store fresh here, once, for this and for the submission below.
+    going = submit && _reachable(target)
+    # A run the hub will launch is pulled for and sent by the hub's pass, into the mirror this
+    # process shares with it; pulling and sending here first would put both in front of that pass.
+    handoff = going && cap == 0 && _hub_advances(target)
+    handoff || sync_in!(target; force = going)
     root = store_root(target)
     mkpath(root)
     key = sweep_key(body_src, setup_src, captures, env_key(target), summary_src)
@@ -5859,6 +6348,7 @@ function run_sweep(target::SweepTarget, params::AbstractVector, body_src::Abstra
                                   root)[1]
     BatchSweep.write_sweep!(root, run, chunks; cell = String(cell), notebook = _ctx_docid(),
                             name = _ctx_notebook(), labels = lab_blob,
+                            key_parts = key_parts(target, body_src, setup_src, captures, summary_src),
                             parent = target isa ClusterTarget ? target.parent : "",
                             resources = target isa ClusterTarget ?
                                 Dict{String,String}(String(k) => string(v) for (k, v) in pairs(target.resources)) :
@@ -5882,7 +6372,7 @@ function run_sweep(target::SweepTarget, params::AbstractVector, body_src::Abstra
     # has nothing new to send (its descriptors are named by their content), so neither pays the
     # round trip. Replaying a campaign's finished rounds is then a matter of local reads. A landed
     # run is not marked sent: a unit retried later has its descriptors sent before it is submitted.
-    if !all(in(landed), keys) && !lock(() -> (String(root), run) in _DESC_SENT, _DESC_LOCK)
+    if !handoff && !all(in(landed), keys) && !_descriptors_were_sent(target, run)
         if sync_out!(target)
             _descriptors_sent!(target, run)
         elseif _reachable(target)
@@ -5902,8 +6392,10 @@ function run_sweep(target::SweepTarget, params::AbstractVector, body_src::Abstra
     # nobody asked for again. Starting says the work was wanted; it does not say this call should
     # start it. The card's poll advances a started sweep, which is where watching belongs.
     submit && BatchSweep.start!(root, run)
-    reconcile_and_sync!(target, run, launcher; cap, submit = submit && _reachable(target),
-                        failure_policy = sweep_policy(target))
+    # A run to submit with no cap of its own is the hub's to advance, as every started run is.
+    (handoff && _hub_advance!(target)) ||
+        reconcile_and_sync!(target, run, launcher; cap, submit = going, pulled = going && !handoff,
+                            failure_policy = sweep_policy(target))
     return _attach(target, run, key, params, keys; launcher, plot, register, refresh,
                    cell = String(cell))
 end
@@ -5933,7 +6425,8 @@ function _find_run(root::AbstractString, run::AbstractString)
     r = String(run)
     m = try; MemoStore.read_manifest(root, r); catch; nothing; end
     (m !== nothing && get(m, "kind", "") == BatchSweep.KIND_SWEEP) && return r
-    hits = [n for (n, _) in store_sweeps(root) if startswith(n, r)]
+    # The Sweeps panel shows ids without their `sw`.
+    hits = [n for (n, _) in store_sweeps(root) if startswith(n, r) || startswith(n, "sw" * r)]
     length(hits) == 1 && return hits[1]
     isempty(hits) && error("no sweep `$r` in the store at $root (`Sweep.list` shows what it holds)")
     error("`$r` names $(length(hits)) sweeps: $(join(first(hits, 6), ", "))" *

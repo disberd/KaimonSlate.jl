@@ -314,12 +314,6 @@ were written when they went out. They are marked.
   picture with a height of its own (`{height=…}`) had the y of its bottom edge. An exporter now puts
   such a picture in the centre of its column, where the live deck and the PDF draw it. The PDF does
   not change.
-- `?deck=sheet`, `?deck=print` and `?deck=S.K` wait for the cells' images before they copy a slide.
-  A markdown cell or an output with an image fills in only after the image decodes, so a capture
-  taken at once showed the cell empty: a contact sheet with no figures and no markdown images.
-- `?deck=sheet` and `?deck=print` fit each slide again after its images load. The fit ran when the
-  slide was drawn, and a copied image has no size then, so a slide with a markdown image kept full
-  size, ran past its box, and the footer cut the last lines.
 - A chart of a `{{ }}` value (`{{ echart(…) }}`) shows on the notebook page and on the live deck when
   the page loads. The render of a markdown cell did not draw it, so it showed only after a change of
   the theme or of the figure palette, and on a slide it could keep 0 px of width. On a slide it now
@@ -348,6 +342,129 @@ were written when they went out. They are marked.
   its widest content and centred, as on the live deck: a key message, an admonition or code is as wide
   as the widest line, not as the page. A deck template that draws its own centre slide gets the same
   with `fit(center-body(body))`.
+
+## [2.4.0] - 2026-11-25
+
+### Added
+
+- While a notebook starts, its worker's pill stays amber until a cell can run, and names what it
+  waits on: starting the worker, loading the notebook's packages, precompiling (`k/N`), analyzing
+  imports. The run status says the same with a running clock and the number of cells queued.
+  Cells waiting in the run read QUEUED, and the cell whose packages are loading reads LOADING.
+- Markdown reads Documenter's forms: a span in two backticks and a ```` ```math ```` fence are math,
+  and strikethrough, task lists and footnotes render. The page, the PDF and the docs export agree.
+- A bibliography's references card signs in to a site that offers OAuth. Sign in opens the site's
+  approval page, and the hub keeps the tokens with its secrets and renews them. A pasted token
+  still works for a site with no sign-in.
+
+### Changed
+
+- A citation group renders as one citation in every view: the live page, the HTML and Markdown
+  exports and the docs bundle. Author-date styles name an author's consecutive works once, and the
+  bare `@key` form reads as a narrative citation, `Knuth (1984)`.
+- A work with no author is cited by its title, `(Water levels, 2026)`.
+- Adding a package to a notebook runs a plain `Pkg.add`, which is faster in a large environment.
+- The sign-in result page uses Slate's dark palette, and light only when the system asks for it.
+
+### Fixed
+
+- A cold notebook environment precompiles, with its progress shown, before the cells run. On
+  Julia 1.13 the narrated pass never ran, and the first cell compiled everything with nothing shown.
+- A notebook's fork is kept when its rebuild fails, and so are the region workers' copies of it.
+  The footer's packages and the project's entries are checked against the registries by UUID
+  before a fork uses them, so a name listed under another package's UUID is reported.
+- A sweep's task environment builds from a project that is not a package.
+- Update works for a package the notebook inherits from its parent project.
+- A memo value holding a closure built inside another notebook closure restores in another process.
+- In the PDF, a bracketed key the bibliography lacks prints as the key, marked, and the export
+  completes.
+- A markdown cell whose prose shows a `#%%` line in a code block reads back whole.
+- A machine whose default Julia differs from the hub's keeps its built environment between starts.
+- A `using` cell that mirrors to a region is not treated as orphaned while the region comes up.
+- A replaced ssh session is announced as dropped only if it had signed in.
+- An image or video in a slide's markdown or output gives up height to fit the slide, as a
+  `slide_figure` does, so the slide's text keeps its size.
+- `?deck=sheet`, `?deck=print` and `?deck=S.K` wait for the cells' images before they copy a slide.
+  A markdown cell or an output with an image fills in only after the image decodes, so a capture
+  taken at once showed the cell empty: a contact sheet with no figures and no markdown images.
+  (#89, @disberd)
+- `?deck=sheet` and `?deck=print` fit each slide again after its images load. The fit ran when the
+  slide was drawn, and a copied image has no size then, so a slide with a markdown image kept full
+  size, ran past its box, and the footer cut the last lines. (#89, @disberd)
+- A tall slide in the PDF deck starts below the top margin. The fit shrinks the slide, but the
+  page centred it at its height before the shrink, so the title sat above the page edge.
+  (#88, @disberd)
+
+## [2.3.1] - 2026-11-23
+
+### Fixed
+
+- A notebook saved with CRLF line endings, as a Windows checkout under `core.autocrlf` writes it,
+  reads the same as with LF. Markdown cells showed their `@md"""` wrapper, and cells showed as
+  edited in the browser.
+- A standalone app's environment updates to the latest Kaimon on each start. Kaimon is bounded to
+  2.x there, and the launcher starts Julia without the user's startup file.
+
+## [2.3.0] - 2026-11-23
+
+### Added
+
+- **`Form` control.** `@bind costs Form(years = Slider(1:10), price = Slider(5_000:5_000:200_000))`
+  groups several controls that are applied at once. Moving a field edits a draft in the page, and
+  Apply sends every field, so the cells reading the form run once. It binds a NamedTuple of the
+  fields' values, each as its own control would bind it. `set_bind(:costs, (; years = 3))` applies
+  values from a cell, with a field left out taking its default. The controls palette and the design
+  graph's tooltip list a form's fields.
+- A sweep's card says what changed since its cell's last run. Each run records the parts of its
+  key, with the environment broken down by package source, so a cell that runs under a new key
+  names what moved and the run it replaces.
+- The Sweeps panel tells runs of one sweep apart, and a click copies a run's id. `Sweep.reopen`
+  takes the id as the panel shows it.
+- A sweep's card can be a section of another card that hosts it: with `:sweep_hosted` on the
+  display context it drops its frame and chart, offers only Logs, and leaves driving the run to
+  the host. A hosted card is left out of the Sweeps panel.
+- A machine whose juliaup runs another Julia version gets the hub's version added by a prepare,
+  and every Julia Slate starts there asks for it with `JULIAUP_CHANNEL`. The user's default
+  channel is left alone.
+
+### Changed
+
+- A hub-resolved sweep runs in a snapshot of its developed sources. Each version of the sources
+  gets its own environment beside the shared one, and a sweep already running keeps the code its
+  key names.
+- A cluster's runs advance in one pass at a time, which the hub serves for every notebook and
+  worker on its machine. The pass asks the scheduler and pulls results in one round trip, launches
+  with the store's changes in another, and skips finished runs. Each cluster advances on a task of
+  its own, so a host that stops answering holds only its own sweeps. Slow cluster operations are
+  logged with where they spend their time.
+- `Sweep.logs` reads a job's output through the same listing the log viewer uses, headed by its
+  try when a task was launched more than once. A plain-SSH machine keeps each launch's log.
+- A bind cell's controls line up in shared columns, and a label reads as text. Only a slider, a
+  labelled toggle and a pick keep a readout beside them.
+- Markdown cells render in the parallel batch, each as soon as the cells it interpolates from
+  finish.
+- A notebook's checkout inside its project is recorded in the footer relative to the project, so
+  it resolves wherever the project is cloned.
+
+### Fixed
+
+- An app installed from a bundle keeps its project's `Project.toml`. The app runs in the project
+  it shipped, which Slate no longer re-seeds as if it were a notebook's forked environment, so the
+  notebook's `using` of its own package resolves.
+- A region worker defines the functions and types of the cells it reads, and a value holding a
+  notebook closure crosses to another worker with its code.
+- A restored cell's methods are defined under the cell's file and its statements recorded, so a
+  sweep ships the helpers a restored cell defines.
+- A package from a registry only this machine reaches is sent to another machine as source. A
+  failed Pkg run is reported from its error line.
+- A remote mirror's pull cannot skip a file across concurrent pulls or a failed transfer, and a
+  chunk whose job is seen gone is pulled for again before it is launched a second time. Lock order
+  between the collector and the store is consistent.
+- A worker asked to shut down exits cleanly, after its atexit hooks and output flush, instead of
+  crashing while threads are still in native code.
+- A bind value reaches the worker as plain Base types, so a structured value set from the page or
+  the `set_bind` tool arrives in a worker without the JSON package.
+- The worker accepts DedicatedThreads 0.2.
 
 ## [2.2.0] - 2026-11-16
 

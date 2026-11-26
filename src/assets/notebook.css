@@ -305,6 +305,10 @@ body:has(.filespanel.open) .cellmove { display:none; }
 .cell.state-stale   { border-left-color:var(--gold); }
 .cell.state-edited  { border-left-color:var(--orange); }
 .cell.state-running { border-left-color:var(--accent); animation:pulse 1s infinite; }   /* executing → blue, pulsing */
+/* QUEUED: stale, in a run that will reach it. LOADING: the worker is loading the packages this cell
+   imports before anything can run, which is this cell's work, so it pulses like a running one. */
+.cell.state-queued  { border-left-color:var(--accent); }
+.cell.state-loading { border-left-color:var(--accent); animation:pulse 1s infinite; }
 /* dep-focus filter view: banner shown while only a cell's dependency chain is rendered */
 .focusbar { position:sticky; top:0; z-index:25; cursor:pointer; margin:0 0 10px; padding:7px 12px;
   background:rgba(86,156,214,.14); border:1px solid var(--accent); border-radius:8px; color:var(--text); font-size:.82rem; }
@@ -701,6 +705,8 @@ body.app .appfail .appfailjump:hover { color:var(--text); border-color:var(--acc
 .cell.state-stale   .badge { color:var(--gold); }
 .cell.state-edited  .badge { color:var(--orange); }
 .cell.state-running .badge { color:var(--accent); }
+.cell.state-queued  .badge { color:var(--dim); }
+.cell.state-loading .badge { color:var(--accent); }
 .cell.state-errored .badge { color:var(--red); }
 /* BLOCKED is a WAIT, not a failure — gold like STALE (work still to come), never red. The rail
    matches, so a notebook waiting on a cluster node does not read as a notebook full of errors. */
@@ -1253,6 +1259,7 @@ body.wrap-output .output pre { white-space:pre-wrap; word-break:break-word; }
 /* What the last release did. Under the table, where the thing it happened to was — the confirm
    already said what would happen, so this reports the outcome rather than repeating the warning. */
 .swst-tbl td.swst-cell { color:var(--val); white-space:nowrap; }
+.swst-tbl td.swst-id { cursor:copy; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .swst-note { margin-top:8px; font-size:.72rem; color:var(--val); }
 .swst-note.bad { color:var(--red,#e57575); }
 .swcfgpop .swcfg-sub { text-transform:none; letter-spacing:0; font-weight:400; opacity:.75; }
@@ -1478,6 +1485,15 @@ slate-subtitle, slate-byline, slate-abstract { display:contents; }
 .md .admonition.warning, .md .admonition.caution { --adm:var(--gold); }
 .md .admonition.danger, .md .admonition.error,
 .md .admonition.compat                         { --adm:var(--red); }
+/* Footnotes: the reference is a superscript, each note a small row with its label in front. */
+.md a.footnote { font-size:.75em; vertical-align:super; line-height:0; text-decoration:none; }
+.md div.footnote { display:flex; gap:.6em; font-size:.88em; color:var(--dim); margin:.3em 0; }
+.md :not(div.footnote) + div.footnote { border-top:1px solid var(--border); padding-top:.6em; margin-top:1em; }
+.md div.footnote > * { margin:0; }
+.md div.footnote > .footnote-title { font-weight:600; }
+/* A task item shows its checkbox in place of the bullet. */
+.md li:has(> input[type=checkbox]:first-child) { list-style:none; margin-left:-1.3em; }
+.md li > input[type=checkbox]:first-child { margin:0 .4em 0 0; vertical-align:middle; }
 
 /* ── Web cell: 3-pane HTML/CSS/JS editor ── A stack of labelled section editors. Each pane has a small
    language tab; empty panes stay compact so a JS-only widget isn't three tall boxes. */
@@ -1690,9 +1706,25 @@ body.celldnd #nb { padding-bottom: 96px; }
 .dropline { position:absolute; left:0; right:0; height:3px; background:var(--purple); border-radius:2px;
             box-shadow:0 0 8px var(--purple); display:none; z-index:5; pointer-events:none; }
 .cell.bind { border-left-color:var(--teal); }
-.widget { display:flex; align-items:center; gap:12px; padding:12px 14px; }
-.wname { font-family:'Cascadia Code',monospace; color:var(--accent); min-width:64px; }
-.widget input[type=range] { flex:1; accent-color:var(--purple); }
+/* A bind cell: one row per control, the rows sharing their columns so every control starts at the
+   same place. The label column is as wide as the labels, wrapping past a cap; the control column has
+   a width a slider reads well at; the readout sits beside it; the last column takes what is left.
+   Each row is a subgrid of the cell's grid. */
+.binds { display:grid; grid-template-columns:fit-content(20rem) minmax(8rem, 34rem) auto 1fr; }
+.binds > .widget, .binds > .hostedph { grid-column:1 / -1; }
+.widget { display:grid; grid-template-columns:subgrid; align-items:center; column-gap:16px; padding:8px 14px; }
+.widget > .wname { grid-column:1; }
+.widget > input, .widget > select, .widget > .pick-ro, .widget > .playhead-ro { grid-column:2; justify-self:start; max-width:100%; }
+.widget > input[type=range] { justify-self:stretch; }
+/* What takes a row's width: a list, a group of options, a viewer, a form, a button on its own. */
+.widget > textarea, .widget > .mslist, .widget > .checkgroup, .widget > .radiogroup, .widget > .customwidget { grid-column:2 / -1; }
+.widget > .formctl { grid-column:1 / -1; }
+.widget > .actionbtn { grid-column:1 / -1; justify-self:start; }
+.wname { font-family:'Cascadia Code',monospace; color:var(--accent); font-size:.86rem; overflow-wrap:anywhere; }
+/* A label is prose: read as text, not as code. */
+.wname.wlabel { font-family:inherit; color:color-mix(in srgb, var(--text) 82%, var(--dim)); font-size:.88rem; line-height:1.3; }
+.widget input[type=range], .control input[type=range] { accent-color:var(--purple); }
+.widget input[type=number] { width:10ch; }
 /* An AFM / custom-widget mount hosts anything from a compact control to a full-bleed viewer (Mol*, a
    canvas app). Let it claim the row's width like the other expanded controls (min-width:0 so it can
    shrink below its content), and make it a positioning context + clip so a viewer that positions itself
@@ -1700,7 +1732,10 @@ body.celldnd #nb { padding-bottom: 96px; }
 .widget .customwidget, .control .customwidget { flex:1 1 auto; min-width:0; position:relative; overflow:hidden; }
 .widget input[type=text], .widget input[type=number], .widget select {
   background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:5px; padding:3px 8px; }
-.wval { font-family:'Cascadia Code',monospace; color:var(--val); min-width:48px; text-align:right; }
+/* A slider's number, beside it. */
+.wval { font-family:'Cascadia Code',monospace; color:var(--val); font-size:.84rem; font-variant-numeric:tabular-nums;
+        min-width:5ch; white-space:nowrap; }
+.widget > .wval { grid-column:3; }
 /* Control strip: bound widgets surfaced *with* a cell's output (presentation layer). */
 .controls { display:flex; flex-wrap:wrap; align-items:stretch; gap:8px; padding:10px 14px;
             border-top:1px solid var(--border); background:linear-gradient(var(--bg3),var(--bg2)); }
@@ -1719,6 +1754,32 @@ body.cdnd .controls.empty::before { content:'drop a control here'; color:var(--d
   padding:8px; align-self:center; }
 .control { display:flex; align-items:center; gap:8px; }
 .control .wname { min-width:auto; }
+/* A Form: its fields in a grid, an Apply/Revert bar beside its name. Edited and not yet applied, the
+   form is outlined and the bar says how many fields wait. */
+.formctl { display:flex; flex-direction:column; gap:8px; flex:1 1 auto; min-width:0; padding:8px 10px 10px;
+           border:1px solid var(--border); border-radius:6px; }
+.formctl.dirty { border-color:var(--gold); }
+.formhead { display:flex; align-items:center; gap:10px; padding-bottom:6px; border-bottom:1px solid var(--border); }
+.formhead .wname { font-weight:600; }
+.formbar { display:flex; align-items:center; gap:6px; margin-left:auto; }
+.formstate { color:var(--dim); font-size:.78rem; }
+.formctl.dirty .formstate { color:var(--gold); }
+.formbar button { font-size:.78rem; padding:2px 10px; border-radius:5px; border:1px solid var(--border);
+                  background:var(--bg3); color:var(--text); cursor:pointer; }
+.formbar .formapply:not(:disabled) { border-color:var(--teal); color:var(--teal); }
+.formbar button:disabled { opacity:.45; cursor:default; }
+/* The fields share columns the way a bind cell's rows do; a field's wrapper takes no box, so its
+   label, control and readout sit in the form's grid. */
+.formfields { display:grid; grid-template-columns:fit-content(20rem) minmax(8rem, 34rem) auto 1fr; gap:6px 16px; align-items:center; }
+.control.formfield { display:contents; }
+.formfield > .wname { grid-column:1; }
+.formfield > input, .formfield > select, .formfield > .pick-ro { grid-column:2; justify-self:start; max-width:100%; }
+.formfield > input[type=range] { justify-self:stretch; }
+.formfield > textarea, .formfield > .mslist, .formfield > .checkgroup, .formfield > .radiogroup, .formfield > .customwidget { grid-column:2 / -1; }
+.formfield > .wval { grid-column:3; }
+.formfield input[type=number] { width:10ch; }
+.formfield input[type=text], .formfield input[type=number], .formfield select {
+  background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:5px; padding:3px 8px; }
 .cgrip { cursor:grab; color:var(--dim); user-select:none; font-size:.9rem; padding:3px 6px;
          border-radius:4px; display:flex; align-items:center; }
 .cgrip:hover { background:var(--bg); color:var(--accent); }
@@ -1751,7 +1812,8 @@ body.cdnd .controls.empty::before { content:'drop a control here'; color:var(--d
 .msopt.on, .msopt.on:hover { background:var(--purple); color:#160d18; }
 /* TableSelect reuses the shared interactive table (.slatetable — sort/filter/paginate) with row
    selection layered on. The widget stacks (name above the table) instead of the usual inline row. */
-.widget:has(.tablesel), .control:has(.tablesel) { flex-direction:column; align-items:stretch; }
+.control:has(.tablesel) { flex-direction:column; align-items:stretch; }
+.widget > .tablesel { grid-column:1 / -1; }
 .tablesel { width:100%; min-width:0; overflow:auto; max-height:360px; }
 .slatetable.selectable tbody tr { cursor:pointer; }
 .slatetable tbody tr.on, .slatetable tbody tr.on:hover { background:color-mix(in srgb, var(--purple) 32%, transparent); }
@@ -1775,7 +1837,7 @@ input.toggle:checked::after { left:18px; }
 .control .wval { min-width:40px; }
 /* A bind/control-group cell stacks one row per bound variable. */
 .binds > .widget + .widget, .binds > .widget + .hostedph, .binds > .hostedph + .widget,
-.binds > .hostedph + .hostedph { border-top:1px solid var(--border); }
+.binds > .hostedph + .hostedph { border-top:1px solid color-mix(in srgb, var(--border) 55%, transparent); }
 /* A bound control surfaced in a strip elsewhere collapses to this slim chip. */
 .hostedph { display:flex; align-items:center; gap:8px; padding:6px 14px; color:var(--dim); font-size:.78rem; }
 .hostedph .wname { min-width:auto; }
@@ -2539,8 +2601,11 @@ body.dag-open.dag-bottom .page { padding-bottom:calc(var(--dagh, 42vh) + 40px); 
    jump as the top worker changes, and the LABEL elides on overflow so a long region name can't blow out the
    bar. It carries the ranked dropdown of ALL workers, anchored to it. */
 .wpill-top { position:relative; min-width:150px; max-width:300px; }
-.wpill-top .wtopicon, .wpill-top .wstat { flex:0 0 auto; }
-.wpill-top .wtoplabel { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* The worker's name keeps its place (a long region name elides at its own cap); a status too long for
+   what is left elides, rather than pushing the name out or running past the pill's edge. */
+.wpill-top .wtopicon { flex:0 0 auto; }
+.wpill-top .wtoplabel { flex:0 0 auto; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wpill-top .wstat { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .wpill-menu { position:absolute; top:calc(100% + 5px); left:0; z-index:60; min-width:230px; cursor:default;
   display:flex; flex-direction:column; gap:2px; padding:4px; background:var(--bg2);
   border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 26px rgba(0,0,0,.4); }
@@ -2751,6 +2816,14 @@ body.cdnd .plist::after { content:'drop here to remove'; color:var(--dim); font-
 .chip .pval { color:var(--val); font-family:'Cascadia Code',monospace;
   min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chip.hosted { opacity:.7; }
+/* A form: its name and field count on the first line, then its fields as a two-column list. */
+.chip.formchip { flex-wrap:wrap; row-gap:4px; }
+.chip .pval.pcount { color:var(--dim); font-family:inherit; font-size:.72rem; }
+.chip .pfields { flex:1 0 100%; display:grid; grid-template-columns:auto minmax(0,1fr); column-gap:10px; row-gap:1px;
+  padding:4px 0 1px 8px; border-left:1px solid var(--border); margin-left:2px; font-size:.74rem; }
+.chip .pfname { color:var(--dim); font-family:'Cascadia Code',monospace; white-space:nowrap; }
+.chip .pfval { color:var(--val); font-family:'Cascadia Code',monospace; text-align:right;
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* Blurred like every other full-screen overlay (disconnect, run-cell, package install) — this was
    the one that dimmed without it, so a busy notebook stayed legible enough behind a dialog to
    compete with it. 3px matches the blocking overlays; the dialog is modal, so the page behind is
